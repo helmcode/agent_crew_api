@@ -1,0 +1,41 @@
+# Binaries
+bin/
+dist/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.*
+
+# Git
+.git/
+.gitignore
+
+# Docker
+docker-compose*.yml
+build/
+
+# Docs
+README.md
+Makefile
+
+# Databases
+*.db
+*.sqlite
+*.sqlite3
+data/
+
+# Test artifacts
+*.test
+*.out
+coverage.html

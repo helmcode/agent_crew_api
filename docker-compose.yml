@@ -1,0 +1,58 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: build/api/Dockerfile
+    container_name: agentcrew-api
+    ports:
+      - "8080:8080"
+    environment:
+      - DATABASE_PATH=/data/agentcrew.db
+      - NATS_URL=nats://${NATS_AUTH_TOKEN:-agentcrew-dev-token}@nats:4222
+      - DOCKER_HOST=unix:///var/run/docker.sock
+      - AGENT_IMAGE=agentcrew-agent:latest
+      - AGENT_NETWORK=agentcrew-local
+    volumes:
+      - api-data:/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      nats:
+        condition: service_healthy
+    networks:
+      - agentcrew-local
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
+
+  nats:
+    image: nats:2.10-alpine
+    container_name: agentcrew-nats
+    # WARNING: Change NATS_AUTH_TOKEN for production deployments
+    command: "--jetstream --store_dir /data --http_port 8222 --auth ${NATS_AUTH_TOKEN:-agentcrew-dev-token}"
+    ports:
+      - "4222:4222"
+      - "127.0.0.1:8222:8222"
+    volumes:
+      - nats-data:/data
+    networks:
+      - agentcrew-local
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:8222/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      start_period: 3s
+      retries: 5
+
+networks:
+  agentcrew-local:
+    name: agentcrew-local
+    driver: bridge
+
+volumes:
+  api-data:
+  nats-data:
