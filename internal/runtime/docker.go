@@ -31,13 +31,10 @@ func validateName(name string) error {
 	return nil
 }
 
-const (
-	defaultAgentImage = "ghcr.io/helmcode/agent-crew-agent:latest"
-	natsImage         = "nats:2.10-alpine"
-	labelTeam         = "agentcrew.team"
-	labelAgent        = "agentcrew.agent"
-	labelRole         = "agentcrew.role"
-)
+// GetNATSURL returns the NATS URL for a team in Docker runtime.
+func (d *DockerRuntime) GetNATSURL(teamName string) string {
+	return "nats://team-" + teamName + "-nats:4222"
+}
 
 // DockerRuntime implements AgentRuntime using the Docker Engine API.
 type DockerRuntime struct {
@@ -72,7 +69,7 @@ func (d *DockerRuntime) DeployInfra(ctx context.Context, config InfraConfig) err
 
 	// Create network.
 	_, err := d.client.NetworkCreate(ctx, netName, network.CreateOptions{
-		Labels: map[string]string{labelTeam: config.TeamName},
+		Labels: map[string]string{LabelTeam: config.TeamName},
 	})
 	if err != nil {
 		return fmt.Errorf("creating network %s: %w", netName, err)
@@ -82,7 +79,7 @@ func (d *DockerRuntime) DeployInfra(ctx context.Context, config InfraConfig) err
 	volName := teamVolumeName(config.TeamName)
 	_, err = d.client.VolumeCreate(ctx, volume.CreateOptions{
 		Name:   volName,
-		Labels: map[string]string{labelTeam: config.TeamName},
+		Labels: map[string]string{LabelTeam: config.TeamName},
 	})
 	if err != nil {
 		return fmt.Errorf("creating volume %s: %w", volName, err)
@@ -103,7 +100,7 @@ func (d *DockerRuntime) startNATS(ctx context.Context, teamName, netName string)
 	containerName := natsContainerName(teamName)
 
 	// Pull NATS image.
-	reader, err := d.client.ImagePull(ctx, natsImage, image.PullOptions{})
+	reader, err := d.client.ImagePull(ctx, NATSImage, image.PullOptions{})
 	if err != nil {
 		return fmt.Errorf("pulling nats image: %w", err)
 	}
@@ -120,14 +117,14 @@ func (d *DockerRuntime) startNATS(ctx context.Context, teamName, netName string)
 
 	resp, err := d.client.ContainerCreate(ctx,
 		&container.Config{
-			Image: natsImage,
+			Image: NATSImage,
 			Cmd:   natsCmd,
 			ExposedPorts: nat.PortSet{
 				"4222/tcp": struct{}{},
 			},
 			Labels: map[string]string{
-				labelTeam: teamName,
-				labelRole: "nats",
+				LabelTeam: teamName,
+				LabelRole: "nats",
 			},
 		},
 		&container.HostConfig{},
@@ -161,7 +158,7 @@ func (d *DockerRuntime) DeployAgent(ctx context.Context, config AgentConfig) (*A
 	}
 	img := config.Image
 	if img == "" {
-		img = defaultAgentImage
+		img = DefaultAgentImage
 	}
 
 	containerName := agentContainerName(config.TeamName, config.Name)
@@ -211,9 +208,9 @@ func (d *DockerRuntime) DeployAgent(ctx context.Context, config AgentConfig) (*A
 			Image: img,
 			Env:   env,
 			Labels: map[string]string{
-				labelTeam:  config.TeamName,
-				labelAgent: config.Name,
-				labelRole:  config.Role,
+				LabelTeam:  config.TeamName,
+				LabelAgent: config.Name,
+				LabelRole:  config.Role,
 			},
 		},
 		&container.HostConfig{
@@ -299,7 +296,7 @@ func (d *DockerRuntime) TeardownInfra(ctx context.Context, teamName string) erro
 	// Find all containers for this team.
 	containers, err := d.client.ContainerList(ctx, container.ListOptions{
 		All:     true,
-		Filters: filters.NewArgs(filters.Arg("label", labelTeam+"="+teamName)),
+		Filters: filters.NewArgs(filters.Arg("label", LabelTeam+"="+teamName)),
 	})
 	if err != nil {
 		return fmt.Errorf("listing team containers: %w", err)

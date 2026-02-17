@@ -61,6 +61,10 @@ func (m *mockRuntime) TeardownInfra(_ context.Context, _ string) error {
 	return m.teardownErr
 }
 
+func (m *mockRuntime) GetNATSURL(teamName string) string {
+	return "nats://team-" + teamName + "-nats:4222"
+}
+
 // setupTestServer creates a Server with in-memory SQLite and mock runtime.
 func setupTestServer(t *testing.T) (*Server, *mockRuntime) {
 	t.Helper()

@@ -52,6 +52,15 @@ type AgentStatus struct {
 	StartedAt time.Time
 }
 
+// Shared constants used by both Docker and Kubernetes runtimes.
+const (
+	DefaultAgentImage = "ghcr.io/helmcode/agent-crew-agent:latest"
+	NATSImage         = "nats:2.10-alpine"
+	LabelTeam         = "agentcrew.team"
+	LabelAgent        = "agentcrew.agent"
+	LabelRole         = "agentcrew.role"
+)
+
 // AgentRuntime is the interface for managing agent container lifecycles.
 type AgentRuntime interface {
 	DeployInfra(ctx context.Context, config InfraConfig) error
@@ -61,4 +70,5 @@ type AgentRuntime interface {
 	GetStatus(ctx context.Context, id string) (*AgentStatus, error)
 	StreamLogs(ctx context.Context, id string) (io.ReadCloser, error)
 	TeardownInfra(ctx context.Context, teamName string) error
+	GetNATSURL(teamName string) string
 }

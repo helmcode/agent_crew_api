@@ -196,7 +196,7 @@ func (s *Server) deployTeamAsync(team models.Team) {
 		return
 	}
 
-	natsURL := "nats://team-" + team.Name + "-nats:4222"
+	natsURL := s.runtime.GetNATSURL(team.Name)
 
 	// Deploy each agent.
 	for i := range team.Agents {

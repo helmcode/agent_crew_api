@@ -31,10 +31,22 @@ func main() {
 	}
 
 	// Runtime.
-	rt, err := runtime.NewDockerRuntime()
-	if err != nil {
-		slog.Error("failed to initialize docker runtime", "error", err)
-		os.Exit(1)
+	var rt runtime.AgentRuntime
+	switch os.Getenv("RUNTIME") {
+	case "kubernetes":
+		slog.Info("initializing kubernetes runtime")
+		rt, err = runtime.NewK8sRuntime()
+		if err != nil {
+			slog.Error("failed to initialize kubernetes runtime", "error", err)
+			os.Exit(1)
+		}
+	default:
+		slog.Info("initializing docker runtime")
+		rt, err = runtime.NewDockerRuntime()
+		if err != nil {
+			slog.Error("failed to initialize docker runtime", "error", err)
+			os.Exit(1)
+		}
 	}
 
 	// HTTP server.
