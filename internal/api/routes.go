@@ -7,9 +7,7 @@ import (
 
 func (s *Server) registerRoutes() {
 	// Health check.
-	s.App.Get("/health", func(c *fiber.Ctx) error {
-		return c.JSON(fiber.Map{"status": "ok"})
-	})
+	s.App.Get("/health", s.HealthCheck)
 
 	api := s.App.Group("/api")
 
