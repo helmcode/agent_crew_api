@@ -343,8 +343,22 @@ func (d *DockerRuntime) DeployAgent(ctx context.Context, config AgentConfig) (*A
 	if apiKey == "" {
 		apiKey = os.Getenv("ANTHROPIC_API_KEY")
 	}
-	if apiKey == "" {
-		return nil, fmt.Errorf("ANTHROPIC_API_KEY not configured (set it in Settings or as environment variable)")
+
+	// Read OAuth token: CLAUDE_CODE_OAUTH_TOKEN or its alias ANTHROPIC_AUTH_TOKEN.
+	oauthToken := config.Env["CLAUDE_CODE_OAUTH_TOKEN"]
+	if oauthToken == "" {
+		oauthToken = os.Getenv("CLAUDE_CODE_OAUTH_TOKEN")
+	}
+	if oauthToken == "" {
+		oauthToken = config.Env["ANTHROPIC_AUTH_TOKEN"]
+	}
+	if oauthToken == "" {
+		oauthToken = os.Getenv("ANTHROPIC_AUTH_TOKEN")
+	}
+
+	// Require at least one authentication method.
+	if apiKey == "" && oauthToken == "" {
+		return nil, fmt.Errorf("no auth configured: set ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN in Settings")
 	}
 
 	// Read NATS auth token: same token used to start the NATS container.
@@ -356,20 +370,16 @@ func (d *DockerRuntime) DeployAgent(ctx context.Context, config AgentConfig) (*A
 		"NATS_URL=" + config.NATSUrl,
 		"AGENT_ROLE=" + config.Role,
 		"AGENT_PERMISSIONS=" + string(permJSON),
-		"ANTHROPIC_API_KEY=" + apiKey,
 	}
 
-	if natsToken != "" {
-		env = append(env, "NATS_AUTH_TOKEN="+natsToken)
-	}
-
-	// Pass OAuth token if available (for Claude Code OAuth authentication).
-	oauthToken := config.Env["CLAUDE_CODE_OAUTH_TOKEN"]
-	if oauthToken == "" {
-		oauthToken = os.Getenv("CLAUDE_CODE_OAUTH_TOKEN")
+	if apiKey != "" {
+		env = append(env, "ANTHROPIC_API_KEY="+apiKey)
 	}
 	if oauthToken != "" {
 		env = append(env, "CLAUDE_CODE_OAUTH_TOKEN="+oauthToken)
+	}
+	if natsToken != "" {
+		env = append(env, "NATS_AUTH_TOKEN="+natsToken)
 	}
 
 	// Resource limits.
