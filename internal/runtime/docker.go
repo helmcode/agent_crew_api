@@ -347,6 +347,9 @@ func (d *DockerRuntime) DeployAgent(ctx context.Context, config AgentConfig) (*A
 		return nil, fmt.Errorf("ANTHROPIC_API_KEY not configured (set it in Settings or as environment variable)")
 	}
 
+	// Read NATS auth token: same token used to start the NATS container.
+	natsToken := os.Getenv("NATS_AUTH_TOKEN")
+
 	env := []string{
 		"AGENT_NAME=" + config.Name,
 		"TEAM_NAME=" + config.TeamName,
@@ -354,6 +357,10 @@ func (d *DockerRuntime) DeployAgent(ctx context.Context, config AgentConfig) (*A
 		"AGENT_ROLE=" + config.Role,
 		"AGENT_PERMISSIONS=" + string(permJSON),
 		"ANTHROPIC_API_KEY=" + apiKey,
+	}
+
+	if natsToken != "" {
+		env = append(env, "NATS_AUTH_TOKEN="+natsToken)
 	}
 
 	// Pass OAuth token if available (for Claude Code OAuth authentication).
