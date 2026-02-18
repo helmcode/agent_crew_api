@@ -1,4 +1,4 @@
-.PHONY: build-api build-sidecar build-all test lint clean \
+.PHONY: build-api build-sidecar build-all run-api test lint clean \
 	build-api-image build-agent-image build-images \
 	docker-compose-up docker-compose-down docker-compose-logs
 
@@ -14,6 +14,14 @@ build-sidecar:
 	go build -o $(BIN_DIR)/sidecar ./cmd/sidecar
 
 build-all: build-api build-sidecar
+
+run-api: build-api
+	LISTEN_ADDR=:3000 \
+	NATS_URL=nats://localhost:4222 \
+	NATS_AUTH_TOKEN=dev-token \
+	DATABASE_PATH=/tmp/agentcrew.db \
+	RUNTIME=docker \
+	./$(BIN_DIR)/api
 
 # ---------- Docker images ----------
 

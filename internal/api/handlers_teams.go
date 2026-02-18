@@ -189,6 +189,9 @@ func (s *Server) deployTeamAsync(team models.Team) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
+	// Load settings from DB to pass as environment variables to agent containers.
+	envFromSettings := s.loadSettingsEnv()
+
 	// Deploy infrastructure.
 	infraCfg := runtime.InfraConfig{
 		TeamName:      team.Name,
@@ -227,6 +230,7 @@ func (s *Server) deployTeamAsync(team models.Team) {
 			Resources:     res,
 			NATSUrl:       natsURL,
 			WorkspacePath: team.WorkspacePath,
+			Env:           envFromSettings,
 		}
 
 		instance, err := s.runtime.DeployAgent(ctx, agentCfg)
@@ -253,6 +257,24 @@ func (s *Server) deployTeamAsync(team models.Team) {
 
 	s.db.Model(&team).Update("status", models.TeamStatusRunning)
 	slog.Info("team deployed successfully", "team", team.Name)
+}
+
+// loadSettingsEnv reads known settings from the database and returns them as a
+// string map suitable for passing to AgentConfig.Env.
+func (s *Server) loadSettingsEnv() map[string]string {
+	env := make(map[string]string)
+
+	// Keys that should be forwarded to agent containers.
+	keys := []string{"ANTHROPIC_API_KEY"}
+
+	for _, key := range keys {
+		var setting models.Settings
+		if err := s.db.Where("key = ?", key).First(&setting).Error; err == nil && setting.Value != "" {
+			env[key] = setting.Value
+		}
+	}
+
+	return env
 }
 
 // StopTeam tears down all team infrastructure.

@@ -138,6 +138,54 @@ func TestCreateTeam(t *testing.T) {
 	}
 }
 
+func TestCreateTeam_HumanFriendlyName(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	body := CreateTeamRequest{
+		Name:        "My Cool Team",
+		Description: "A team with spaces in the name",
+	}
+	rec := doRequest(srv, "POST", "/api/teams", body)
+
+	if rec.Code != 201 {
+		t.Fatalf("status: got %d, want 201\nbody: %s", rec.Code, rec.Body.String())
+	}
+
+	var team models.Team
+	parseJSON(t, rec, &team)
+
+	if team.Name != "My Cool Team" {
+		t.Errorf("name: got %q, want 'My Cool Team'", team.Name)
+	}
+}
+
+func TestSanitizeName(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"Test", "test"},
+		{"My Team", "my-team"},
+		{"Agent Squad!", "agent-squad"},
+		{"  Hello World  ", "hello-world"},
+		{"UPPERCASE", "uppercase"},
+		{"with---multiple---dashes", "with-multiple-dashes"},
+		{"special@#chars$%", "specialchars"},
+		{"already-valid", "already-valid"},
+		{"under_scores", "under_scores"},
+		{"123numeric", "123numeric"},
+		{"   ", "team"},       // all whitespace -> fallback
+		{"@#$%", "team"},     // all invalid -> fallback
+	}
+
+	for _, tt := range tests {
+		got := SanitizeName(tt.input)
+		if got != tt.expected {
+			t.Errorf("SanitizeName(%q) = %q, want %q", tt.input, got, tt.expected)
+		}
+	}
+}
+
 func TestCreateTeam_MissingName(t *testing.T) {
 	srv, _ := setupTestServer(t)
 

@@ -1,13 +1,14 @@
 // Package api implements the Fiber HTTP API for the AgentCrew orchestrator.
 //
-// Name validation: team and agent names must be 1-64 alphanumeric characters,
-// hyphens, or underscores to prevent injection in Docker container names and
-// NATS subjects.
+// Team and agent names accept any human-friendly string (e.g. "My Team", "Test").
+// When names are used for Docker/K8s infrastructure resources, they are sanitized
+// internally via SanitizeName to produce a safe slug.
 package api
 
 import (
 	"fmt"
 	"regexp"
+	"strings"
 )
 
 // CreateTeamRequest is the payload for POST /api/teams.
@@ -76,13 +77,39 @@ type ErrorResponse struct {
 	Details string `json:"details,omitempty"`
 }
 
-// validNameRe validates team and agent names: alphanumeric, hyphens, underscores, 1-64 chars.
-var validNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$`)
+// invalidSlugChars matches any character that is not lowercase alphanumeric, hyphen, or underscore.
+var invalidSlugChars = regexp.MustCompile(`[^a-z0-9_-]`)
 
-// validateName checks that a name is safe for use in Docker container names and NATS subjects.
+// validateName checks that a name is a non-empty string of at most 255 characters.
+// Any human-friendly name is accepted; infrastructure-safe slugs are produced by SanitizeName.
 func validateName(name string) error {
-	if !validNameRe.MatchString(name) {
-		return fmt.Errorf("name must be 1-64 alphanumeric characters, hyphens, or underscores")
+	if len(strings.TrimSpace(name)) == 0 {
+		return fmt.Errorf("name is required")
+	}
+	if len(name) > 255 {
+		return fmt.Errorf("name must be at most 255 characters")
 	}
 	return nil
+}
+
+// SanitizeName converts a human-friendly display name into a Docker/K8s-safe slug.
+// It lowercases the string, replaces spaces with hyphens, strips invalid characters,
+// collapses consecutive hyphens, trims leading/trailing hyphens, and truncates to 62 chars.
+func SanitizeName(name string) string {
+	s := strings.ToLower(strings.TrimSpace(name))
+	s = strings.ReplaceAll(s, " ", "-")
+	s = invalidSlugChars.ReplaceAllString(s, "")
+	// Collapse consecutive hyphens.
+	for strings.Contains(s, "--") {
+		s = strings.ReplaceAll(s, "--", "-")
+	}
+	s = strings.Trim(s, "-")
+	if len(s) > 62 {
+		s = s[:62]
+		s = strings.TrimRight(s, "-")
+	}
+	if s == "" {
+		s = "team"
+	}
+	return s
 }

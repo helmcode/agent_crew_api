@@ -77,14 +77,12 @@ func parseAgentID(id string) (namespace, podName string, err error) {
 
 // GetNATSURL returns the NATS URL for a team in Kubernetes runtime using in-cluster DNS.
 func (k *K8sRuntime) GetNATSURL(teamName string) string {
-	return "nats://nats.agentcrew-" + teamName + ".svc.cluster.local:4222"
+	return "nats://nats.agentcrew-" + sanitizeName(teamName) + ".svc.cluster.local:4222"
 }
 
 // DeployInfra creates the namespace, workspace PVC, and optionally NATS deployment+service.
 func (k *K8sRuntime) DeployInfra(ctx context.Context, config InfraConfig) error {
-	if err := validateName(config.TeamName); err != nil {
-		return fmt.Errorf("invalid team name: %w", err)
-	}
+	config.TeamName = sanitizeName(config.TeamName)
 	ns := teamNamespaceName(config.TeamName)
 	slog.Info("deploying k8s team infrastructure", "team", config.TeamName, "namespace", ns)
 
@@ -285,12 +283,8 @@ func (k *K8sRuntime) deployNATS(ctx context.Context, teamName, namespace string)
 
 // DeployAgent creates a Pod for the agent in the team's namespace.
 func (k *K8sRuntime) DeployAgent(ctx context.Context, config AgentConfig) (*AgentInstance, error) {
-	if err := validateName(config.TeamName); err != nil {
-		return nil, fmt.Errorf("invalid team name: %w", err)
-	}
-	if err := validateName(config.Name); err != nil {
-		return nil, fmt.Errorf("invalid agent name: %w", err)
-	}
+	config.TeamName = sanitizeName(config.TeamName)
+	config.Name = sanitizeName(config.Name)
 
 	ns := teamNamespaceName(config.TeamName)
 	podName := agentPodName(config.Name)
@@ -302,7 +296,7 @@ func (k *K8sRuntime) DeployAgent(ctx context.Context, config AgentConfig) (*Agen
 	slog.Info("deploying k8s agent", "agent", config.Name, "team", config.TeamName, "namespace", ns)
 
 	// Ensure API key secret exists in namespace.
-	if err := k.ensureAPIKeySecret(ctx, ns); err != nil {
+	if err := k.ensureAPIKeySecret(ctx, ns, config.Env); err != nil {
 		return nil, fmt.Errorf("ensuring api key secret: %w", err)
 	}
 
@@ -449,6 +443,7 @@ func (k *K8sRuntime) StreamLogs(ctx context.Context, id string) (io.ReadCloser, 
 
 // TeardownInfra deletes the entire team namespace, which cascades to all resources within it.
 func (k *K8sRuntime) TeardownInfra(ctx context.Context, teamName string) error {
+	teamName = sanitizeName(teamName)
 	ns := teamNamespaceName(teamName)
 	slog.Info("tearing down k8s team infrastructure", "team", teamName, "namespace", ns)
 
@@ -463,10 +458,14 @@ func (k *K8sRuntime) TeardownInfra(ctx context.Context, teamName string) error {
 
 // ensureAPIKeySecret creates the Kubernetes Secret holding the Anthropic API key
 // if it doesn't already exist in the given namespace.
-func (k *K8sRuntime) ensureAPIKeySecret(ctx context.Context, namespace string) error {
-	apiKey := os.Getenv("ANTHROPIC_API_KEY")
+func (k *K8sRuntime) ensureAPIKeySecret(ctx context.Context, namespace string, extraEnv map[string]string) error {
+	// Prefer extraEnv (from Settings DB), fall back to process env.
+	apiKey := extraEnv["ANTHROPIC_API_KEY"]
 	if apiKey == "" {
-		return fmt.Errorf("ANTHROPIC_API_KEY environment variable not set")
+		apiKey = os.Getenv("ANTHROPIC_API_KEY")
+	}
+	if apiKey == "" {
+		return fmt.Errorf("ANTHROPIC_API_KEY not configured (set it in Settings or as environment variable)")
 	}
 
 	secret := &corev1.Secret{

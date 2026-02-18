@@ -2,12 +2,13 @@ package runtime
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
-	"regexp"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -20,20 +21,113 @@ import (
 	"github.com/docker/go-connections/nat"
 )
 
-// validNameRe validates Docker-safe names: lowercase alphanumeric, hyphens, underscores.
-var validNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,62}$`)
-
-// validateName ensures a name is safe for use in Docker resource names.
-func validateName(name string) error {
-	if !validNameRe.MatchString(name) {
-		return fmt.Errorf("invalid name %q: must match %s", name, validNameRe.String())
+// sanitizeName converts a display name into a Docker-safe slug using the shared
+// SanitizeName function from the api package. This is a runtime-local wrapper
+// to keep calling code clean.
+func sanitizeName(name string) string {
+	s := strings.ToLower(strings.TrimSpace(name))
+	s = strings.ReplaceAll(s, " ", "-")
+	// Strip anything not [a-z0-9_-].
+	var b strings.Builder
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			b.WriteRune(r)
+		}
 	}
+	s = b.String()
+	// Collapse consecutive hyphens.
+	for strings.Contains(s, "--") {
+		s = strings.ReplaceAll(s, "--", "-")
+	}
+	s = strings.Trim(s, "-")
+	if len(s) > 62 {
+		s = s[:62]
+		s = strings.TrimRight(s, "-")
+	}
+	if s == "" {
+		s = "team"
+	}
+	return s
+}
+
+// registryAuth returns the base64-encoded RegistryAuth string for pulling an image.
+// It reads credentials from the Docker config.json ($DOCKER_CONFIG or $HOME/.docker).
+// Returns empty string if no credentials are found (falls back to unauthenticated pull).
+func registryAuth(imageName string) string {
+	configDir := os.Getenv("DOCKER_CONFIG")
+	if configDir == "" {
+		home, _ := os.UserHomeDir()
+		configDir = filepath.Join(home, ".docker")
+	}
+	configPath := filepath.Join(configDir, "config.json")
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return ""
+	}
+
+	var dockerConfig struct {
+		Auths map[string]struct {
+			Auth string `json:"auth"`
+		} `json:"auths"`
+	}
+	if err := json.Unmarshal(data, &dockerConfig); err != nil {
+		return ""
+	}
+
+	// Extract registry hostname from image name.
+	registry := "docker.io"
+	if parts := strings.SplitN(imageName, "/", 2); len(parts) == 2 && strings.ContainsAny(parts[0], ".:") {
+		registry = parts[0]
+	}
+
+	entry, ok := dockerConfig.Auths[registry]
+	if !ok || entry.Auth == "" {
+		return ""
+	}
+
+	// The config.json "auth" field is base64(username:password).
+	// The Docker API expects base64(JSON{"username","password"}).
+	decoded, err := base64.StdEncoding.DecodeString(entry.Auth)
+	if err != nil {
+		return ""
+	}
+	parts := strings.SplitN(string(decoded), ":", 2)
+	if len(parts) != 2 {
+		return ""
+	}
+
+	authJSON, _ := json.Marshal(map[string]string{
+		"username": parts[0],
+		"password": parts[1],
+	})
+	return base64.URLEncoding.EncodeToString(authJSON)
+}
+
+// pullImageIfNeeded implements an IfNotPresent pull policy: it checks if the
+// image exists locally first and only pulls from the registry when it is missing.
+func (d *DockerRuntime) pullImageIfNeeded(ctx context.Context, img string) error {
+	_, _, err := d.client.ImageInspectWithRaw(ctx, img)
+	if err == nil {
+		slog.Info("image already present locally, skipping pull", "image", img)
+		return nil
+	}
+
+	slog.Info("pulling image", "image", img)
+	reader, err := d.client.ImagePull(ctx, img, image.PullOptions{
+		RegistryAuth: registryAuth(img),
+	})
+	if err != nil {
+		return fmt.Errorf("pulling image %s: %w", img, err)
+	}
+	defer reader.Close()
+	_, _ = io.Copy(io.Discard, reader)
 	return nil
 }
 
 // GetNATSURL returns the NATS URL for a team in Docker runtime.
 func (d *DockerRuntime) GetNATSURL(teamName string) string {
-	return "nats://team-" + teamName + "-nats:4222"
+	return "nats://team-" + sanitizeName(teamName) + "-nats:4222"
 }
 
 // DockerRuntime implements AgentRuntime using the Docker Engine API.
@@ -77,9 +171,7 @@ func isAlreadyExistsErr(err error) bool {
 
 // DeployInfra creates the shared Docker network, NATS container, and workspace volume.
 func (d *DockerRuntime) DeployInfra(ctx context.Context, config InfraConfig) error {
-	if err := validateName(config.TeamName); err != nil {
-		return fmt.Errorf("invalid team name: %w", err)
-	}
+	config.TeamName = sanitizeName(config.TeamName)
 	netName := teamNetworkName(config.TeamName)
 	slog.Info("deploying team infrastructure", "team", config.TeamName, "network", netName)
 
@@ -127,13 +219,10 @@ func (d *DockerRuntime) startNATS(ctx context.Context, teamName, netName string)
 		_ = d.client.ContainerRemove(ctx, containerName, container.RemoveOptions{Force: true})
 	}
 
-	// Pull NATS image.
-	reader, err := d.client.ImagePull(ctx, NATSImage, image.PullOptions{})
-	if err != nil {
-		return fmt.Errorf("pulling nats image: %w", err)
+	// Pull NATS image if not present locally.
+	if err := d.pullImageIfNeeded(ctx, NATSImage); err != nil {
+		return fmt.Errorf("nats image: %w", err)
 	}
-	defer reader.Close()
-	_, _ = io.Copy(io.Discard, reader)
 
 	// Build NATS command with JetStream and auth token.
 	natsCmd := []string{"--jetstream"}
@@ -178,12 +267,8 @@ func (d *DockerRuntime) startNATS(ctx context.Context, teamName, netName string)
 
 // DeployAgent creates and starts an agent container.
 func (d *DockerRuntime) DeployAgent(ctx context.Context, config AgentConfig) (*AgentInstance, error) {
-	if err := validateName(config.TeamName); err != nil {
-		return nil, fmt.Errorf("invalid team name: %w", err)
-	}
-	if err := validateName(config.Name); err != nil {
-		return nil, fmt.Errorf("invalid agent name: %w", err)
-	}
+	config.TeamName = sanitizeName(config.TeamName)
+	config.Name = sanitizeName(config.Name)
 	img := config.Image
 	if img == "" {
 		img = d.agentImage
@@ -198,21 +283,21 @@ func (d *DockerRuntime) DeployAgent(ctx context.Context, config AgentConfig) (*A
 	// Remove any stale container with the same name from a previous failed deploy.
 	_ = d.client.ContainerRemove(ctx, containerName, container.RemoveOptions{Force: true})
 
-	// Pull image.
-	reader, err := d.client.ImagePull(ctx, img, image.PullOptions{})
-	if err != nil {
-		return nil, fmt.Errorf("pulling agent image: %w", err)
+	// Pull image if not present locally (IfNotPresent policy).
+	if err := d.pullImageIfNeeded(ctx, img); err != nil {
+		return nil, fmt.Errorf("agent image: %w", err)
 	}
-	defer reader.Close()
-	_, _ = io.Copy(io.Discard, reader)
 
 	// Serialize permissions for env var.
 	permJSON, _ := json.Marshal(config.Permissions)
 
-	// Read API key for agent containers.
-	apiKey := os.Getenv("ANTHROPIC_API_KEY")
+	// Read API key: prefer config.Env (from Settings DB), fall back to process env.
+	apiKey := config.Env["ANTHROPIC_API_KEY"]
 	if apiKey == "" {
-		return nil, fmt.Errorf("ANTHROPIC_API_KEY environment variable not set")
+		apiKey = os.Getenv("ANTHROPIC_API_KEY")
+	}
+	if apiKey == "" {
+		return nil, fmt.Errorf("ANTHROPIC_API_KEY not configured (set it in Settings or as environment variable)")
 	}
 
 	env := []string{
@@ -320,6 +405,7 @@ func (d *DockerRuntime) StreamLogs(ctx context.Context, id string) (io.ReadClose
 // TeardownInfra removes all containers, the NATS container, network, and volume
 // for a given team.
 func (d *DockerRuntime) TeardownInfra(ctx context.Context, teamName string) error {
+	teamName = sanitizeName(teamName)
 	slog.Info("tearing down team infrastructure", "team", teamName)
 
 	// Find all containers for this team.

@@ -20,7 +20,8 @@ type AgentConfig struct {
 	NATSUrl         string
 	Image           string
 	WorkspacePath   string
-	AgentConfigYAML string // serialized agent config to mount into the container
+	AgentConfigYAML string            // serialized agent config to mount into the container
+	Env             map[string]string // extra environment variables (e.g. from Settings DB)
 }
 
 // ResourceConfig defines compute resource limits for an agent.

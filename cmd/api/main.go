@@ -49,10 +49,13 @@ func main() {
 		}
 	}
 
-	// HTTP server.
+	// HTTP server. PORT takes precedence, then LISTEN_ADDR, then default :8080.
 	listenAddr := os.Getenv("LISTEN_ADDR")
 	if listenAddr == "" {
 		listenAddr = ":8080"
+	}
+	if port := os.Getenv("PORT"); port != "" {
+		listenAddr = ":" + port
 	}
 
 	srv := api.NewServer(db, rt)
