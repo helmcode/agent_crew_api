@@ -101,7 +101,6 @@ func (s *Server) runTeamRelay(ctx context.Context, teamID, teamName string) {
 			return
 		}
 
-		payload, _ := json.Marshal(protoMsg)
 		log := models.TaskLog{
 			ID:          uuid.New().String(),
 			TeamID:      teamID,
@@ -109,7 +108,7 @@ func (s *Server) runTeamRelay(ctx context.Context, teamID, teamName string) {
 			FromAgent:   protoMsg.From,
 			ToAgent:     protoMsg.To,
 			MessageType: string(protoMsg.Type),
-			Payload:     models.JSON(payload),
+			Payload:     models.JSON(protoMsg.Payload),
 		}
 		if err := s.db.Create(&log).Error; err != nil {
 			slog.Error("relay: failed to save task log", "team", teamName, "error", err)
