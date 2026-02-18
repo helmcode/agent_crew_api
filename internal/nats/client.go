@@ -16,10 +16,11 @@ import (
 
 // ClientConfig holds the configuration for the NATS client.
 type ClientConfig struct {
-	URL            string
-	Name           string // connection name for monitoring
-	MaxReconnects  int
-	ReconnectWait  time.Duration
+	URL              string
+	Name             string // connection name for monitoring
+	Token            string // auth token (optional, must match NATS server --auth flag)
+	MaxReconnects    int
+	ReconnectWait    time.Duration
 	JetStreamEnabled bool
 }
 
@@ -48,6 +49,7 @@ func Connect(config ClientConfig) (*Client, error) {
 		nats.Name(config.Name),
 		nats.MaxReconnects(config.MaxReconnects),
 		nats.ReconnectWait(config.ReconnectWait),
+		nats.Timeout(5 * time.Second),
 		nats.DisconnectErrHandler(func(_ *nats.Conn, err error) {
 			slog.Warn("nats disconnected", "error", err)
 		}),
@@ -57,6 +59,10 @@ func Connect(config ClientConfig) (*Client, error) {
 		nats.ClosedHandler(func(_ *nats.Conn) {
 			slog.Info("nats connection closed")
 		}),
+	}
+
+	if config.Token != "" {
+		opts = append(opts, nats.Token(config.Token))
 	}
 
 	nc, err := nats.Connect(config.URL, opts...)

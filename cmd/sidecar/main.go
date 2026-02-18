@@ -51,6 +51,7 @@ func main() {
 		cfg.Agent.NATS.URL,
 		cfg.Agent.Team+"-"+cfg.Agent.Name,
 	)
+	natsConfig.Token = os.Getenv("NATS_AUTH_TOKEN")
 	natsClient, err := agentNats.Connect(natsConfig)
 	if err != nil {
 		slog.Error("failed to connect to nats", "error", err)
