@@ -70,6 +70,10 @@ func (m *Manager) Start(ctx context.Context) error {
 		"PATH=" + os.Getenv("PATH"),
 		"ANTHROPIC_API_KEY=" + os.Getenv("ANTHROPIC_API_KEY"),
 	}
+	// Pass OAuth token if available (alternative to API key).
+	if oauthToken := os.Getenv("CLAUDE_CODE_OAUTH_TOKEN"); oauthToken != "" {
+		m.cmd.Env = append(m.cmd.Env, "CLAUDE_CODE_OAUTH_TOKEN="+oauthToken)
+	}
 
 	var err error
 	m.stdin, err = m.cmd.StdinPipe()
@@ -159,7 +163,11 @@ func (m *Manager) SendInput(input string) error {
 		return fmt.Errorf("process is not running")
 	}
 
+	slog.Info("sending input to claude process", "status", m.status, "input_length", len(input))
 	_, err := fmt.Fprintln(m.stdin, input)
+	if err != nil {
+		slog.Error("failed to write to claude stdin", "error", err)
+	}
 	return err
 }
 

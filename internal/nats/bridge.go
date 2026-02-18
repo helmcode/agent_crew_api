@@ -99,7 +99,7 @@ func (b *Bridge) Stop() {
 
 // handleIncoming processes an incoming NATS protocol message.
 func (b *Bridge) handleIncoming(msg *protocol.Message) {
-	slog.Debug("bridge received message",
+	slog.Info("bridge received message",
 		"from", msg.From,
 		"type", msg.Type,
 		"agent", b.config.AgentName,
@@ -143,12 +143,15 @@ func (b *Bridge) handleTaskAssignment(msg *protocol.Message) {
 
 // handleUserMessage forwards a free-form message to Claude.
 func (b *Bridge) handleUserMessage(msg *protocol.Message) {
+	slog.Info("handling user message", "agent", b.config.AgentName, "from", msg.From)
+
 	payload, err := protocol.ParsePayload[protocol.UserMessagePayload](msg)
 	if err != nil {
 		slog.Error("failed to parse user message", "error", err)
 		return
 	}
 
+	slog.Info("forwarding user message to claude", "agent", b.config.AgentName, "content_length", len(payload.Content))
 	if err := b.manager.SendInput(payload.Content); err != nil {
 		slog.Error("failed to send user message to claude", "error", err)
 	}
