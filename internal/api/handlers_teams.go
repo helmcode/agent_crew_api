@@ -165,8 +165,14 @@ func (s *Server) DeployTeam(c *fiber.Ctx) error {
 	// Update status to deploying.
 	s.db.Model(&team).Update("status", models.TeamStatusDeploying)
 
+	// Deep copy agents for the background goroutine to avoid data races
+	// with the JSON serialization of the response below.
+	asyncTeam := team
+	asyncTeam.Agents = make([]models.Agent, len(team.Agents))
+	copy(asyncTeam.Agents, team.Agents)
+
 	// Deploy in background.
-	go s.deployTeamAsync(team)
+	go s.deployTeamAsync(asyncTeam)
 
 	team.Status = models.TeamStatusDeploying
 	return c.JSON(team)
@@ -199,6 +205,7 @@ func (s *Server) deployTeamAsync(team models.Team) {
 	natsURL := s.runtime.GetNATSURL(team.Name)
 
 	// Deploy each agent.
+	var failedAgents int
 	for i := range team.Agents {
 		agent := &team.Agents[i]
 
@@ -228,6 +235,7 @@ func (s *Server) deployTeamAsync(team models.Team) {
 			s.db.Model(agent).Updates(map[string]interface{}{
 				"container_status": models.ContainerStatusError,
 			})
+			failedAgents++
 			continue
 		}
 
@@ -235,6 +243,12 @@ func (s *Server) deployTeamAsync(team models.Team) {
 			"container_id":     instance.ID,
 			"container_status": models.ContainerStatusRunning,
 		})
+	}
+
+	if failedAgents > 0 {
+		slog.Error("team deployed with errors", "team", team.Name, "failed_agents", failedAgents, "total_agents", len(team.Agents))
+		s.db.Model(&team).Update("status", models.TeamStatusError)
+		return
 	}
 
 	s.db.Model(&team).Update("status", models.TeamStatusRunning)

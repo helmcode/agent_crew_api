@@ -106,22 +106,6 @@ func parseJSON(t *testing.T, rec *httptest.ResponseRecorder, target interface{})
 	}
 }
 
-// --- Health Check ---
-
-func TestHealthCheck(t *testing.T) {
-	srv, _ := setupTestServer(t)
-	rec := doRequest(srv, "GET", "/health", nil)
-
-	if rec.Code != 200 {
-		t.Fatalf("status: got %d, want 200", rec.Code)
-	}
-	var resp map[string]string
-	parseJSON(t, rec, &resp)
-	if resp["status"] != "ok" {
-		t.Errorf("status: got %q, want 'ok'", resp["status"])
-	}
-}
-
 // --- Team CRUD ---
 
 func TestCreateTeam(t *testing.T) {

@@ -12,6 +12,8 @@ services:
       - DOCKER_HOST=unix:///var/run/docker.sock
       - AGENT_IMAGE=agentcrew-agent:latest
       - AGENT_NETWORK=agentcrew-local
+      - ANTHROPIC_API_KEY
+      - NATS_AUTH_TOKEN
     volumes:
       - api-data:/data
       - /var/run/docker.sock:/var/run/docker.sock

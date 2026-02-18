@@ -7,8 +7,8 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/docker/docker/api/types/container"
@@ -38,7 +38,8 @@ func (d *DockerRuntime) GetNATSURL(teamName string) string {
 
 // DockerRuntime implements AgentRuntime using the Docker Engine API.
 type DockerRuntime struct {
-	client *client.Client
+	client     *client.Client
+	agentImage string
 }
 
 // NewDockerRuntime creates a DockerRuntime using the default Docker client from env.
@@ -47,7 +48,13 @@ func NewDockerRuntime() (*DockerRuntime, error) {
 	if err != nil {
 		return nil, fmt.Errorf("creating docker client: %w", err)
 	}
-	return &DockerRuntime{client: cli}, nil
+
+	agentImage := os.Getenv("AGENT_IMAGE")
+	if agentImage == "" {
+		agentImage = DefaultAgentImage
+	}
+
+	return &DockerRuntime{client: cli, agentImage: agentImage}, nil
 }
 
 func teamNetworkName(teamName string) string { return "team-" + teamName }
@@ -59,6 +66,15 @@ func agentContainerName(teamName, name string) string {
 	return fmt.Sprintf("team-%s-%s", teamName, name)
 }
 
+// isAlreadyExistsErr checks if a Docker API error indicates the resource already exists.
+func isAlreadyExistsErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "already exists") || strings.Contains(msg, "already in use")
+}
+
 // DeployInfra creates the shared Docker network, NATS container, and workspace volume.
 func (d *DockerRuntime) DeployInfra(ctx context.Context, config InfraConfig) error {
 	if err := validateName(config.TeamName); err != nil {
@@ -67,21 +83,21 @@ func (d *DockerRuntime) DeployInfra(ctx context.Context, config InfraConfig) err
 	netName := teamNetworkName(config.TeamName)
 	slog.Info("deploying team infrastructure", "team", config.TeamName, "network", netName)
 
-	// Create network.
+	// Create network (idempotent).
 	_, err := d.client.NetworkCreate(ctx, netName, network.CreateOptions{
 		Labels: map[string]string{LabelTeam: config.TeamName},
 	})
-	if err != nil {
+	if err != nil && !isAlreadyExistsErr(err) {
 		return fmt.Errorf("creating network %s: %w", netName, err)
 	}
 
-	// Create workspace volume.
+	// Create workspace volume (idempotent).
 	volName := teamVolumeName(config.TeamName)
 	_, err = d.client.VolumeCreate(ctx, volume.CreateOptions{
 		Name:   volName,
 		Labels: map[string]string{LabelTeam: config.TeamName},
 	})
-	if err != nil {
+	if err != nil && !isAlreadyExistsErr(err) {
 		return fmt.Errorf("creating volume %s: %w", volName, err)
 	}
 
@@ -98,6 +114,18 @@ func (d *DockerRuntime) DeployInfra(ctx context.Context, config InfraConfig) err
 
 func (d *DockerRuntime) startNATS(ctx context.Context, teamName, netName string) error {
 	containerName := natsContainerName(teamName)
+
+	// Check if NATS container already exists.
+	info, err := d.client.ContainerInspect(ctx, containerName)
+	if err == nil {
+		if info.State.Running {
+			slog.Info("nats container already running", "name", containerName)
+			return nil
+		}
+		// Container exists but not running, remove and recreate.
+		slog.Info("removing stale nats container", "name", containerName)
+		_ = d.client.ContainerRemove(ctx, containerName, container.RemoveOptions{Force: true})
+	}
 
 	// Pull NATS image.
 	reader, err := d.client.ImagePull(ctx, NATSImage, image.PullOptions{})
@@ -158,7 +186,7 @@ func (d *DockerRuntime) DeployAgent(ctx context.Context, config AgentConfig) (*A
 	}
 	img := config.Image
 	if img == "" {
-		img = DefaultAgentImage
+		img = d.agentImage
 	}
 
 	containerName := agentContainerName(config.TeamName, config.Name)
@@ -166,6 +194,9 @@ func (d *DockerRuntime) DeployAgent(ctx context.Context, config AgentConfig) (*A
 	volName := teamVolumeName(config.TeamName)
 
 	slog.Info("deploying agent", "agent", config.Name, "team", config.TeamName, "image", img)
+
+	// Remove any stale container with the same name from a previous failed deploy.
+	_ = d.client.ContainerRemove(ctx, containerName, container.RemoveOptions{Force: true})
 
 	// Pull image.
 	reader, err := d.client.ImagePull(ctx, img, image.PullOptions{})
@@ -178,11 +209,10 @@ func (d *DockerRuntime) DeployAgent(ctx context.Context, config AgentConfig) (*A
 	// Serialize permissions for env var.
 	permJSON, _ := json.Marshal(config.Permissions)
 
-	// Mount API key as a file instead of passing via env var to prevent
-	// exposure through docker inspect and /proc/1/environ.
-	secretPath, err := writeAPIKeyFile(containerName)
-	if err != nil {
-		return nil, fmt.Errorf("preparing api key secret: %w", err)
+	// Read API key for agent containers.
+	apiKey := os.Getenv("ANTHROPIC_API_KEY")
+	if apiKey == "" {
+		return nil, fmt.Errorf("ANTHROPIC_API_KEY environment variable not set")
 	}
 
 	env := []string{
@@ -191,7 +221,7 @@ func (d *DockerRuntime) DeployAgent(ctx context.Context, config AgentConfig) (*A
 		"NATS_URL=" + config.NATSUrl,
 		"AGENT_ROLE=" + config.Role,
 		"AGENT_PERMISSIONS=" + string(permJSON),
-		"ANTHROPIC_API_KEY_FILE=/run/secrets/anthropic_api_key",
+		"ANTHROPIC_API_KEY=" + apiKey,
 	}
 
 	// Resource limits.
@@ -216,7 +246,6 @@ func (d *DockerRuntime) DeployAgent(ctx context.Context, config AgentConfig) (*A
 		&container.HostConfig{
 			Binds: []string{
 				volName + ":/workspace",
-				secretPath + ":/run/secrets/anthropic_api_key:ro",
 			},
 			Resources: resources,
 		},
@@ -302,17 +331,12 @@ func (d *DockerRuntime) TeardownInfra(ctx context.Context, teamName string) erro
 		return fmt.Errorf("listing team containers: %w", err)
 	}
 
-	// Stop and remove all team containers, cleaning up secret files.
+	// Stop and remove all team containers.
 	for _, c := range containers {
 		slog.Info("removing container", "id", c.ID[:12], "names", c.Names)
 		timeout := 10
 		_ = d.client.ContainerStop(ctx, c.ID, container.StopOptions{Timeout: &timeout})
 		_ = d.client.ContainerRemove(ctx, c.ID, container.RemoveOptions{Force: true})
-
-		// Clean up API key secret file for agent containers.
-		for _, name := range c.Names {
-			removeAPIKeyFile(name)
-		}
 	}
 
 	// Remove network.
@@ -329,34 +353,6 @@ func (d *DockerRuntime) TeardownInfra(ctx context.Context, teamName string) erro
 
 	slog.Info("team infrastructure torn down", "team", teamName)
 	return nil
-}
-
-// apiKeySecretPath returns the deterministic path for an agent's API key secret file.
-func apiKeySecretPath(containerName string) string {
-	return filepath.Join(os.TempDir(), "agentcrew-apikey-"+containerName)
-}
-
-// writeAPIKeyFile creates a temporary file containing the API key with restrictive
-// permissions. Uses a deterministic path based on container name for cleanup.
-func writeAPIKeyFile(containerName string) (string, error) {
-	apiKey := os.Getenv("ANTHROPIC_API_KEY")
-	if apiKey == "" {
-		return "", fmt.Errorf("ANTHROPIC_API_KEY environment variable not set")
-	}
-
-	secretPath := apiKeySecretPath(containerName)
-	if err := os.WriteFile(secretPath, []byte(apiKey), 0400); err != nil {
-		return "", fmt.Errorf("writing api key file: %w", err)
-	}
-
-	return secretPath, nil
-}
-
-// removeAPIKeyFile removes the temporary API key file for a container.
-func removeAPIKeyFile(containerName string) {
-	if err := os.Remove(apiKeySecretPath(containerName)); err != nil && !os.IsNotExist(err) {
-		slog.Warn("failed to remove api key file", "container", containerName, "error", err)
-	}
 }
 
 // parseMemoryLimit converts a human-readable memory string (e.g. "512m", "1g")

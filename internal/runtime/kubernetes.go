@@ -24,7 +24,8 @@ import (
 
 // K8sRuntime implements AgentRuntime using the Kubernetes API.
 type K8sRuntime struct {
-	clientset kubernetes.Interface
+	clientset  kubernetes.Interface
+	agentImage string
 }
 
 // NewK8sRuntime creates a K8sRuntime, trying in-cluster config first,
@@ -49,7 +50,12 @@ func NewK8sRuntime() (*K8sRuntime, error) {
 		return nil, fmt.Errorf("creating k8s clientset: %w", err)
 	}
 
-	return &K8sRuntime{clientset: clientset}, nil
+	agentImage := os.Getenv("AGENT_IMAGE")
+	if agentImage == "" {
+		agentImage = DefaultAgentImage
+	}
+
+	return &K8sRuntime{clientset: clientset, agentImage: agentImage}, nil
 }
 
 // Naming conventions for Kubernetes resources.
@@ -290,7 +296,7 @@ func (k *K8sRuntime) DeployAgent(ctx context.Context, config AgentConfig) (*Agen
 	podName := agentPodName(config.Name)
 	img := config.Image
 	if img == "" {
-		img = DefaultAgentImage
+		img = k.agentImage
 	}
 
 	slog.Info("deploying k8s agent", "agent", config.Name, "team", config.TeamName, "namespace", ns)
