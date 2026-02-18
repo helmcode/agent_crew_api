@@ -229,12 +229,20 @@ func (d *DockerRuntime) startNATS(ctx context.Context, teamName, netName string)
 	// Check if NATS container already exists.
 	info, err := d.client.ContainerInspect(ctx, containerName)
 	if err == nil {
-		if info.State.Running {
-			slog.Info("nats container already running", "name", containerName)
+		bindings := info.NetworkSettings.Ports["4222/tcp"]
+		hasPortBinding := len(bindings) > 0 && bindings[0].HostPort != ""
+
+		if info.State.Running && hasPortBinding {
+			slog.Info("nats container already running with port binding", "name", containerName)
 			return nil
 		}
-		// Container exists but not running, remove and recreate.
-		slog.Info("removing stale nats container", "name", containerName)
+
+		// Container exists but either not running or missing port binding — recreate.
+		if info.State.Running && !hasPortBinding {
+			slog.Info("nats container missing port binding, recreating", "name", containerName)
+		} else {
+			slog.Info("removing stale nats container", "name", containerName)
+		}
 		_ = d.client.ContainerRemove(ctx, containerName, container.RemoveOptions{Force: true})
 	}
 
