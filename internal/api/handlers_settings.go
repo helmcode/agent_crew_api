@@ -47,3 +47,16 @@ func (s *Server) UpdateSettings(c *fiber.Ctx) error {
 
 	return c.JSON(setting)
 }
+
+// DeleteSetting removes a setting by key.
+func (s *Server) DeleteSetting(c *fiber.Ctx) error {
+	key := c.Params("key")
+	var setting models.Settings
+	if err := s.db.Where("key = ?", key).First(&setting).Error; err != nil {
+		return fiber.NewError(fiber.StatusNotFound, "setting not found")
+	}
+	if err := s.db.Delete(&setting).Error; err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, "failed to delete setting")
+	}
+	return c.SendStatus(fiber.StatusNoContent)
+}

@@ -37,6 +37,7 @@ func (s *Server) registerRoutes() {
 	// Settings.
 	api.Get("/settings", s.GetSettings)
 	api.Put("/settings", s.UpdateSettings)
+	api.Delete("/settings/:key", s.DeleteSetting)
 
 	// WebSocket endpoints.
 	s.App.Use("/ws", func(c *fiber.Ctx) error {
