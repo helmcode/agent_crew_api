@@ -1,7 +1,9 @@
 package api
 
 import (
+	"context"
 	"log/slog"
+	"sync"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
@@ -17,6 +19,11 @@ type Server struct {
 	App     *fiber.App
 	db      *gorm.DB
 	runtime runtime.AgentRuntime
+
+	// relays tracks active NATS relay goroutines per team ID.
+	// The cancel function stops the relay when the team is stopped.
+	relaysMu sync.Mutex
+	relays   map[string]context.CancelFunc
 }
 
 // NewServer creates a Fiber app with middleware and registers all routes.
@@ -40,6 +47,7 @@ func NewServer(db *gorm.DB, rt runtime.AgentRuntime) *Server {
 		App:     app,
 		db:      db,
 		runtime: rt,
+		relays:  make(map[string]context.CancelFunc),
 	}
 
 	s.registerRoutes()

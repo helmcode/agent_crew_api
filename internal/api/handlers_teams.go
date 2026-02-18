@@ -257,6 +257,10 @@ func (s *Server) deployTeamAsync(team models.Team) {
 
 	s.db.Model(&team).Update("status", models.TeamStatusRunning)
 	slog.Info("team deployed successfully", "team", team.Name)
+
+	// Start relay goroutine: subscribes to team NATS and saves agent
+	// responses as TaskLogs so StreamActivity WebSocket delivers them to UI.
+	s.startTeamRelay(team.ID, team.Name)
 }
 
 // loadSettingsEnv reads known settings from the database and returns them as a
@@ -303,6 +307,9 @@ func (s *Server) StopTeam(c *fiber.Ctx) error {
 			"container_status": models.ContainerStatusStopped,
 		})
 	}
+
+	// Stop the relay goroutine for this team.
+	s.stopTeamRelay(team.ID)
 
 	s.db.Model(&team).Update("status", models.TeamStatusStopped)
 	team.Status = models.TeamStatusStopped
