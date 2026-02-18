@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
 	"time"
@@ -68,24 +69,56 @@ func (s *Server) SendChat(c *fiber.Ctx) error {
 // publishToTeamNATS connects to the team's NATS, publishes a user_message to
 // the leader channel, and disconnects. The connection is short-lived on purpose
 // to avoid managing per-team NATS connections in the API server.
+// It retries up to 3 times to handle cases where the NATS container was just
+// recreated (e.g. after port binding fix).
 func (s *Server) publishToTeamNATS(teamName, message string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	natsURL, err := s.runtime.GetNATSConnectURL(ctx, teamName)
 	if err != nil {
-		return err
+		return fmt.Errorf("resolving NATS URL: %w", err)
 	}
 
 	// Build NATS connection options.
-	opts := []nats.Option{nats.Name("agentcrew-api")}
-	if token := os.Getenv("NATS_AUTH_TOKEN"); token != "" {
+	token := os.Getenv("NATS_AUTH_TOKEN")
+	opts := []nats.Option{
+		nats.Name("agentcrew-api"),
+		nats.Timeout(5 * time.Second),
+	}
+	if token != "" {
 		opts = append(opts, nats.Token(token))
 	}
 
-	nc, err := nats.Connect(natsURL, opts...)
+	slog.Info("connecting to team NATS",
+		"team", teamName,
+		"url", natsURL,
+		"auth", token != "",
+	)
+
+	// Retry connection up to 3 times (NATS may have just been recreated).
+	var nc *nats.Conn
+	for attempt := 1; attempt <= 3; attempt++ {
+		nc, err = nats.Connect(natsURL, opts...)
+		if err == nil {
+			break
+		}
+		slog.Warn("NATS connect attempt failed",
+			"team", teamName,
+			"url", natsURL,
+			"attempt", attempt,
+			"error", err,
+		)
+		if attempt < 3 {
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("context cancelled waiting for NATS: %w", ctx.Err())
+			case <-time.After(time.Duration(attempt) * time.Second):
+			}
+		}
+	}
 	if err != nil {
-		return err
+		return fmt.Errorf("connecting to NATS at %s (auth=%t): %w", natsURL, token != "", err)
 	}
 	defer nc.Close()
 
@@ -94,24 +127,30 @@ func (s *Server) publishToTeamNATS(teamName, message string) error {
 		Content: message,
 	})
 	if err != nil {
-		return err
+		return fmt.Errorf("building protocol message: %w", err)
 	}
 
 	data, err := json.Marshal(msg)
 	if err != nil {
-		return err
+		return fmt.Errorf("marshaling message: %w", err)
 	}
 
 	// Publish to the leader channel.
 	subject, err := protocol.TeamLeaderChannel(teamName)
 	if err != nil {
-		return err
+		return fmt.Errorf("building leader channel: %w", err)
 	}
 
 	if err := nc.Publish(subject, data); err != nil {
-		return err
+		return fmt.Errorf("publishing to %s: %w", subject, err)
 	}
-	return nc.Flush()
+
+	if err := nc.Flush(); err != nil {
+		return fmt.Errorf("flushing NATS: %w", err)
+	}
+
+	slog.Info("chat message published to NATS", "team", teamName, "subject", subject)
+	return nil
 }
 
 // GetMessages returns task logs for a team.

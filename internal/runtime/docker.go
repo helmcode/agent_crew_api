@@ -132,7 +132,8 @@ func (d *DockerRuntime) GetNATSURL(teamName string) string {
 
 // GetNATSConnectURL returns a host-accessible NATS URL by inspecting the container's
 // mapped port. This allows the API server to connect to the team's NATS from outside
-// the Docker network.
+// the Docker network. When the API itself runs inside a Docker container,
+// it uses host.docker.internal instead of 127.0.0.1.
 func (d *DockerRuntime) GetNATSConnectURL(ctx context.Context, teamName string) (string, error) {
 	containerName := natsContainerName(sanitizeName(teamName))
 	info, err := d.client.ContainerInspect(ctx, containerName)
@@ -146,7 +147,20 @@ func (d *DockerRuntime) GetNATSConnectURL(ctx context.Context, teamName string) 
 	}
 
 	hostPort := bindings[0].HostPort
-	return "nats://127.0.0.1:" + hostPort, nil
+	host := natsHostAddress()
+	url := "nats://" + host + ":" + hostPort
+	slog.Info("resolved team NATS connect URL", "team", teamName, "container", containerName, "url", url)
+	return url, nil
+}
+
+// natsHostAddress returns the address to reach Docker host-mapped ports.
+// Inside a container it uses host.docker.internal; on the host it uses 127.0.0.1.
+func natsHostAddress() string {
+	// /.dockerenv exists inside Docker containers.
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		return "host.docker.internal"
+	}
+	return "127.0.0.1"
 }
 
 // DockerRuntime implements AgentRuntime using the Docker Engine API.
