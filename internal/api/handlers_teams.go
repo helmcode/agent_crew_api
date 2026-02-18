@@ -212,6 +212,20 @@ func (s *Server) deployTeamAsync(team models.Team) {
 	for i := range team.Agents {
 		agent := &team.Agents[i]
 
+		// Set up per-agent workspace folder with CLAUDE.md before deploying.
+		if team.WorkspacePath != "" {
+			info := runtime.AgentWorkspaceInfo{
+				Name:         agent.Name,
+				Role:         agent.Role,
+				Specialty:    agent.Specialty,
+				SystemPrompt: agent.SystemPrompt,
+				Skills:       json.RawMessage(agent.Skills),
+			}
+			if _, err := runtime.SetupAgentWorkspace(team.WorkspacePath, info); err != nil {
+				slog.Error("failed to setup agent workspace", "agent", agent.Name, "error", err)
+			}
+		}
+
 		var perms json.RawMessage
 		if len(agent.Permissions) > 0 {
 			perms = json.RawMessage(agent.Permissions)
