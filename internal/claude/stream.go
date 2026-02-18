@@ -9,10 +9,28 @@ import (
 
 // StreamEvent represents a single event from Claude Code's stream-json output.
 type StreamEvent struct {
-	Type    string          `json:"type"`              // assistant, tool_use, tool_result, result, error, system
-	Message json.RawMessage `json:"message,omitempty"` // The full message content
-	Name    string          `json:"name,omitempty"`    // Tool name (for tool_use events)
-	Input   json.RawMessage `json:"input,omitempty"`   // Tool input (for tool_use events)
+	Type      string          `json:"type"`                // assistant, tool_use, tool_result, result, error, system
+	Message   json.RawMessage `json:"message,omitempty"`   // The full message content
+	Name      string          `json:"name,omitempty"`      // Tool name (for tool_use events)
+	Input     json.RawMessage `json:"input,omitempty"`     // Tool input (for tool_use events)
+	IsError   bool            `json:"is_error,omitempty"`  // True when result is an error (billing, auth, etc.)
+	Result    string          `json:"result,omitempty"`    // Human-readable result/error text
+	ErrorCode string          `json:"error,omitempty"`     // Machine-readable error code (e.g. "billing_error")
+}
+
+// FriendlyError returns a user-facing message for known Claude CLI error codes.
+func (e *StreamEvent) FriendlyError() string {
+	switch e.ErrorCode {
+	case "billing_error":
+		return "Your API key has insufficient credits. Please add credits or update your key in Settings."
+	case "authentication_error":
+		return "API key is invalid or expired. Please update it in Settings."
+	default:
+		if e.Result != "" {
+			return "Claude returned an error: " + e.Result
+		}
+		return "Claude returned an unknown error (code: " + e.ErrorCode + ")"
+	}
 }
 
 // ToolUseInput holds the parsed fields from a tool_use event's input.

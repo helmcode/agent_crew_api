@@ -273,6 +273,29 @@ func (b *Bridge) processEvent(event *claude.StreamEvent, currentResult *string) 
 		}
 
 	case "result":
+		// Check if Claude returned an error (billing, auth, etc.).
+		if event.IsError {
+			friendlyMsg := event.FriendlyError()
+			slog.Error("claude result is an error",
+				"agent", b.config.AgentName,
+				"error_code", event.ErrorCode,
+				"result", event.Result,
+				"friendly", friendlyMsg,
+			)
+
+			// Publish the error as a failed task result so it reaches the
+			// Activity panel via TaskLog → WebSocket.
+			leaderSubject, err := protocol.TeamLeaderChannel(b.config.TeamName)
+			if err != nil {
+				slog.Error("failed to build leader channel", "error", err)
+				return
+			}
+			b.publishTaskResult(leaderSubject, "", "failed", "", friendlyMsg)
+			b.publishStatus("error", friendlyMsg)
+			*currentResult = ""
+			return
+		}
+
 		// Final result from Claude — extract text and publish.
 		var msgContent struct {
 			Type string `json:"type"`
@@ -280,6 +303,10 @@ func (b *Bridge) processEvent(event *claude.StreamEvent, currentResult *string) 
 		}
 		if err := json.Unmarshal(event.Message, &msgContent); err == nil {
 			*currentResult = msgContent.Text
+		}
+		// Also check Result field (stream-json sometimes uses it directly).
+		if *currentResult == "" && event.Result != "" {
+			*currentResult = event.Result
 		}
 
 		// Publish the result to the leader channel.
