@@ -268,13 +268,26 @@ func (s *Server) deployTeamAsync(team models.Team) {
 func (s *Server) loadSettingsEnv() map[string]string {
 	env := make(map[string]string)
 
-	// Keys that should be forwarded to agent containers.
+	// Primary keys forwarded directly to agent containers.
 	keys := []string{"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"}
-
 	for _, key := range keys {
 		var setting models.Settings
 		if err := s.db.Where("key = ?", key).First(&setting).Error; err == nil && setting.Value != "" {
 			env[key] = setting.Value
+		}
+	}
+
+	// Aliases: map alternative key names users may have used in Settings.
+	aliases := map[string]string{
+		"ANTHROPIC_AUTH_TOKEN": "CLAUDE_CODE_OAUTH_TOKEN",
+	}
+	for alias, target := range aliases {
+		if env[target] != "" {
+			continue // already set from primary key
+		}
+		var setting models.Settings
+		if err := s.db.Where("key = ?", alias).First(&setting).Error; err == nil && setting.Value != "" {
+			env[target] = setting.Value
 		}
 	}
 
