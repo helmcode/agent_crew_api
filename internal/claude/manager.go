@@ -257,16 +257,16 @@ func (m *Manager) IsRunning() bool {
 	return m.Status() == "running"
 }
 
-// buildEnv constructs the minimal environment for the claude process.
+// buildEnv inherits the full parent environment and overrides specific vars.
+// A minimal env breaks Node.js (missing NODE_VERSION, npm paths, etc.).
 func (m *Manager) buildEnv() []string {
-	env := []string{
-		"CLAUDE_HEADLESS=1",
-		"HOME=" + os.Getenv("HOME"),
-		"PATH=" + os.Getenv("PATH"),
-		"ANTHROPIC_API_KEY=" + os.Getenv("ANTHROPIC_API_KEY"),
+	env := os.Environ()
+	env = append(env, "CLAUDE_HEADLESS=1")
+	if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" {
+		env = append(env, "ANTHROPIC_API_KEY="+key)
 	}
-	if oauthToken := os.Getenv("CLAUDE_CODE_OAUTH_TOKEN"); oauthToken != "" {
-		env = append(env, "CLAUDE_CODE_OAUTH_TOKEN="+oauthToken)
+	if token := os.Getenv("CLAUDE_CODE_OAUTH_TOKEN"); token != "" {
+		env = append(env, "CLAUDE_CODE_OAUTH_TOKEN="+token)
 	}
 	return env
 }
