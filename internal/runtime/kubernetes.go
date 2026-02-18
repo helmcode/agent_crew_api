@@ -317,6 +317,11 @@ func (k *K8sRuntime) DeployAgent(ctx context.Context, config AgentConfig) (*Agen
 		{Name: "ANTHROPIC_API_KEY_FILE", Value: "/run/secrets/anthropic_api_key"},
 	}
 
+	// Set WORKSPACE_PATH env var when a host workspace is mounted.
+	if config.WorkspacePath != "" {
+		env = append(env, corev1.EnvVar{Name: "WORKSPACE_PATH", Value: "/workspace"})
+	}
+
 	// Pass OAuth token if available (for Claude Code OAuth authentication).
 	oauthToken := config.Env["CLAUDE_CODE_OAUTH_TOKEN"]
 	if oauthToken == "" {
@@ -343,6 +348,70 @@ func (k *K8sRuntime) DeployAgent(ctx context.Context, config AgentConfig) (*Agen
 		}
 	}
 
+	// Determine workspace volume: use hostPath if workspace_path is provided,
+	// otherwise fall back to the shared PVC.
+	var workspaceVolume corev1.Volume
+	volumes := []corev1.Volume{}
+	volumeMounts := []corev1.VolumeMount{
+		{Name: "workspace", MountPath: "/workspace"},
+		{Name: "api-key", MountPath: "/run/secrets", ReadOnly: true},
+	}
+
+	if config.WorkspacePath != "" {
+		hostPathType := corev1.HostPathDirectory
+		workspaceVolume = corev1.Volume{
+			Name: "workspace",
+			VolumeSource: corev1.VolumeSource{
+				HostPath: &corev1.HostPathVolumeSource{
+					Path: config.WorkspacePath,
+					Type: &hostPathType,
+				},
+			},
+		}
+
+		// Mount the per-agent config directory as ~/.claude/ so Claude Code
+		// CLI picks up the agent-specific CLAUDE.md automatically.
+		agentConfigDir := AgentConfigDir(config.WorkspacePath, config.Name)
+		hostPathDirOrCreate := corev1.HostPathDirectoryOrCreate
+		volumes = append(volumes, corev1.Volume{
+			Name: "agent-config",
+			VolumeSource: corev1.VolumeSource{
+				HostPath: &corev1.HostPathVolumeSource{
+					Path: agentConfigDir,
+					Type: &hostPathDirOrCreate,
+				},
+			},
+		})
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name:      "agent-config",
+			MountPath: "/home/agentcrew/.claude",
+		})
+	} else {
+		workspaceVolume = corev1.Volume{
+			Name: "workspace",
+			VolumeSource: corev1.VolumeSource{
+				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+					ClaimName: workspacePVCName(),
+				},
+			},
+		}
+	}
+
+	// Build final volumes list: workspace + agent-config (if any) + api-key.
+	allVolumes := []corev1.Volume{workspaceVolume}
+	allVolumes = append(allVolumes, volumes...)
+	allVolumes = append(allVolumes, corev1.Volume{
+		Name: "api-key",
+		VolumeSource: corev1.VolumeSource{
+			Secret: &corev1.SecretVolumeSource{
+				SecretName: apiKeySecretName(),
+				Items: []corev1.KeyToPath{
+					{Key: "api-key", Path: "anthropic_api_key"},
+				},
+			},
+		},
+	})
+
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      podName,
@@ -357,37 +426,14 @@ func (k *K8sRuntime) DeployAgent(ctx context.Context, config AgentConfig) (*Agen
 			RestartPolicy: corev1.RestartPolicyNever,
 			Containers: []corev1.Container{
 				{
-					Name:      "agent",
-					Image:     img,
-					Env:       env,
-					Resources: resources,
-					VolumeMounts: []corev1.VolumeMount{
-						{Name: "workspace", MountPath: "/workspace"},
-						{Name: "api-key", MountPath: "/run/secrets", ReadOnly: true},
-					},
+					Name:         "agent",
+					Image:        img,
+					Env:          env,
+					Resources:    resources,
+					VolumeMounts: volumeMounts,
 				},
 			},
-			Volumes: []corev1.Volume{
-				{
-					Name: "workspace",
-					VolumeSource: corev1.VolumeSource{
-						PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-							ClaimName: workspacePVCName(),
-						},
-					},
-				},
-				{
-					Name: "api-key",
-					VolumeSource: corev1.VolumeSource{
-						Secret: &corev1.SecretVolumeSource{
-							SecretName: apiKeySecretName(),
-							Items: []corev1.KeyToPath{
-								{Key: "api-key", Path: "anthropic_api_key"},
-							},
-						},
-					},
-				},
-			},
+			Volumes: allVolumes,
 		},
 	}
 

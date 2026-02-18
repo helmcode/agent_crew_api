@@ -321,6 +321,17 @@ func (d *DockerRuntime) DeployAgent(ctx context.Context, config AgentConfig) (*A
 		img = d.agentImage
 	}
 
+	// Validate workspace path exists on the host before attempting to mount it.
+	if config.WorkspacePath != "" {
+		info, err := os.Stat(config.WorkspacePath)
+		if err != nil {
+			return nil, fmt.Errorf("workspace path %q does not exist: %w", config.WorkspacePath, err)
+		}
+		if !info.IsDir() {
+			return nil, fmt.Errorf("workspace path %q is not a directory", config.WorkspacePath)
+		}
+	}
+
 	containerName := agentContainerName(config.TeamName, config.Name)
 	netName := teamNetworkName(config.TeamName)
 	volName := teamVolumeName(config.TeamName)
@@ -382,6 +393,11 @@ func (d *DockerRuntime) DeployAgent(ctx context.Context, config AgentConfig) (*A
 		env = append(env, "NATS_AUTH_TOKEN="+natsToken)
 	}
 
+	// Set WORKSPACE_PATH env var when a host workspace is mounted.
+	if config.WorkspacePath != "" {
+		env = append(env, "WORKSPACE_PATH=/workspace")
+	}
+
 	// Resource limits.
 	resources := container.Resources{}
 	if config.Resources.Memory != "" {
@@ -389,6 +405,19 @@ func (d *DockerRuntime) DeployAgent(ctx context.Context, config AgentConfig) (*A
 	}
 	if config.Resources.CPU != "" {
 		resources.NanoCPUs = parseCPULimit(config.Resources.CPU)
+	}
+
+	// Determine workspace bind: use host path (bind mount) if provided,
+	// otherwise fall back to the shared Docker volume.
+	binds := []string{}
+	if config.WorkspacePath != "" {
+		binds = append(binds, config.WorkspacePath+":/workspace")
+		// Mount the per-agent config directory as ~/.claude/ so Claude Code
+		// CLI picks up the agent-specific CLAUDE.md automatically.
+		agentConfigDir := AgentConfigDir(config.WorkspacePath, config.Name)
+		binds = append(binds, agentConfigDir+":/home/agentcrew/.claude")
+	} else {
+		binds = append(binds, volName+":/workspace")
 	}
 
 	resp, err := d.client.ContainerCreate(ctx,
@@ -402,9 +431,7 @@ func (d *DockerRuntime) DeployAgent(ctx context.Context, config AgentConfig) (*A
 			},
 		},
 		&container.HostConfig{
-			Binds: []string{
-				volName + ":/workspace",
-			},
+			Binds:     binds,
 			Resources: resources,
 		},
 		&network.NetworkingConfig{
