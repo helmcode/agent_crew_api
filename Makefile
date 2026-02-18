@@ -5,6 +5,9 @@
 BIN_DIR := bin
 IMAGE_TAG ?= latest
 
+# Detect Docker daemon architecture for cross-compilation.
+DOCKER_ARCH ?= $(shell docker info --format '{{.Architecture}}' 2>/dev/null | sed 's/aarch64/arm64/' | sed 's/x86_64/amd64/')
+
 # ---------- Go builds ----------
 
 build-api:
@@ -12,6 +15,9 @@ build-api:
 
 build-sidecar:
 	go build -o $(BIN_DIR)/sidecar ./cmd/sidecar
+
+build-sidecar-linux:
+	GOOS=linux GOARCH=$(DOCKER_ARCH) go build -o $(BIN_DIR)/sidecar-linux ./cmd/sidecar
 
 build-all: build-api build-sidecar
 
@@ -28,10 +34,10 @@ run-api: build-api
 build-api-image:
 	docker build -t agentcrew-api:$(IMAGE_TAG) -f build/api/Dockerfile .
 
-build-agent-image: build-sidecar
-	cp $(BIN_DIR)/sidecar build/agent/sidecar
+build-agent-image: build-sidecar-linux
+	cp $(BIN_DIR)/sidecar-linux build/agent/sidecar
 	docker build -t agentcrew-agent:$(IMAGE_TAG) -f build/agent/Dockerfile build/agent
-	rm -f build/agent/sidecar
+	rm -f build/agent/sidecar $(BIN_DIR)/sidecar-linux
 
 build-images: build-api-image build-agent-image
 
