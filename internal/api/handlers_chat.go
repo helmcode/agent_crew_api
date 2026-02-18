@@ -1,15 +1,21 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"log/slog"
+	"os"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
+	"github.com/nats-io/nats.go"
 
 	"github.com/helmcode/agent-crew/internal/models"
+	"github.com/helmcode/agent-crew/internal/protocol"
 )
 
-// SendChat sends a user message to the team leader.
+// SendChat sends a user message to the team leader via NATS.
 func (s *Server) SendChat(c *fiber.Ctx) error {
 	teamID := c.Params("id")
 
@@ -31,10 +37,9 @@ func (s *Server) SendChat(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "message is required")
 	}
 
-	// TODO: Publish message to NATS leader channel when NATS client is available.
-	// For now, log it to the task log.
+	// Log to task log for persistence and Activity panel.
 	content, _ := json.Marshal(map[string]string{"content": req.Message})
-	log := models.TaskLog{
+	taskLog := models.TaskLog{
 		ID:          uuid.New().String(),
 		TeamID:      teamID,
 		FromAgent:   "user",
@@ -42,12 +47,71 @@ func (s *Server) SendChat(c *fiber.Ctx) error {
 		MessageType: "user_message",
 		Payload:     models.JSON(content),
 	}
-	s.db.Create(&log)
+	s.db.Create(&taskLog)
+
+	// Publish to NATS leader channel so the agent actually receives the message.
+	sanitizedName := SanitizeName(team.Name)
+	if err := s.publishToTeamNATS(sanitizedName, req.Message); err != nil {
+		slog.Error("failed to publish chat to NATS", "team", team.Name, "error", err)
+		return c.JSON(fiber.Map{
+			"status":  "queued",
+			"message": "Message logged but NATS delivery failed: " + err.Error(),
+		})
+	}
 
 	return c.JSON(fiber.Map{
-		"status":  "queued",
+		"status":  "sent",
 		"message": "Message sent to team leader",
 	})
+}
+
+// publishToTeamNATS connects to the team's NATS, publishes a user_message to
+// the leader channel, and disconnects. The connection is short-lived on purpose
+// to avoid managing per-team NATS connections in the API server.
+func (s *Server) publishToTeamNATS(teamName, message string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	natsURL, err := s.runtime.GetNATSConnectURL(ctx, teamName)
+	if err != nil {
+		return err
+	}
+
+	// Build NATS connection options.
+	opts := []nats.Option{nats.Name("agentcrew-api")}
+	if token := os.Getenv("NATS_AUTH_TOKEN"); token != "" {
+		opts = append(opts, nats.Token(token))
+	}
+
+	nc, err := nats.Connect(natsURL, opts...)
+	if err != nil {
+		return err
+	}
+	defer nc.Close()
+
+	// Build the protocol message.
+	msg, err := protocol.NewMessage("user", "leader", protocol.TypeUserMessage, protocol.UserMessagePayload{
+		Content: message,
+	})
+	if err != nil {
+		return err
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return err
+	}
+
+	// Publish to the leader channel.
+	subject, err := protocol.TeamLeaderChannel(teamName)
+	if err != nil {
+		return err
+	}
+
+	if err := nc.Publish(subject, data); err != nil {
+		return err
+	}
+	return nc.Flush()
 }
 
 // GetMessages returns task logs for a team.

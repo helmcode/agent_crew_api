@@ -80,6 +80,12 @@ func (k *K8sRuntime) GetNATSURL(teamName string) string {
 	return "nats://nats.agentcrew-" + sanitizeName(teamName) + ".svc.cluster.local:4222"
 }
 
+// GetNATSConnectURL returns the in-cluster NATS URL. When the API runs inside the
+// cluster it can reach NATS via the service DNS name directly.
+func (k *K8sRuntime) GetNATSConnectURL(_ context.Context, teamName string) (string, error) {
+	return k.GetNATSURL(teamName), nil
+}
+
 // DeployInfra creates the namespace, workspace PVC, and optionally NATS deployment+service.
 func (k *K8sRuntime) DeployInfra(ctx context.Context, config InfraConfig) error {
 	config.TeamName = sanitizeName(config.TeamName)
@@ -309,6 +315,15 @@ func (k *K8sRuntime) DeployAgent(ctx context.Context, config AgentConfig) (*Agen
 		{Name: "AGENT_ROLE", Value: config.Role},
 		{Name: "AGENT_PERMISSIONS", Value: string(permJSON)},
 		{Name: "ANTHROPIC_API_KEY_FILE", Value: "/run/secrets/anthropic_api_key"},
+	}
+
+	// Pass OAuth token if available (for Claude Code OAuth authentication).
+	oauthToken := config.Env["CLAUDE_CODE_OAUTH_TOKEN"]
+	if oauthToken == "" {
+		oauthToken = os.Getenv("CLAUDE_CODE_OAUTH_TOKEN")
+	}
+	if oauthToken != "" {
+		env = append(env, corev1.EnvVar{Name: "CLAUDE_CODE_OAUTH_TOKEN", Value: oauthToken})
 	}
 
 	// Build resource requirements.

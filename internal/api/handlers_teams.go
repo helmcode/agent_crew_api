@@ -265,7 +265,7 @@ func (s *Server) loadSettingsEnv() map[string]string {
 	env := make(map[string]string)
 
 	// Keys that should be forwarded to agent containers.
-	keys := []string{"ANTHROPIC_API_KEY"}
+	keys := []string{"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"}
 
 	for _, key := range keys {
 		var setting models.Settings

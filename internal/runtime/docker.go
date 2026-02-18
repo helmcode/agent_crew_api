@@ -125,9 +125,28 @@ func (d *DockerRuntime) pullImageIfNeeded(ctx context.Context, img string) error
 	return nil
 }
 
-// GetNATSURL returns the NATS URL for a team in Docker runtime.
+// GetNATSURL returns the NATS URL for a team in Docker runtime (internal container network).
 func (d *DockerRuntime) GetNATSURL(teamName string) string {
 	return "nats://team-" + sanitizeName(teamName) + "-nats:4222"
+}
+
+// GetNATSConnectURL returns a host-accessible NATS URL by inspecting the container's
+// mapped port. This allows the API server to connect to the team's NATS from outside
+// the Docker network.
+func (d *DockerRuntime) GetNATSConnectURL(ctx context.Context, teamName string) (string, error) {
+	containerName := natsContainerName(sanitizeName(teamName))
+	info, err := d.client.ContainerInspect(ctx, containerName)
+	if err != nil {
+		return "", fmt.Errorf("inspecting nats container %s: %w", containerName, err)
+	}
+
+	bindings, ok := info.NetworkSettings.Ports["4222/tcp"]
+	if !ok || len(bindings) == 0 {
+		return "", fmt.Errorf("nats container %s has no port binding for 4222/tcp", containerName)
+	}
+
+	hostPort := bindings[0].HostPort
+	return "nats://127.0.0.1:" + hostPort, nil
 }
 
 // DockerRuntime implements AgentRuntime using the Docker Engine API.
@@ -244,7 +263,13 @@ func (d *DockerRuntime) startNATS(ctx context.Context, teamName, netName string)
 				LabelRole: "nats",
 			},
 		},
-		&container.HostConfig{},
+		&container.HostConfig{
+			PortBindings: nat.PortMap{
+				"4222/tcp": []nat.PortBinding{
+					{HostIP: "127.0.0.1", HostPort: "0"}, // random available port
+				},
+			},
+		},
 		&network.NetworkingConfig{
 			EndpointsConfig: map[string]*network.EndpointSettings{
 				netName: {},
@@ -307,6 +332,15 @@ func (d *DockerRuntime) DeployAgent(ctx context.Context, config AgentConfig) (*A
 		"AGENT_ROLE=" + config.Role,
 		"AGENT_PERMISSIONS=" + string(permJSON),
 		"ANTHROPIC_API_KEY=" + apiKey,
+	}
+
+	// Pass OAuth token if available (for Claude Code OAuth authentication).
+	oauthToken := config.Env["CLAUDE_CODE_OAUTH_TOKEN"]
+	if oauthToken == "" {
+		oauthToken = os.Getenv("CLAUDE_CODE_OAUTH_TOKEN")
+	}
+	if oauthToken != "" {
+		env = append(env, "CLAUDE_CODE_OAUTH_TOKEN="+oauthToken)
 	}
 
 	// Resource limits.

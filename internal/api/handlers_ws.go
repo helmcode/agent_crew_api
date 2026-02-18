@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"time"
@@ -108,7 +109,7 @@ func (s *Server) StreamActivity(c *websocket.Conn) {
 			query.Find(&logs)
 
 			for _, log := range logs {
-				data, _ := log.Payload.MarshalJSON()
+				data, _ := json.Marshal(log)
 				if err := c.WriteMessage(websocket.TextMessage, data); err != nil {
 					return
 				}
