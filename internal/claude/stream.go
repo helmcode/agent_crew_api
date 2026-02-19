@@ -16,6 +16,7 @@ type StreamEvent struct {
 	IsError   bool            `json:"is_error,omitempty"`  // True when result is an error (billing, auth, etc.)
 	Result    string          `json:"result,omitempty"`    // Human-readable result/error text
 	ErrorCode string          `json:"error,omitempty"`     // Machine-readable error code (e.g. "billing_error")
+	SessionID string          `json:"session_id,omitempty"` // Session ID for conversation continuity (in result events)
 }
 
 // FriendlyError returns a user-facing message for known Claude CLI error codes.
@@ -85,12 +86,14 @@ func FormatToolResult(output string, isError bool) string {
 }
 
 // ParseStreamOutput reads lines from r and sends parsed events to the channel.
-// Returns when the reader is exhausted (e.g., process stdout pipe closes).
+// Returns the last session_id seen in result events (empty if none found).
 // Uses non-blocking sends to prevent goroutine leaks if the channel buffer is full.
-func ParseStreamOutput(r io.Reader, ch chan<- StreamEvent) {
+func ParseStreamOutput(r io.Reader, ch chan<- StreamEvent) string {
 	scanner := bufio.NewScanner(r)
 	// Allow large lines (Claude can produce verbose JSON).
 	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
+
+	var lastSessionID string
 
 	for scanner.Scan() {
 		line := scanner.Bytes()
@@ -104,6 +107,11 @@ func ParseStreamOutput(r io.Reader, ch chan<- StreamEvent) {
 			continue
 		}
 
+		// Capture the session_id from result events for conversation continuity.
+		if event.SessionID != "" {
+			lastSessionID = event.SessionID
+		}
+
 		select {
 		case ch <- *event:
 		default:
@@ -114,4 +122,6 @@ func ParseStreamOutput(r io.Reader, ch chan<- StreamEvent) {
 	if err := scanner.Err(); err != nil {
 		slog.Error("error reading stream", "error", err)
 	}
+
+	return lastSessionID
 }

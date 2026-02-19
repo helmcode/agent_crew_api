@@ -143,13 +143,13 @@ func TestParseStreamOutput(t *testing.T) {
 		`{"type":"assistant","message":{"type":"text","text":"Hello"}}`,
 		``,
 		`{"type":"tool_use","name":"Bash","input":{"command":"ls"}}`,
-		`{"type":"result","message":{"type":"text","text":"Done"}}`,
+		`{"type":"result","message":{"type":"text","text":"Done"},"session_id":"sess-abc123"}`,
 	}, "\n")
 
 	ch := make(chan StreamEvent, 10)
 	reader := bytes.NewReader([]byte(lines))
 
-	ParseStreamOutput(reader, ch)
+	sessionID := ParseStreamOutput(reader, ch)
 
 	events := make([]StreamEvent, 0)
 	for e := range ch {
@@ -170,6 +170,9 @@ func TestParseStreamOutput(t *testing.T) {
 	}
 	if events[2].Type != "result" {
 		t.Errorf("event 2: got type %q", events[2].Type)
+	}
+	if sessionID != "sess-abc123" {
+		t.Errorf("session_id: got %q, want %q", sessionID, "sess-abc123")
 	}
 }
 

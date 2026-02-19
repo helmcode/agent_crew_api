@@ -36,7 +36,7 @@ func TestParseStreamOutput_UnparseableLines(t *testing.T) {
 
 	// ParseStreamOutput does not close the channel, so run it and then
 	// close manually (in production, monitor() closes the channel).
-	ParseStreamOutput(reader, ch)
+	sessionID := ParseStreamOutput(reader, ch)
 	close(ch)
 
 	var events []StreamEvent
@@ -50,6 +50,10 @@ func TestParseStreamOutput_UnparseableLines(t *testing.T) {
 	}
 	if events[0].Type != "assistant" {
 		t.Errorf("event type: got %q, want 'assistant'", events[0].Type)
+	}
+	// No result event, so no session_id.
+	if sessionID != "" {
+		t.Errorf("session_id: got %q, want empty", sessionID)
 	}
 }
 

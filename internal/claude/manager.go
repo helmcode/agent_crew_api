@@ -178,7 +178,7 @@ func (m *Manager) SendInput(input string) error {
 	// Parse stream output in current goroutine — SendInput blocks until done.
 	// This is intentional: the bridge calls SendInput from handleUserMessage
 	// and the events channel delivers events to forwardEvents.
-	ParseStreamOutput(stdout, m.events)
+	resultSessionID := ParseStreamOutput(stdout, m.events)
 
 	// Wait for process to finish.
 	if err := cmd.Wait(); err != nil {
@@ -207,10 +207,20 @@ func (m *Manager) SendInput(input string) error {
 		slog.Info("claude stderr output", "stderr", truncate(stderrStr, 2000))
 	}
 
-	// Try to capture session_id from the last result event.
-	// Note: stream-json output may include session_id in the result event.
-	// If we didn't have a session yet, the first run will have created one.
-	// The session_id is typically in the "result" type event.
+	// Capture session_id from the stream result event. This ensures conversation
+	// continuity even when the manager started without a system prompt (no
+	// initial session_id). It also handles session rotation by Claude CLI.
+	if resultSessionID != "" {
+		m.mu.Lock()
+		if m.sessionID != resultSessionID {
+			slog.Info("session_id updated from stream result",
+				"old_session_id", m.sessionID,
+				"new_session_id", resultSessionID,
+			)
+			m.sessionID = resultSessionID
+		}
+		m.mu.Unlock()
+	}
 
 	return nil
 }
