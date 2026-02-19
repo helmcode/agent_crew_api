@@ -207,19 +207,38 @@ func (s *Server) deployTeamAsync(team models.Team) {
 
 	natsURL := s.runtime.GetNATSURL(team.Name)
 
+	// Build team member list for the leader's CLAUDE.md.
+	var teamMembers []runtime.TeamMemberInfo
+	for _, a := range team.Agents {
+		teamMembers = append(teamMembers, runtime.TeamMemberInfo{
+			Name:      SanitizeName(a.Name),
+			Role:      a.Role,
+			Specialty: a.Specialty,
+		})
+	}
+
 	// Deploy each agent.
 	var failedAgents int
 	for i := range team.Agents {
 		agent := &team.Agents[i]
 
 		// Set up per-agent workspace folder with CLAUDE.md before deploying.
+		// First sync user's .claude/ config files, then generate agent-specific CLAUDE.md.
 		if team.WorkspacePath != "" {
+			if err := runtime.SyncUserClaudeConfig(team.WorkspacePath, agent.Name); err != nil {
+				slog.Warn("failed to sync user .claude config", "agent", agent.Name, "error", err)
+			}
+
 			info := runtime.AgentWorkspaceInfo{
 				Name:         agent.Name,
 				Role:         agent.Role,
 				Specialty:    agent.Specialty,
 				SystemPrompt: agent.SystemPrompt,
 				Skills:       json.RawMessage(agent.Skills),
+			}
+			// Give the leader the full team roster so it can delegate tasks.
+			if agent.Role == models.AgentRoleLeader {
+				info.TeamMembers = teamMembers
 			}
 			if _, err := runtime.SetupAgentWorkspace(team.WorkspacePath, info); err != nil {
 				slog.Error("failed to setup agent workspace", "agent", agent.Name, "error", err)

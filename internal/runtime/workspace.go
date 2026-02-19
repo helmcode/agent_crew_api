@@ -3,10 +3,19 @@ package runtime
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 )
+
+// TeamMemberInfo describes a teammate for inclusion in the leader's CLAUDE.md.
+type TeamMemberInfo struct {
+	Name      string
+	Role      string
+	Specialty string
+}
 
 // AgentWorkspaceInfo holds the metadata needed to generate an agent's CLAUDE.md.
 type AgentWorkspaceInfo struct {
@@ -15,6 +24,7 @@ type AgentWorkspaceInfo struct {
 	Specialty    string
 	SystemPrompt string
 	Skills       json.RawMessage
+	TeamMembers  []TeamMemberInfo
 }
 
 // SetupAgentWorkspace creates the per-agent directory under
@@ -45,6 +55,92 @@ func AgentConfigDir(workspacePath, agentName string) string {
 	return filepath.Join(workspacePath, ".agentcrew", sanitizeName(agentName))
 }
 
+// SyncUserClaudeConfig copies files from the user's {workspacePath}/.claude/
+// directory into the agent's config directory ({workspacePath}/.agentcrew/{agentName}/).
+// This allows users to provide settings.json, commands/, and other Claude Code
+// config files that will be available to each agent as ~/.claude/ inside the container.
+// Files are copied before SetupAgentWorkspace writes the generated CLAUDE.md,
+// so the generated CLAUDE.md takes precedence over any user-provided one.
+func SyncUserClaudeConfig(workspacePath, agentName string) error {
+	userClaudeDir := filepath.Join(workspacePath, ".claude")
+
+	info, err := os.Stat(userClaudeDir)
+	if err != nil || !info.IsDir() {
+		// No .claude directory in workspace — nothing to sync.
+		return nil
+	}
+
+	agentDir := AgentConfigDir(workspacePath, agentName)
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		return fmt.Errorf("creating agent config dir: %w", err)
+	}
+
+	return copyDir(userClaudeDir, agentDir)
+}
+
+// copyDir recursively copies the contents of src into dst.
+// Existing files in dst are overwritten. The CLAUDE.md file is skipped
+// because SetupAgentWorkspace generates an agent-specific one.
+func copyDir(src, dst string) error {
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return fmt.Errorf("reading dir %s: %w", src, err)
+	}
+
+	for _, entry := range entries {
+		srcPath := filepath.Join(src, entry.Name())
+		dstPath := filepath.Join(dst, entry.Name())
+
+		if entry.IsDir() {
+			if err := os.MkdirAll(dstPath, 0755); err != nil {
+				return fmt.Errorf("creating dir %s: %w", dstPath, err)
+			}
+			if err := copyDir(srcPath, dstPath); err != nil {
+				return err
+			}
+			continue
+		}
+
+		// Skip CLAUDE.md — the generated one takes precedence.
+		if strings.EqualFold(entry.Name(), "CLAUDE.md") {
+			slog.Debug("skipping user CLAUDE.md in favor of generated one", "path", srcPath)
+			continue
+		}
+
+		if err := copyFile(srcPath, dstPath); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// copyFile copies a single file from src to dst, preserving permissions.
+func copyFile(src, dst string) error {
+	srcFile, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("opening %s: %w", src, err)
+	}
+	defer srcFile.Close()
+
+	srcInfo, err := srcFile.Stat()
+	if err != nil {
+		return fmt.Errorf("stat %s: %w", src, err)
+	}
+
+	dstFile, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, srcInfo.Mode())
+	if err != nil {
+		return fmt.Errorf("creating %s: %w", dst, err)
+	}
+	defer dstFile.Close()
+
+	if _, err := io.Copy(dstFile, srcFile); err != nil {
+		return fmt.Errorf("copying %s to %s: %w", src, dst, err)
+	}
+
+	return nil
+}
+
 // generateClaudeMD produces the CLAUDE.md content for an agent.
 func generateClaudeMD(agent AgentWorkspaceInfo) string {
 	var b strings.Builder
@@ -72,6 +168,29 @@ func generateClaudeMD(agent AgentWorkspaceInfo) string {
 	if skills != "" {
 		b.WriteString("## Skills\n")
 		b.WriteString(skills + "\n")
+	}
+
+	// For leaders, add team roster and delegation protocol.
+	if agent.Role == "leader" && len(agent.TeamMembers) > 0 {
+		b.WriteString("## Team Members\n\n")
+		b.WriteString("You are the team leader. The following agents are available for task delegation:\n\n")
+		for _, m := range agent.TeamMembers {
+			b.WriteString("- **" + m.Name + "**")
+			if m.Role != "" {
+				b.WriteString(" (role: " + m.Role + ")")
+			}
+			if m.Specialty != "" {
+				b.WriteString(" — " + m.Specialty)
+			}
+			b.WriteString("\n")
+		}
+
+		b.WriteString("\n## Delegation Protocol\n\n")
+		b.WriteString("To delegate tasks to team members, use the following format in your response:\n\n")
+		b.WriteString("```\n[TASK:agent-name]\nYour instruction for the agent here.\n[/TASK]\n```\n\n")
+		b.WriteString("You can delegate to multiple agents in a single response. ")
+		b.WriteString("Use the exact agent name from the Team Members list above. ")
+		b.WriteString("Each agent will execute the task and report the result back to you.\n\n")
 	}
 
 	return b.String()
