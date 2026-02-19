@@ -73,6 +73,46 @@ func TestSyncUserClaudeConfig_NoClaudeDir(t *testing.T) {
 	}
 }
 
+func TestSyncUserClaudeConfig_SkipsSymlinks(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	claudeDir := filepath.Join(tmpDir, ".claude")
+	if err := os.MkdirAll(claudeDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a regular file and a symlink pointing outside the .claude dir.
+	target := filepath.Join(tmpDir, "secret.txt")
+	if err := os.WriteFile(target, []byte("secret"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	symlink := filepath.Join(claudeDir, "evil-link")
+	if err := os.Symlink(target, symlink); err != nil {
+		t.Skip("symlinks not supported on this platform:", err)
+	}
+
+	// Also add a normal file to ensure copying still works.
+	if err := os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte(`{}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := SyncUserClaudeConfig(tmpDir, "agent1"); err != nil {
+		t.Fatalf("SyncUserClaudeConfig: %v", err)
+	}
+
+	agentDir := AgentConfigDir(tmpDir, "agent1")
+
+	// The symlink should NOT have been copied.
+	if _, err := os.Lstat(filepath.Join(agentDir, "evil-link")); !os.IsNotExist(err) {
+		t.Error("symlink should not be copied to agent config dir")
+	}
+
+	// The regular file should have been copied.
+	if _, err := os.Stat(filepath.Join(agentDir, "settings.json")); err != nil {
+		t.Errorf("settings.json should have been copied: %v", err)
+	}
+}
+
 func TestSyncUserClaudeConfig_CopiesFiles(t *testing.T) {
 	tmpDir := t.TempDir()
 

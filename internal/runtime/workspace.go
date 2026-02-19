@@ -81,6 +81,7 @@ func SyncUserClaudeConfig(workspacePath, agentName string) error {
 // copyDir recursively copies the contents of src into dst.
 // Existing files in dst are overwritten. The CLAUDE.md file is skipped
 // because SetupAgentWorkspace generates an agent-specific one.
+// Symlinks are skipped to prevent path-traversal attacks.
 func copyDir(src, dst string) error {
 	entries, err := os.ReadDir(src)
 	if err != nil {
@@ -88,6 +89,12 @@ func copyDir(src, dst string) error {
 	}
 
 	for _, entry := range entries {
+		// Skip symlinks — following them could escape the source directory.
+		if entry.Type()&os.ModeSymlink != 0 {
+			slog.Debug("skipping symlink in .claude dir", "path", filepath.Join(src, entry.Name()))
+			continue
+		}
+
 		srcPath := filepath.Join(src, entry.Name())
 		dstPath := filepath.Join(dst, entry.Name())
 
@@ -128,7 +135,10 @@ func copyFile(src, dst string) error {
 		return fmt.Errorf("stat %s: %w", src, err)
 	}
 
-	dstFile, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, srcInfo.Mode())
+	// Strip setuid/setgid bits — these are not needed for config files and
+	// would be a security risk if the agent container runs as a different user.
+	mode := srcInfo.Mode() &^ (os.ModeSetuid | os.ModeSetgid)
+	dstFile, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
 	if err != nil {
 		return fmt.Errorf("creating %s: %w", dst, err)
 	}
