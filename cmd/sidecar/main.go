@@ -74,10 +74,15 @@ func main() {
 	})
 
 	// 4. Start Claude Manager.
+	workDir := os.Getenv("WORKSPACE_PATH")
+	if workDir == "" {
+		workDir = "/workspace"
+	}
+
 	processCfg := claude.ProcessConfig{
 		SystemPrompt: cfg.Agent.SystemPrompt,
 		AllowedTools: cfg.Agent.Permissions.AllowedTools,
-		WorkDir:      "/workspace",
+		WorkDir:      workDir,
 	}
 
 	manager := claude.NewManager(processCfg)
