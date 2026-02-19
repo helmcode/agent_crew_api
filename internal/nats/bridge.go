@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -13,6 +14,16 @@ import (
 	"github.com/helmcode/agent-crew/internal/permissions"
 	"github.com/helmcode/agent-crew/internal/protocol"
 )
+
+// Delegation represents a task delegation extracted from the leader's Claude output.
+type Delegation struct {
+	TargetAgent string
+	Instruction string
+}
+
+// delegationRe matches task delegation blocks in Claude's output.
+// Format: [TASK:agent-name] instruction [/TASK] (single or multi-line).
+var delegationRe = regexp.MustCompile(`(?s)\[TASK:([a-zA-Z0-9_-]+)\]\s*(.*?)\s*\[/TASK\]`)
 
 // BridgeConfig holds configuration for the NATS-Claude bridge.
 type BridgeConfig struct {
@@ -108,6 +119,8 @@ func (b *Bridge) handleIncoming(msg *protocol.Message) {
 	switch msg.Type {
 	case protocol.TypeTaskAssignment:
 		b.handleTaskAssignment(msg)
+	case protocol.TypeTaskResult:
+		b.handleTaskResult(msg)
 	case protocol.TypeUserMessage:
 		b.handleUserMessage(msg)
 	case protocol.TypeSystemCommand:
@@ -223,6 +236,92 @@ func (b *Bridge) handleContextShare(msg *protocol.Message) {
 	}
 }
 
+// handleTaskResult processes a task result from another agent. The leader uses
+// this to receive worker completions and feed them back to Claude for further
+// processing or summarisation.
+func (b *Bridge) handleTaskResult(msg *protocol.Message) {
+	// Ignore own results to prevent feedback loops.
+	if msg.From == b.config.AgentName {
+		return
+	}
+
+	payload, err := protocol.ParsePayload[protocol.TaskResultPayload](msg)
+	if err != nil {
+		slog.Error("failed to parse task result", "error", err)
+		return
+	}
+
+	slog.Info("received task result from agent",
+		"from", msg.From,
+		"status", payload.Status,
+		"agent", b.config.AgentName,
+	)
+
+	var input string
+	if payload.Status == "failed" {
+		input = fmt.Sprintf("Agent %s reported an error while executing the assigned task:\n%s", msg.From, payload.Error)
+	} else {
+		input = fmt.Sprintf("Agent %s completed the assigned task. Result:\n%s", msg.From, payload.Result)
+	}
+
+	b.publishStatus("working", "processing result from "+msg.From)
+
+	if err := b.manager.SendInput(input); err != nil {
+		slog.Error("failed to forward task result to claude", "error", err)
+	}
+}
+
+// parseDelegations extracts task delegation blocks from the leader's Claude output.
+func parseDelegations(text string) []Delegation {
+	matches := delegationRe.FindAllStringSubmatch(text, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+
+	var delegations []Delegation
+	for _, m := range matches {
+		agent := strings.TrimSpace(m[1])
+		instruction := strings.TrimSpace(m[2])
+		if agent != "" && instruction != "" {
+			delegations = append(delegations, Delegation{
+				TargetAgent: agent,
+				Instruction: instruction,
+			})
+		}
+	}
+	return delegations
+}
+
+// publishTaskAssignment sends a task assignment to a specific agent's NATS channel.
+func (b *Bridge) publishTaskAssignment(targetAgent, instruction string) {
+	payload := protocol.TaskAssignmentPayload{
+		Instruction: instruction,
+	}
+
+	msg, err := protocol.NewMessage(
+		b.config.AgentName,
+		targetAgent,
+		protocol.TypeTaskAssignment,
+		payload,
+	)
+	if err != nil {
+		slog.Error("failed to create task assignment", "target", targetAgent, "error", err)
+		return
+	}
+
+	subject, err := protocol.AgentChannel(b.config.TeamName, targetAgent)
+	if err != nil {
+		slog.Error("failed to build agent channel for delegation", "target", targetAgent, "error", err)
+		return
+	}
+
+	if err := b.client.Publish(subject, msg); err != nil {
+		slog.Error("failed to publish task assignment", "target", targetAgent, "error", err)
+	} else {
+		slog.Info("task assignment published", "target", targetAgent, "subject", subject)
+	}
+}
+
 // forwardEvents reads Claude stdout events and publishes significant ones to NATS.
 func (b *Bridge) forwardEvents(ctx context.Context) {
 	defer b.wg.Done()
@@ -316,6 +415,19 @@ func (b *Bridge) processEvent(event *claude.StreamEvent, currentResult *string) 
 			return
 		}
 		b.publishTaskResult(leaderSubject, "", "completed", *currentResult, "")
+
+		// If this agent is the leader, check for task delegations in the result.
+		if b.config.Role == "leader" && *currentResult != "" {
+			delegations := parseDelegations(*currentResult)
+			for _, d := range delegations {
+				slog.Info("delegating task to agent",
+					"target", d.TargetAgent,
+					"instruction_length", len(d.Instruction),
+				)
+				b.publishTaskAssignment(d.TargetAgent, d.Instruction)
+			}
+		}
+
 		b.publishStatus("idle", "")
 		*currentResult = ""
 
