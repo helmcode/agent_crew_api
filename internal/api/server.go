@@ -11,6 +11,7 @@ import (
 	"github.com/gofiber/fiber/v2/middleware/requestid"
 	"gorm.io/gorm"
 
+	"github.com/helmcode/agent-crew/internal/models"
 	"github.com/helmcode/agent-crew/internal/runtime"
 )
 
@@ -64,4 +65,27 @@ func (s *Server) Listen(addr string) error {
 func (s *Server) Shutdown() error {
 	slog.Info("shutting down HTTP server")
 	return s.App.Shutdown()
+}
+
+// ReconnectRelays restarts NATS relay goroutines for all teams that are
+// currently in "running" status. This must be called at API startup so
+// that teams deployed before a server restart continue to have their
+// agent messages relayed from NATS into the database.
+func (s *Server) ReconnectRelays() {
+	var teams []models.Team
+	if err := s.db.Where("status = ?", models.TeamStatusRunning).Find(&teams).Error; err != nil {
+		slog.Error("failed to query running teams for relay reconnect", "error", err)
+		return
+	}
+
+	if len(teams) == 0 {
+		slog.Info("no running teams to reconnect relays for")
+		return
+	}
+
+	for _, team := range teams {
+		slog.Info("reconnecting relay for running team", "team", team.Name, "id", team.ID)
+		s.startTeamRelay(team.ID, team.Name)
+	}
+	slog.Info("relay reconnect complete", "teams_reconnected", len(teams))
 }

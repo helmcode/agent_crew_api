@@ -231,6 +231,8 @@ func (m *Manager) ReadEvents() <-chan StreamEvent {
 }
 
 // Restart stops the current manager and starts a new one with a resumption prompt.
+// It reuses the existing events channel so that the bridge's forwardEvents
+// goroutine (which holds a reference obtained at startup) keeps working.
 func (m *Manager) Restart(resumePrompt string) error {
 	if err := m.Stop(); err != nil {
 		slog.Warn("error stopping manager for restart", "error", err)
@@ -239,7 +241,17 @@ func (m *Manager) Restart(resumePrompt string) error {
 	m.mu.Lock()
 	m.config.SystemPrompt = resumePrompt
 	m.sessionID = "" // new session
-	m.events = make(chan StreamEvent, 256)
+	// Drain the existing channel instead of replacing it. Creating a new
+	// channel would orphan the reference held by Bridge.forwardEvents,
+	// silently breaking all event forwarding after restart.
+	drainLoop:
+	for {
+		select {
+		case <-m.events:
+		default:
+			break drainLoop
+		}
+	}
 	m.mu.Unlock()
 
 	return m.Start(context.Background())

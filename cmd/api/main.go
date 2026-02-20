@@ -60,6 +60,9 @@ func main() {
 
 	srv := api.NewServer(db, rt)
 
+	// Reconnect NATS relays for teams that were running before this restart.
+	srv.ReconnectRelays()
+
 	// Start server in background.
 	go func() {
 		if err := srv.Listen(listenAddr); err != nil {
