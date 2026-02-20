@@ -73,11 +73,25 @@ func main() {
 		FilesystemScope: cfg.Agent.Permissions.FilesystemScope,
 	})
 
-	// 4. Start Claude Manager.
+	// 4. Write CLAUDE.md if content was passed via env var.
+	// This ensures agents get their CLAUDE.md even when the API server
+	// runs inside Docker and cannot write to the host workspace path.
 	workDir := os.Getenv("WORKSPACE_PATH")
 	if workDir == "" {
 		workDir = "/workspace"
 	}
+	if claudeMD := os.Getenv("AGENT_CLAUDE_MD"); claudeMD != "" {
+		claudeDir := workDir + "/.claude"
+		if err := os.MkdirAll(claudeDir, 0755); err != nil {
+			slog.Warn("failed to create .claude dir", "error", err)
+		} else if err := os.WriteFile(claudeDir+"/CLAUDE.md", []byte(claudeMD), 0644); err != nil {
+			slog.Warn("failed to write CLAUDE.md", "error", err)
+		} else {
+			slog.Info("wrote CLAUDE.md from env var", "path", claudeDir+"/CLAUDE.md")
+		}
+	}
+
+	// 5. Start Claude Manager.
 
 	processCfg := claude.ProcessConfig{
 		SystemPrompt: cfg.Agent.SystemPrompt,
@@ -91,7 +105,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 5. Start Bridge (NATS <-> Claude stdin/stdout).
+	// 6. Start Bridge (NATS <-> Claude stdin/stdout).
 	bridgeCfg := agentNats.BridgeConfig{
 		AgentName: cfg.Agent.Name,
 		TeamName:  cfg.Agent.Team,
@@ -106,11 +120,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 6. Start Health Reporter (periodic status to NATS).
+	// 7. Start Health Reporter (periodic status to NATS).
 	healthCtx, healthCancel := context.WithCancel(ctx)
 	go runHealthReporter(healthCtx, natsClient, manager, cfg)
 
-	// 7. Publish initial status: idle.
+	// 8. Publish initial status: idle.
 	publishInitialStatus(natsClient, cfg)
 
 	slog.Info("agent sidecar ready",

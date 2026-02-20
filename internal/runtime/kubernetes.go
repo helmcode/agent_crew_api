@@ -322,6 +322,11 @@ func (k *K8sRuntime) DeployAgent(ctx context.Context, config AgentConfig) (*Agen
 		env = append(env, corev1.EnvVar{Name: "WORKSPACE_PATH", Value: "/workspace"})
 	}
 
+	// Pass CLAUDE.md content via env var so the sidecar can write it at startup.
+	if config.ClaudeMD != "" {
+		env = append(env, corev1.EnvVar{Name: "AGENT_CLAUDE_MD", Value: config.ClaudeMD})
+	}
+
 	// Pass OAuth token if available (for Claude Code OAuth authentication).
 	oauthToken := config.Env["CLAUDE_CODE_OAUTH_TOKEN"]
 	if oauthToken == "" {

@@ -67,7 +67,7 @@ func TestGenerateClaudeMD_Leader(t *testing.T) {
 		},
 	}
 
-	md := generateClaudeMD(agent)
+	md := GenerateClaudeMD(agent)
 
 	if !contains(md, "## Team Members") {
 		t.Error("leader CLAUDE.md should have Team Members section")
@@ -86,7 +86,7 @@ func TestGenerateClaudeMD_Worker(t *testing.T) {
 		Role: "worker",
 	}
 
-	md := generateClaudeMD(agent)
+	md := GenerateClaudeMD(agent)
 
 	if contains(md, "## Team Members") {
 		t.Error("worker CLAUDE.md should not have Team Members section")
@@ -152,7 +152,7 @@ func TestSetupAgentWorkspace_EmptyClaudeMD_FallsBackToGenerated(t *testing.T) {
 	agent := AgentWorkspaceInfo{
 		Name:     "fallback-agent",
 		Role:     "worker",
-		ClaudeMD: "", // empty — should trigger generateClaudeMD
+		ClaudeMD: "", // empty — should trigger GenerateClaudeMD
 	}
 
 	dir, err := SetupAgentWorkspace(tmpDir, agent)

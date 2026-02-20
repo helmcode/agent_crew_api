@@ -20,6 +20,7 @@ type AgentConfig struct {
 	NATSUrl         string
 	Image           string
 	WorkspacePath   string
+	ClaudeMD        string            // CLAUDE.md content passed via env var for sidecar to write
 	AgentConfigYAML string            // serialized agent config to mount into the container
 	Env             map[string]string // extra environment variables (e.g. from Settings DB)
 }

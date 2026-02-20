@@ -402,6 +402,12 @@ func (d *DockerRuntime) DeployAgent(ctx context.Context, config AgentConfig) (*A
 		env = append(env, "WORKSPACE_PATH=/workspace")
 	}
 
+	// Pass CLAUDE.md content via env var so the sidecar can write it at startup.
+	// This works even when the API container has no access to the host workspace path.
+	if config.ClaudeMD != "" {
+		env = append(env, "AGENT_CLAUDE_MD="+config.ClaudeMD)
+	}
+
 	// Resource limits.
 	resources := container.Resources{}
 	if config.Resources.Memory != "" {

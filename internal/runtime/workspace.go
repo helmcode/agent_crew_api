@@ -21,7 +21,7 @@ type AgentWorkspaceInfo struct {
 	Role         string
 	Specialty    string
 	SystemPrompt string
-	ClaudeMD     string // Raw CLAUDE.md content; if set, used instead of generateClaudeMD.
+	ClaudeMD     string // Raw CLAUDE.md content; if set, used instead of GenerateClaudeMD.
 	Skills       json.RawMessage
 	TeamMembers  []TeamMemberInfo
 }
@@ -41,7 +41,7 @@ func SetupAgentWorkspace(workspacePath string, agent AgentWorkspaceInfo) (string
 	// Use raw ClaudeMD content if provided; otherwise fall back to generating it.
 	claudeMD := agent.ClaudeMD
 	if claudeMD == "" {
-		claudeMD = generateClaudeMD(agent)
+		claudeMD = GenerateClaudeMD(agent)
 	}
 	claudePath := filepath.Join(agentDir, "CLAUDE.md")
 
@@ -58,8 +58,8 @@ func AgentClaudeDir(workspacePath, agentName string) string {
 	return filepath.Join(workspacePath, ".claude", sanitizeName(agentName))
 }
 
-// generateClaudeMD produces the CLAUDE.md content for an agent.
-func generateClaudeMD(agent AgentWorkspaceInfo) string {
+// GenerateClaudeMD produces the CLAUDE.md content for an agent.
+func GenerateClaudeMD(agent AgentWorkspaceInfo) string {
 	var b strings.Builder
 
 	b.WriteString("# Agent: " + agent.Name + "\n\n")

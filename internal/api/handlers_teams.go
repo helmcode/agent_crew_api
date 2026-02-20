@@ -223,20 +223,22 @@ func (s *Server) deployTeamAsync(team models.Team) {
 	for i := range team.Agents {
 		agent := &team.Agents[i]
 
-		// Set up per-agent .claude/{agentName}/ folder with CLAUDE.md before deploying.
+		// Build agent workspace info for CLAUDE.md generation.
+		info := runtime.AgentWorkspaceInfo{
+			Name:         agent.Name,
+			Role:         agent.Role,
+			Specialty:    agent.Specialty,
+			SystemPrompt: agent.SystemPrompt,
+			ClaudeMD:     agent.ClaudeMD,
+			Skills:       json.RawMessage(agent.Skills),
+		}
+		// Give the leader the full team roster so it can delegate tasks.
+		if agent.Role == models.AgentRoleLeader {
+			info.TeamMembers = teamMembers
+		}
+
+		// Try writing CLAUDE.md to disk (works when API runs on host).
 		if team.WorkspacePath != "" {
-			info := runtime.AgentWorkspaceInfo{
-				Name:         agent.Name,
-				Role:         agent.Role,
-				Specialty:    agent.Specialty,
-				SystemPrompt: agent.SystemPrompt,
-				ClaudeMD:     agent.ClaudeMD,
-				Skills:       json.RawMessage(agent.Skills),
-			}
-			// Give the leader the full team roster so it can delegate tasks.
-			if agent.Role == models.AgentRoleLeader {
-				info.TeamMembers = teamMembers
-			}
 			if _, err := runtime.SetupAgentWorkspace(team.WorkspacePath, info); err != nil {
 				slog.Error("failed to setup agent workspace", "agent", agent.Name, "error", err)
 			}
@@ -252,11 +254,20 @@ func (s *Server) deployTeamAsync(team models.Team) {
 		}
 		_ = perms // permissions parsed by runtime
 
+		// Build CLAUDE.md content for passing via env var to the sidecar.
+		// This ensures agents get their CLAUDE.md even when the API runs
+		// inside Docker without access to the host workspace path.
+		claudeMDContent := agent.ClaudeMD
+		if claudeMDContent == "" {
+			claudeMDContent = runtime.GenerateClaudeMD(info)
+		}
+
 		agentCfg := runtime.AgentConfig{
 			Name:          agent.Name,
 			TeamName:      team.Name,
 			Role:          agent.Role,
 			SystemPrompt:  agent.SystemPrompt,
+			ClaudeMD:      claudeMDContent,
 			Resources:     res,
 			NATSUrl:       natsURL,
 			WorkspacePath: team.WorkspacePath,
