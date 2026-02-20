@@ -64,6 +64,14 @@ func AgentConfigDir(workspacePath, agentName string) string {
 func SyncUserClaudeConfig(workspacePath, agentName string) error {
 	userClaudeDir := filepath.Join(workspacePath, ".claude")
 
+	// Check with Lstat (does not follow symlinks) whether .claude is a symlink.
+	// If it is, it was created by ExposeAgentConfig from a previous deploy and
+	// should not be used as a source for user config files.
+	linfo, err := os.Lstat(userClaudeDir)
+	if err != nil || linfo.Mode()&os.ModeSymlink != 0 {
+		return nil
+	}
+
 	info, err := os.Stat(userClaudeDir)
 	if err != nil || !info.IsDir() {
 		// No .claude directory in workspace — nothing to sync.
@@ -204,6 +212,47 @@ func generateClaudeMD(agent AgentWorkspaceInfo) string {
 	}
 
 	return b.String()
+}
+
+// ExposeAgentConfig creates a convenience symlink at {workspacePath}/.claude
+// pointing to the specified agent's config directory (.agentcrew/{agentName}/).
+// This allows the user to access the agent's CLAUDE.md, settings.json, and other
+// config files directly from the workspace root on the host filesystem.
+//
+// If {workspacePath}/.claude already exists as a real directory (user-owned config),
+// it is left untouched and no symlink is created. Only existing symlinks (from a
+// previous deploy) are replaced.
+func ExposeAgentConfig(workspacePath, agentName string) error {
+	safeName := sanitizeName(agentName)
+	linkPath := filepath.Join(workspacePath, ".claude")
+	// Relative target so the symlink works even if the workspace is moved.
+	target := filepath.Join(".agentcrew", safeName)
+
+	// Check if .claude already exists.
+	linfo, err := os.Lstat(linkPath)
+	if err == nil {
+		if linfo.Mode()&os.ModeSymlink != 0 {
+			// Existing symlink from a previous deploy — remove and recreate.
+			if err := os.Remove(linkPath); err != nil {
+				return fmt.Errorf("removing old .claude symlink: %w", err)
+			}
+		} else {
+			// Real directory or file owned by the user — do not overwrite.
+			slog.Info("skipping .claude symlink: real directory exists", "path", linkPath)
+			return nil
+		}
+	}
+
+	if err := os.Symlink(target, linkPath); err != nil {
+		return fmt.Errorf("creating .claude symlink: %w", err)
+	}
+
+	slog.Info("exposed agent config at workspace root",
+		"symlink", linkPath,
+		"target", target,
+		"agent", agentName,
+	)
+	return nil
 }
 
 // formatSkills converts the JSON skills field into a readable markdown list.
