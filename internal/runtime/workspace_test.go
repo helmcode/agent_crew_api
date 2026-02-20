@@ -294,18 +294,13 @@ func TestFormatSkills_Empty(t *testing.T) {
 func TestSyncUserClaudeConfig_SkipsSymlinkDir(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Create a real .agentcrew/old-agent/ config directory.
-	oldAgentDir := filepath.Join(tmpDir, ".agentcrew", "old-agent")
-	if err := os.MkdirAll(oldAgentDir, 0755); err != nil {
+	// Create a .claude symlink (e.g. from external tooling or a previous deploy).
+	target := filepath.Join(tmpDir, "some-other-dir")
+	if err := os.MkdirAll(target, 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(oldAgentDir, "CLAUDE.md"), []byte("old"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Create a .claude symlink pointing to the old agent config (as ExposeAgentConfig would).
 	symlink := filepath.Join(tmpDir, ".claude")
-	if err := os.Symlink(filepath.Join(".agentcrew", "old-agent"), symlink); err != nil {
+	if err := os.Symlink("some-other-dir", symlink); err != nil {
 		t.Skip("symlinks not supported on this platform:", err)
 	}
 
@@ -318,107 +313,6 @@ func TestSyncUserClaudeConfig_SkipsSymlinkDir(t *testing.T) {
 	newAgentDir := AgentConfigDir(tmpDir, "new-agent")
 	if _, err := os.Stat(newAgentDir); !os.IsNotExist(err) {
 		t.Error("new-agent config dir should not exist when .claude is a symlink")
-	}
-}
-
-func TestExposeAgentConfig_CreatesSymlink(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	// Set up an agent workspace first.
-	agent := AgentWorkspaceInfo{Name: "leader", Role: "leader"}
-	if _, err := SetupAgentWorkspace(tmpDir, agent); err != nil {
-		t.Fatalf("SetupAgentWorkspace: %v", err)
-	}
-
-	// Expose the leader's config.
-	if err := ExposeAgentConfig(tmpDir, "leader"); err != nil {
-		t.Fatalf("ExposeAgentConfig: %v", err)
-	}
-
-	// .claude should be a symlink.
-	linkPath := filepath.Join(tmpDir, ".claude")
-	linfo, err := os.Lstat(linkPath)
-	if err != nil {
-		t.Fatalf("Lstat .claude: %v", err)
-	}
-	if linfo.Mode()&os.ModeSymlink == 0 {
-		t.Fatal(".claude should be a symlink")
-	}
-
-	// The symlink should resolve to the agent config dir.
-	target, err := os.Readlink(linkPath)
-	if err != nil {
-		t.Fatalf("Readlink: %v", err)
-	}
-	if target != filepath.Join(".agentcrew", "leader") {
-		t.Errorf("symlink target: got %q, want %q", target, filepath.Join(".agentcrew", "leader"))
-	}
-
-	// Should be able to read the CLAUDE.md through the symlink.
-	data, err := os.ReadFile(filepath.Join(linkPath, "CLAUDE.md"))
-	if err != nil {
-		t.Fatalf("reading CLAUDE.md through symlink: %v", err)
-	}
-	if !contains(string(data), "# Agent: leader") {
-		t.Error("CLAUDE.md through symlink should contain agent content")
-	}
-}
-
-func TestExposeAgentConfig_ReplacesOldSymlink(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	// Create agent workspaces.
-	for _, name := range []string{"old-leader", "new-leader"} {
-		agent := AgentWorkspaceInfo{Name: name, Role: "leader"}
-		if _, err := SetupAgentWorkspace(tmpDir, agent); err != nil {
-			t.Fatalf("SetupAgentWorkspace(%s): %v", name, err)
-		}
-	}
-
-	// Expose old leader.
-	if err := ExposeAgentConfig(tmpDir, "old-leader"); err != nil {
-		t.Fatalf("ExposeAgentConfig(old): %v", err)
-	}
-
-	// Expose new leader — should replace the old symlink.
-	if err := ExposeAgentConfig(tmpDir, "new-leader"); err != nil {
-		t.Fatalf("ExposeAgentConfig(new): %v", err)
-	}
-
-	linkPath := filepath.Join(tmpDir, ".claude")
-	target, err := os.Readlink(linkPath)
-	if err != nil {
-		t.Fatalf("Readlink: %v", err)
-	}
-	if target != filepath.Join(".agentcrew", "new-leader") {
-		t.Errorf("symlink should point to new-leader, got %q", target)
-	}
-}
-
-func TestExposeAgentConfig_SkipsRealDirectory(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	// Create a real .claude directory (user-owned config).
-	realClaudeDir := filepath.Join(tmpDir, ".claude")
-	if err := os.MkdirAll(realClaudeDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(realClaudeDir, "settings.json"), []byte(`{}`), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	// ExposeAgentConfig should NOT replace the real directory.
-	if err := ExposeAgentConfig(tmpDir, "leader"); err != nil {
-		t.Fatalf("ExposeAgentConfig: %v", err)
-	}
-
-	// .claude should still be a real directory, not a symlink.
-	linfo, err := os.Lstat(realClaudeDir)
-	if err != nil {
-		t.Fatalf("Lstat: %v", err)
-	}
-	if linfo.Mode()&os.ModeSymlink != 0 {
-		t.Error(".claude should remain a real directory, not be replaced with a symlink")
 	}
 }
 

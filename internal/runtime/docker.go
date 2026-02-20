@@ -291,6 +291,10 @@ func (d *DockerRuntime) startNATS(ctx context.Context, teamName, netName string)
 					{HostIP: "127.0.0.1", HostPort: "0"}, // random available port
 				},
 			},
+			RestartPolicy: container.RestartPolicy{
+				Name:              "on-failure",
+				MaximumRetryCount: 5,
+			},
 		},
 		&network.NetworkingConfig{
 			EndpointsConfig: map[string]*network.EndpointSettings{

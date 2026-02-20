@@ -288,21 +288,6 @@ func (s *Server) deployTeamAsync(team models.Team) {
 		return
 	}
 
-	// Expose the leader's (or first agent's) .claude config at the workspace root
-	// so the user can browse agent config files from {workspacePath}/.claude.
-	if team.WorkspacePath != "" && len(team.Agents) > 0 {
-		exposeAgent := team.Agents[0].Name
-		for _, a := range team.Agents {
-			if a.Role == models.AgentRoleLeader {
-				exposeAgent = a.Name
-				break
-			}
-		}
-		if err := runtime.ExposeAgentConfig(team.WorkspacePath, exposeAgent); err != nil {
-			slog.Warn("failed to expose agent config at workspace root", "agent", exposeAgent, "error", err)
-		}
-	}
-
 	s.db.Model(&team).Update("status", models.TeamStatusRunning)
 	slog.Info("team deployed successfully", "team", team.Name)
 
