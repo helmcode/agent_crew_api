@@ -81,6 +81,7 @@ func (s *Server) CreateTeam(c *fiber.Ctx) error {
 			Role:         role,
 			Specialty:    a.Specialty,
 			SystemPrompt: a.SystemPrompt,
+			ClaudeMD:     a.ClaudeMD,
 			Skills:       models.JSON(skills),
 			Permissions:  models.JSON(perms),
 			Resources:    models.JSON(resources),
@@ -222,18 +223,14 @@ func (s *Server) deployTeamAsync(team models.Team) {
 	for i := range team.Agents {
 		agent := &team.Agents[i]
 
-		// Set up per-agent workspace folder with CLAUDE.md before deploying.
-		// First sync user's .claude/ config files, then generate agent-specific CLAUDE.md.
+		// Set up per-agent .claude/{agentName}/ folder with CLAUDE.md before deploying.
 		if team.WorkspacePath != "" {
-			if err := runtime.SyncUserClaudeConfig(team.WorkspacePath, agent.Name); err != nil {
-				slog.Warn("failed to sync user .claude config", "agent", agent.Name, "error", err)
-			}
-
 			info := runtime.AgentWorkspaceInfo{
 				Name:         agent.Name,
 				Role:         agent.Role,
 				Specialty:    agent.Specialty,
 				SystemPrompt: agent.SystemPrompt,
+				ClaudeMD:     agent.ClaudeMD,
 				Skills:       json.RawMessage(agent.Skills),
 			}
 			// Give the leader the full team roster so it can delegate tasks.

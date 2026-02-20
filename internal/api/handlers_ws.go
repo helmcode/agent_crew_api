@@ -80,7 +80,18 @@ func (s *Server) StreamActivity(c *websocket.Conn) {
 
 	// Poll for new task logs and send them as activity updates.
 	// Use created_at for cursor pagination (UUIDs are not sortable).
+	//
+	// Initialize lastCreatedAt from the most recent existing message so that
+	// on (re)connection the WebSocket only streams NEW messages. The frontend
+	// loads the full history via the REST messagesApi.list() call; sending it
+	// again over the WebSocket on every reconnect causes the "gradual history
+	// reload" jitter visible in the chat panel.
 	var lastCreatedAt time.Time
+	var seedMsg models.TaskLog
+	if err := s.db.Where("team_id = ?", teamID).Order("created_at DESC").First(&seedMsg).Error; err == nil {
+		lastCreatedAt = seedMsg.CreatedAt
+	}
+
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 

@@ -33,6 +33,7 @@ type CreateAgentInput struct {
 	Role         string      `json:"role"`
 	Specialty    string      `json:"specialty"`
 	SystemPrompt string      `json:"system_prompt"`
+	ClaudeMD     string      `json:"claude_md"`
 	Skills       interface{} `json:"skills"`
 	Permissions  interface{} `json:"permissions"`
 	Resources    interface{} `json:"resources"`
@@ -44,6 +45,7 @@ type CreateAgentRequest struct {
 	Role         string      `json:"role"`
 	Specialty    string      `json:"specialty"`
 	SystemPrompt string      `json:"system_prompt"`
+	ClaudeMD     string      `json:"claude_md"`
 	Skills       interface{} `json:"skills"`
 	Permissions  interface{} `json:"permissions"`
 	Resources    interface{} `json:"resources"`
@@ -55,6 +57,7 @@ type UpdateAgentRequest struct {
 	Role         *string     `json:"role"`
 	Specialty    *string     `json:"specialty"`
 	SystemPrompt *string     `json:"system_prompt"`
+	ClaudeMD     *string     `json:"claude_md"`
 	Skills       interface{} `json:"skills"`
 	Permissions  interface{} `json:"permissions"`
 	Resources    interface{} `json:"resources"`

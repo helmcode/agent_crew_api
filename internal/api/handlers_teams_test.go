@@ -222,6 +222,58 @@ func TestCreateTeam_DefaultRuntime(t *testing.T) {
 	}
 }
 
+func TestCreateTeam_AgentWithClaudeMD(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	claudeContent := "# My Custom Agent\n\nCustom instructions here.\n"
+	rec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name: "claude-md-team",
+		Agents: []CreateAgentInput{
+			{Name: "a1", Role: "worker", ClaudeMD: claudeContent},
+		},
+	})
+
+	if rec.Code != 201 {
+		t.Fatalf("status: got %d, want 201\nbody: %s", rec.Code, rec.Body.String())
+	}
+
+	var team models.Team
+	parseJSON(t, rec, &team)
+
+	if len(team.Agents) != 1 {
+		t.Fatalf("agents: got %d, want 1", len(team.Agents))
+	}
+	if team.Agents[0].ClaudeMD != claudeContent {
+		t.Errorf("claude_md: got %q, want %q", team.Agents[0].ClaudeMD, claudeContent)
+	}
+}
+
+func TestUpdateAgent_ClaudeMD(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name:   "upd-claude-md-team",
+		Agents: []CreateAgentInput{{Name: "a1"}},
+	})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+
+	newMD := "# Updated Config\n"
+	rec := doRequest(srv, "PUT", "/api/teams/"+team.ID+"/agents/"+team.Agents[0].ID, UpdateAgentRequest{
+		ClaudeMD: &newMD,
+	})
+
+	if rec.Code != 200 {
+		t.Fatalf("status: got %d, want 200", rec.Code)
+	}
+
+	var agent models.Agent
+	parseJSON(t, rec, &agent)
+	if agent.ClaudeMD != newMD {
+		t.Errorf("claude_md: got %q, want %q", agent.ClaudeMD, newMD)
+	}
+}
+
 func TestCreateTeam_KubernetesRuntime(t *testing.T) {
 	srv, _ := setupTestServer(t)
 

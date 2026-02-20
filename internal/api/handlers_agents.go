@@ -75,6 +75,7 @@ func (s *Server) CreateAgent(c *fiber.Ctx) error {
 		Role:         role,
 		Specialty:    req.Specialty,
 		SystemPrompt: req.SystemPrompt,
+		ClaudeMD:     req.ClaudeMD,
 		Skills:       models.JSON(skills),
 		Permissions:  models.JSON(perms),
 		Resources:    models.JSON(resources),
@@ -117,6 +118,9 @@ func (s *Server) UpdateAgent(c *fiber.Ctx) error {
 	}
 	if req.SystemPrompt != nil {
 		updates["system_prompt"] = *req.SystemPrompt
+	}
+	if req.ClaudeMD != nil {
+		updates["claude_md"] = *req.ClaudeMD
 	}
 	if req.Skills != nil {
 		raw, _ := json.Marshal(req.Skills)

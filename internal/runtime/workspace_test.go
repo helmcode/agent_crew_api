@@ -23,7 +23,7 @@ func TestSetupAgentWorkspace(t *testing.T) {
 		t.Fatalf("SetupAgentWorkspace: %v", err)
 	}
 
-	expectedDir := filepath.Join(tmpDir, ".agentcrew", "test-agent")
+	expectedDir := filepath.Join(tmpDir, ".claude", "test-agent")
 	if dir != expectedDir {
 		t.Errorf("dir: got %q, want %q", dir, expectedDir)
 	}
@@ -49,170 +49,11 @@ func TestSetupAgentWorkspace(t *testing.T) {
 	}
 }
 
-func TestAgentConfigDir(t *testing.T) {
-	dir := AgentConfigDir("/workspace", "My Agent")
-	want := filepath.Join("/workspace", ".agentcrew", "my-agent")
+func TestAgentClaudeDir(t *testing.T) {
+	dir := AgentClaudeDir("/workspace", "My Agent")
+	want := filepath.Join("/workspace", ".claude", "my-agent")
 	if dir != want {
-		t.Errorf("AgentConfigDir: got %q, want %q", dir, want)
-	}
-}
-
-func TestSyncUserClaudeConfig_NoClaudeDir(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	// No .claude/ directory exists — should return nil without error.
-	err := SyncUserClaudeConfig(tmpDir, "agent1")
-	if err != nil {
-		t.Fatalf("SyncUserClaudeConfig: %v", err)
-	}
-
-	// Agent config dir should not have been created.
-	agentDir := AgentConfigDir(tmpDir, "agent1")
-	if _, err := os.Stat(agentDir); !os.IsNotExist(err) {
-		t.Error("agent config dir should not exist when no .claude dir")
-	}
-}
-
-func TestSyncUserClaudeConfig_SkipsSymlinks(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	claudeDir := filepath.Join(tmpDir, ".claude")
-	if err := os.MkdirAll(claudeDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-
-	// Create a regular file and a symlink pointing outside the .claude dir.
-	target := filepath.Join(tmpDir, "secret.txt")
-	if err := os.WriteFile(target, []byte("secret"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	symlink := filepath.Join(claudeDir, "evil-link")
-	if err := os.Symlink(target, symlink); err != nil {
-		t.Skip("symlinks not supported on this platform:", err)
-	}
-
-	// Also add a normal file to ensure copying still works.
-	if err := os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte(`{}`), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := SyncUserClaudeConfig(tmpDir, "agent1"); err != nil {
-		t.Fatalf("SyncUserClaudeConfig: %v", err)
-	}
-
-	agentDir := AgentConfigDir(tmpDir, "agent1")
-
-	// The symlink should NOT have been copied.
-	if _, err := os.Lstat(filepath.Join(agentDir, "evil-link")); !os.IsNotExist(err) {
-		t.Error("symlink should not be copied to agent config dir")
-	}
-
-	// The regular file should have been copied.
-	if _, err := os.Stat(filepath.Join(agentDir, "settings.json")); err != nil {
-		t.Errorf("settings.json should have been copied: %v", err)
-	}
-}
-
-func TestSyncUserClaudeConfig_CopiesFiles(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	// Create user's .claude/ directory with config files.
-	claudeDir := filepath.Join(tmpDir, ".claude")
-	if err := os.MkdirAll(filepath.Join(claudeDir, "commands"), 0755); err != nil {
-		t.Fatal(err)
-	}
-
-	// settings.json
-	settingsContent := `{"theme":"dark","verbose":true}`
-	if err := os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte(settingsContent), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	// commands/deploy.md
-	commandContent := "# Deploy command\nRun deployment steps."
-	if err := os.WriteFile(filepath.Join(claudeDir, "commands", "deploy.md"), []byte(commandContent), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	// A CLAUDE.md that should be skipped.
-	if err := os.WriteFile(filepath.Join(claudeDir, "CLAUDE.md"), []byte("user claude md"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Sync to agent.
-	if err := SyncUserClaudeConfig(tmpDir, "agent1"); err != nil {
-		t.Fatalf("SyncUserClaudeConfig: %v", err)
-	}
-
-	agentDir := AgentConfigDir(tmpDir, "agent1")
-
-	// settings.json should be copied.
-	data, err := os.ReadFile(filepath.Join(agentDir, "settings.json"))
-	if err != nil {
-		t.Fatalf("reading settings.json: %v", err)
-	}
-	if string(data) != settingsContent {
-		t.Errorf("settings.json: got %q, want %q", string(data), settingsContent)
-	}
-
-	// commands/deploy.md should be copied.
-	data, err = os.ReadFile(filepath.Join(agentDir, "commands", "deploy.md"))
-	if err != nil {
-		t.Fatalf("reading commands/deploy.md: %v", err)
-	}
-	if string(data) != commandContent {
-		t.Errorf("commands/deploy.md: got %q, want %q", string(data), commandContent)
-	}
-
-	// CLAUDE.md should NOT be copied (skipped in favor of generated one).
-	if _, err := os.Stat(filepath.Join(agentDir, "CLAUDE.md")); !os.IsNotExist(err) {
-		t.Error("CLAUDE.md should not be copied from user's .claude dir")
-	}
-}
-
-func TestSyncUserClaudeConfig_ThenSetupOverwrites(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	// Create user's .claude/ with settings.
-	claudeDir := filepath.Join(tmpDir, ".claude")
-	if err := os.MkdirAll(claudeDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte(`{"key":"value"}`), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Step 1: Sync user config.
-	if err := SyncUserClaudeConfig(tmpDir, "agent1"); err != nil {
-		t.Fatalf("SyncUserClaudeConfig: %v", err)
-	}
-
-	// Step 2: Setup agent workspace (generates CLAUDE.md).
-	agent := AgentWorkspaceInfo{
-		Name: "agent1",
-		Role: "worker",
-	}
-	dir, err := SetupAgentWorkspace(tmpDir, agent)
-	if err != nil {
-		t.Fatalf("SetupAgentWorkspace: %v", err)
-	}
-
-	// The generated CLAUDE.md should exist.
-	data, err := os.ReadFile(filepath.Join(dir, "CLAUDE.md"))
-	if err != nil {
-		t.Fatalf("reading CLAUDE.md: %v", err)
-	}
-	if !contains(string(data), "# Agent: agent1") {
-		t.Error("CLAUDE.md should contain generated agent content")
-	}
-
-	// User's settings.json should still be present.
-	data, err = os.ReadFile(filepath.Join(dir, "settings.json"))
-	if err != nil {
-		t.Fatalf("reading settings.json: %v", err)
-	}
-	if string(data) != `{"key":"value"}` {
-		t.Errorf("settings.json: got %q", string(data))
+		t.Errorf("AgentClaudeDir: got %q, want %q", dir, want)
 	}
 }
 
@@ -279,6 +120,57 @@ func TestFormatSkills_ObjectArray(t *testing.T) {
 	}
 }
 
+func TestSetupAgentWorkspace_RawClaudeMD(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	rawContent := "# Custom Agent Config\n\nThis is user-provided CLAUDE.md content.\n"
+	agent := AgentWorkspaceInfo{
+		Name:     "custom-agent",
+		Role:     "worker",
+		ClaudeMD: rawContent,
+	}
+
+	dir, err := SetupAgentWorkspace(tmpDir, agent)
+	if err != nil {
+		t.Fatalf("SetupAgentWorkspace: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, "CLAUDE.md"))
+	if err != nil {
+		t.Fatalf("reading CLAUDE.md: %v", err)
+	}
+
+	// Should use raw content, not the generated one.
+	if string(data) != rawContent {
+		t.Errorf("CLAUDE.md: got %q, want %q", string(data), rawContent)
+	}
+}
+
+func TestSetupAgentWorkspace_EmptyClaudeMD_FallsBackToGenerated(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	agent := AgentWorkspaceInfo{
+		Name:     "fallback-agent",
+		Role:     "worker",
+		ClaudeMD: "", // empty — should trigger generateClaudeMD
+	}
+
+	dir, err := SetupAgentWorkspace(tmpDir, agent)
+	if err != nil {
+		t.Fatalf("SetupAgentWorkspace: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, "CLAUDE.md"))
+	if err != nil {
+		t.Fatalf("reading CLAUDE.md: %v", err)
+	}
+
+	content := string(data)
+	if !contains(content, "# Agent: fallback-agent") {
+		t.Error("CLAUDE.md should contain generated content when ClaudeMD is empty")
+	}
+}
+
 func TestFormatSkills_Empty(t *testing.T) {
 	if formatSkills(nil) != "" {
 		t.Error("nil skills should return empty string")
@@ -288,31 +180,6 @@ func TestFormatSkills_Empty(t *testing.T) {
 	}
 	if formatSkills(json.RawMessage(`[]`)) != "" {
 		t.Error("empty array should return empty string")
-	}
-}
-
-func TestSyncUserClaudeConfig_SkipsSymlinkDir(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	// Create a .claude symlink (e.g. from external tooling or a previous deploy).
-	target := filepath.Join(tmpDir, "some-other-dir")
-	if err := os.MkdirAll(target, 0755); err != nil {
-		t.Fatal(err)
-	}
-	symlink := filepath.Join(tmpDir, ".claude")
-	if err := os.Symlink("some-other-dir", symlink); err != nil {
-		t.Skip("symlinks not supported on this platform:", err)
-	}
-
-	// SyncUserClaudeConfig should detect the symlink and skip syncing.
-	if err := SyncUserClaudeConfig(tmpDir, "new-agent"); err != nil {
-		t.Fatalf("SyncUserClaudeConfig: %v", err)
-	}
-
-	// new-agent config dir should NOT have been created because sync was skipped.
-	newAgentDir := AgentConfigDir(tmpDir, "new-agent")
-	if _, err := os.Stat(newAgentDir); !os.IsNotExist(err) {
-		t.Error("new-agent config dir should not exist when .claude is a symlink")
 	}
 }
 

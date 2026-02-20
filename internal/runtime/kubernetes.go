@@ -369,22 +369,22 @@ func (k *K8sRuntime) DeployAgent(ctx context.Context, config AgentConfig) (*Agen
 			},
 		}
 
-		// Mount the per-agent config directory as ~/.claude/ so Claude Code
-		// CLI picks up the agent-specific CLAUDE.md automatically.
-		agentConfigDir := AgentConfigDir(config.WorkspacePath, config.Name)
+		// Mount the per-agent .claude directory so Claude Code CLI picks up
+		// the agent-specific CLAUDE.md automatically at /workspace/.claude.
+		agentClaudeDir := AgentClaudeDir(config.WorkspacePath, config.Name)
 		hostPathDirOrCreate := corev1.HostPathDirectoryOrCreate
 		volumes = append(volumes, corev1.Volume{
 			Name: "agent-config",
 			VolumeSource: corev1.VolumeSource{
 				HostPath: &corev1.HostPathVolumeSource{
-					Path: agentConfigDir,
+					Path: agentClaudeDir,
 					Type: &hostPathDirOrCreate,
 				},
 			},
 		})
 		volumeMounts = append(volumeMounts, corev1.VolumeMount{
 			Name:      "agent-config",
-			MountPath: "/home/agentcrew/.claude",
+			MountPath: "/workspace/.claude",
 		})
 	} else {
 		workspaceVolume = corev1.Volume{

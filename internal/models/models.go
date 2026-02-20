@@ -67,6 +67,7 @@ type Agent struct {
 	Role            string    `gorm:"not null;size:50;default:worker" json:"role"`
 	Specialty       string    `gorm:"size:512" json:"specialty"`
 	SystemPrompt    string    `gorm:"type:text" json:"system_prompt"`
+	ClaudeMD        string    `gorm:"type:text" json:"claude_md"`
 	Skills          JSON      `gorm:"type:text" json:"skills"`
 	Permissions     JSON      `gorm:"type:text" json:"permissions"`
 	Resources       JSON      `gorm:"type:text" json:"resources"`
