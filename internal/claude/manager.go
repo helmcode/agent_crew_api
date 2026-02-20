@@ -81,6 +81,7 @@ func (m *Manager) runInitialPrompt(ctx context.Context, prompt string) (string, 
 		"-p", prompt,
 		"--output-format", "json",
 		"--verbose",
+		"--dangerously-skip-permissions",
 	}
 	for _, tool := range m.config.AllowedTools {
 		args = append(args, "--allowedTools", tool)
@@ -142,6 +143,7 @@ func (m *Manager) SendInput(input string) error {
 		"-p", input,
 		"--output-format", "stream-json",
 		"--verbose",
+		"--dangerously-skip-permissions",
 	}
 	if sessionID != "" {
 		args = append(args, "--resume", sessionID)
