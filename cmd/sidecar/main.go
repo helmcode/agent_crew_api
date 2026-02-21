@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"os"
+	"os/exec"
 	"os/signal"
 	"syscall"
 
@@ -89,7 +91,30 @@ func main() {
 		}
 	}
 
-	// 5. Start Claude Manager.
+	// 5. Install sub-agent skills if requested.
+	if skillsEnv := os.Getenv("AGENT_SKILLS_INSTALL"); skillsEnv != "" {
+		var skills []string
+		if err := json.Unmarshal([]byte(skillsEnv), &skills); err != nil {
+			slog.Warn("failed to parse AGENT_SKILLS_INSTALL", "error", err)
+		} else {
+			for _, skill := range skills {
+				if skill == "" {
+					continue
+				}
+				slog.Info("installing skill", "skill", skill)
+				cmd := exec.Command("skills", "add", skill, "--all", "-y")
+				cmd.Stdout = os.Stdout
+				cmd.Stderr = os.Stderr
+				if err := cmd.Run(); err != nil {
+					slog.Warn("failed to install skill", "skill", skill, "error", err)
+				} else {
+					slog.Info("skill installed", "skill", skill)
+				}
+			}
+		}
+	}
+
+	// 7. Start Claude Manager.
 	processCfg := claude.ProcessConfig{
 		SystemPrompt: cfg.Agent.SystemPrompt,
 		AllowedTools: cfg.Agent.Permissions.AllowedTools,
@@ -102,7 +127,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 6. Start Bridge (NATS <-> Claude stdin/stdout).
+	// 8. Start Bridge (NATS <-> Claude stdin/stdout).
 	bridgeCfg := agentNats.BridgeConfig{
 		AgentName: cfg.Agent.Name,
 		TeamName:  cfg.Agent.Team,

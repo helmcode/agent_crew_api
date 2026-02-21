@@ -9,8 +9,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Claude Code CLI
-RUN npm install -g @anthropic-ai/claude-code
+# Install Claude Code CLI and skills package manager
+RUN npm install -g @anthropic-ai/claude-code skills
 
 # Create non-root user for running the agent
 RUN groupadd -r agentcrew && useradd -r -g agentcrew -m agentcrew

@@ -127,7 +127,7 @@ func (s *Server) processRelayMessage(teamID, teamName string, data []byte) error
 		MessageID:   protoMsg.MessageID,
 		FromAgent:   protoMsg.From,
 		ToAgent:     protoMsg.To,
-		MessageType: string(protoMsg.Type),
+		MessageType: "task_result",
 		Payload:     models.JSON(protoMsg.Payload),
 	}
 	if err := s.db.Create(&log).Error; err != nil {

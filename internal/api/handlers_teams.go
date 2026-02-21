@@ -74,6 +74,7 @@ func (s *Server) CreateTeam(c *fiber.Ctx) error {
 		skills, _ := json.Marshal(a.Skills)
 		perms, _ := json.Marshal(a.Permissions)
 		resources, _ := json.Marshal(a.Resources)
+		subAgentSkills, _ := json.Marshal(a.SubAgentSkills)
 
 		subAgentModel := a.SubAgentModel
 		if subAgentModel == "" {
@@ -81,19 +82,18 @@ func (s *Server) CreateTeam(c *fiber.Ctx) error {
 		}
 
 		team.Agents = append(team.Agents, models.Agent{
-			ID:                     uuid.New().String(),
-			Name:                   a.Name,
-			Role:                   role,
-			Specialty:              a.Specialty,
-			SystemPrompt:           a.SystemPrompt,
-			ClaudeMD:               a.ClaudeMD,
-			Skills:                 models.JSON(skills),
-			Permissions:            models.JSON(perms),
-			Resources:              models.JSON(resources),
-			SubAgentDescription:    a.SubAgentDescription,
-			SubAgentTools:          a.SubAgentTools,
-			SubAgentModel:          subAgentModel,
-			SubAgentPermissionMode: a.SubAgentPermissionMode,
+			ID:                  uuid.New().String(),
+			Name:                a.Name,
+			Role:                role,
+			Specialty:           a.Specialty,
+			SystemPrompt:        a.SystemPrompt,
+			ClaudeMD:            a.ClaudeMD,
+			Skills:              models.JSON(skills),
+			Permissions:         models.JSON(perms),
+			Resources:           models.JSON(resources),
+			SubAgentDescription: a.SubAgentDescription,
+			SubAgentModel:       subAgentModel,
+			SubAgentSkills:      models.JSON(subAgentSkills),
 		})
 	}
 
@@ -257,12 +257,11 @@ func (s *Server) deployTeamAsync(team models.Team) {
 			} else {
 				// Non-leader agents get a sub-agent file at .claude/agents/{name}.md.
 				subInfo := runtime.SubAgentInfo{
-					Name:           agent.Name,
-					Description:    agent.SubAgentDescription,
-					Tools:          agent.SubAgentTools,
-					Model:          agent.SubAgentModel,
-					PermissionMode: agent.SubAgentPermissionMode,
-					ClaudeMD:       agent.ClaudeMD,
+					Name:        agent.Name,
+					Description: agent.SubAgentDescription,
+					Model:       agent.SubAgentModel,
+					Skills:      json.RawMessage(agent.SubAgentSkills),
+					ClaudeMD:    agent.ClaudeMD,
 				}
 				if subInfo.ClaudeMD == "" {
 					subInfo.ClaudeMD = runtime.GenerateClaudeMD(info)
@@ -306,6 +305,34 @@ func (s *Server) deployTeamAsync(team models.Team) {
 		claudeMDContent = runtime.GenerateClaudeMD(leaderInfo)
 	}
 
+	// Collect all unique skills from non-leader agents so the sidecar can
+	// install them via `skills add` before the leader process starts.
+	skillsSet := map[string]struct{}{}
+	for _, a := range team.Agents {
+		if a.Role == models.AgentRoleLeader {
+			continue
+		}
+		var agentSkills []string
+		if err := json.Unmarshal(a.SubAgentSkills, &agentSkills); err == nil {
+			for _, s := range agentSkills {
+				if s != "" {
+					skillsSet[s] = struct{}{}
+				}
+			}
+		}
+	}
+	var allSkills []string
+	for s := range skillsSet {
+		allSkills = append(allSkills, s)
+	}
+	skillsJSON, _ := json.Marshal(allSkills)
+
+	// Merge settings env with skills install list.
+	agentEnv := envFromSettings
+	if len(allSkills) > 0 {
+		agentEnv["AGENT_SKILLS_INSTALL"] = string(skillsJSON)
+	}
+
 	agentCfg := runtime.AgentConfig{
 		Name:          leader.Name,
 		TeamName:      team.Name,
@@ -315,7 +342,7 @@ func (s *Server) deployTeamAsync(team models.Team) {
 		Resources:     res,
 		NATSUrl:       natsURL,
 		WorkspacePath: team.WorkspacePath,
-		Env:           envFromSettings,
+		Env:           agentEnv,
 	}
 
 	instance, err := s.runtime.DeployAgent(ctx, agentCfg)

@@ -422,10 +422,6 @@ func (d *DockerRuntime) DeployAgent(ctx context.Context, config AgentConfig) (*A
 	binds := []string{}
 	if config.WorkspacePath != "" {
 		binds = append(binds, config.WorkspacePath+":/workspace")
-		// Mount the per-agent .claude directory so Claude Code CLI picks up
-		// the agent-specific CLAUDE.md automatically at /workspace/.claude.
-		agentClaudeDir := AgentClaudeDir(config.WorkspacePath, config.Name)
-		binds = append(binds, agentClaudeDir+":/workspace/.claude")
 	} else {
 		binds = append(binds, volName+":/workspace")
 	}

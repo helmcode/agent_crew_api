@@ -76,10 +76,9 @@ type Agent struct {
 
 	// Sub-agent configuration fields for .claude/agents/{name}.md frontmatter.
 	// These are only used for non-leader agents in the native sub-agent architecture.
-	SubAgentDescription    string `gorm:"type:text" json:"sub_agent_description"`
-	SubAgentTools          string `gorm:"size:512" json:"sub_agent_tools"`
-	SubAgentModel          string `gorm:"size:50;default:inherit" json:"sub_agent_model"`
-	SubAgentPermissionMode string `gorm:"size:50" json:"sub_agent_permission_mode"`
+	SubAgentDescription string `gorm:"type:text" json:"sub_agent_description"`
+	SubAgentModel       string `gorm:"size:50;default:inherit" json:"sub_agent_model"`
+	SubAgentSkills      JSON   `gorm:"type:text" json:"sub_agent_skills"`
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`

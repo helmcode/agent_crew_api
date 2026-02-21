@@ -23,7 +23,8 @@ func TestSetupAgentWorkspace(t *testing.T) {
 		t.Fatalf("SetupAgentWorkspace: %v", err)
 	}
 
-	expectedDir := filepath.Join(tmpDir, ".claude", "test-agent")
+	// SetupAgentWorkspace now returns {workspace}/.claude (not a per-agent subdir).
+	expectedDir := filepath.Join(tmpDir, ".claude")
 	if dir != expectedDir {
 		t.Errorf("dir: got %q, want %q", dir, expectedDir)
 	}
@@ -59,8 +60,8 @@ func TestAgentClaudeDir(t *testing.T) {
 
 func TestGenerateClaudeMD_Leader(t *testing.T) {
 	agent := AgentWorkspaceInfo{
-		Name:    "lead",
-		Role:    "leader",
+		Name: "lead",
+		Role: "leader",
 		TeamMembers: []TeamMemberInfo{
 			{Name: "worker-1", Role: "worker", Specialty: "backend"},
 			{Name: "worker-2", Role: "worker", Specialty: "frontend"},
@@ -177,12 +178,11 @@ func TestSetupSubAgentFile_AllFields(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	agent := SubAgentInfo{
-		Name:           "researcher",
-		Description:    "Delegate research tasks to this agent",
-		Tools:          "Read, Grep, Glob",
-		Model:          "sonnet",
-		PermissionMode: "acceptEdits",
-		ClaudeMD:       "You are a research specialist.\n",
+		Name:        "researcher",
+		Description: "Delegate research tasks to this agent",
+		Model:       "sonnet",
+		Skills:      json.RawMessage(`["read-files","web-search"]`),
+		ClaudeMD:    "You are a research specialist.\n",
 	}
 
 	filePath, err := SetupSubAgentFile(tmpDir, agent)
@@ -210,14 +210,24 @@ func TestSetupSubAgentFile_AllFields(t *testing.T) {
 	if !contains(content, "description: ") {
 		t.Error("missing description in frontmatter")
 	}
-	if !contains(content, "tools: ") {
-		t.Error("missing tools in frontmatter")
-	}
 	if !contains(content, "model: sonnet") {
 		t.Error("missing model in frontmatter")
 	}
-	if !contains(content, "permissionMode: acceptEdits") {
-		t.Error("missing permissionMode in frontmatter")
+	// background, isolation, permissionMode are always emitted.
+	if !contains(content, "background: true") {
+		t.Error("missing background: true in frontmatter")
+	}
+	if !contains(content, "isolation: worktree") {
+		t.Error("missing isolation: worktree in frontmatter")
+	}
+	if !contains(content, "permissionMode: bypassPermissions") {
+		t.Error("missing permissionMode: bypassPermissions in frontmatter")
+	}
+	if !contains(content, "skills:") {
+		t.Error("missing skills in frontmatter")
+	}
+	if !contains(content, "read-files") {
+		t.Error("missing skill 'read-files' in frontmatter")
 	}
 	if !contains(content, "You are a research specialist.") {
 		t.Error("missing body content")
@@ -243,7 +253,7 @@ func TestSetupSubAgentFile_CreatesAgentsDir(t *testing.T) {
 	}
 }
 
-func TestGenerateSubAgentContent_OmitsEmptyFields(t *testing.T) {
+func TestGenerateSubAgentContent_OmitsEmptyOptionalFields(t *testing.T) {
 	agent := SubAgentInfo{
 		Name: "minimal-agent",
 	}
@@ -256,31 +266,34 @@ func TestGenerateSubAgentContent_OmitsEmptyFields(t *testing.T) {
 	if contains(content, "description:") {
 		t.Error("empty description should be omitted")
 	}
-	if contains(content, "tools:") {
-		t.Error("empty tools should be omitted")
-	}
 	if contains(content, "model:") {
 		t.Error("empty model should be omitted")
 	}
-	if contains(content, "permissionMode:") {
-		t.Error("empty permissionMode should be omitted")
+	if contains(content, "skills:") {
+		t.Error("empty skills should be omitted")
+	}
+	// background, isolation, permissionMode are always present.
+	if !contains(content, "background: true") {
+		t.Error("background: true should always be present")
+	}
+	if !contains(content, "isolation: worktree") {
+		t.Error("isolation: worktree should always be present")
+	}
+	if !contains(content, "permissionMode: bypassPermissions") {
+		t.Error("permissionMode: bypassPermissions should always be present")
 	}
 }
 
-func TestGenerateSubAgentContent_OmitsDefaults(t *testing.T) {
+func TestGenerateSubAgentContent_OmitsModelInherit(t *testing.T) {
 	agent := SubAgentInfo{
-		Name:           "default-agent",
-		Model:          "inherit",
-		PermissionMode: "default",
+		Name:  "default-agent",
+		Model: "inherit",
 	}
 
 	content := GenerateSubAgentContent(agent)
 
 	if contains(content, "model:") {
 		t.Error("model 'inherit' should be omitted")
-	}
-	if contains(content, "permissionMode:") {
-		t.Error("permissionMode 'default' should be omitted")
 	}
 }
 
@@ -309,8 +322,8 @@ func TestGenerateSubAgentContent_NoBodyWhenEmpty(t *testing.T) {
 
 	content := GenerateSubAgentContent(agent)
 
-	// Should end right after the closing ---
-	expected := "---\nname: no-body-agent\n---\n"
+	// background, isolation, permissionMode are always emitted.
+	expected := "---\nname: no-body-agent\nbackground: true\nisolation: worktree\npermissionMode: bypassPermissions\n---\n"
 	if content != expected {
 		t.Errorf("content: got %q, want %q", content, expected)
 	}
@@ -320,7 +333,6 @@ func TestGenerateSubAgentContent_YAMLQuoting(t *testing.T) {
 	agent := SubAgentInfo{
 		Name:        "quoted-agent",
 		Description: "Agent: handles complex tasks",
-		Tools:       "Read, Grep, Glob",
 	}
 
 	content := GenerateSubAgentContent(agent)
@@ -329,9 +341,24 @@ func TestGenerateSubAgentContent_YAMLQuoting(t *testing.T) {
 	if !contains(content, `description: "Agent`) {
 		t.Errorf("description with colon should be quoted, got:\n%s", content)
 	}
-	// Tools with comma should be quoted.
-	if !contains(content, `tools: "Read`) {
-		t.Errorf("tools with comma should be quoted, got:\n%s", content)
+}
+
+func TestGenerateSubAgentContent_WithSkills(t *testing.T) {
+	agent := SubAgentInfo{
+		Name:   "skilled-agent",
+		Skills: json.RawMessage(`["web-search","read-files"]`),
+	}
+
+	content := GenerateSubAgentContent(agent)
+
+	if !contains(content, "skills:") {
+		t.Error("missing skills section")
+	}
+	if !contains(content, "  - web-search") {
+		t.Error("missing skill 'web-search'")
+	}
+	if !contains(content, "  - read-files") {
+		t.Error("missing skill 'read-files'")
 	}
 }
 
@@ -380,6 +407,27 @@ func TestFormatSkills_Empty(t *testing.T) {
 	}
 	if formatSkills(json.RawMessage(`[]`)) != "" {
 		t.Error("empty array should return empty string")
+	}
+}
+
+func TestFormatSkillsYAML_StringArray(t *testing.T) {
+	raw := json.RawMessage(`["web-search","read-files"]`)
+	result := formatSkillsYAML(raw)
+
+	if !contains(result, "  - web-search") {
+		t.Error("missing skill 'web-search' with YAML indentation")
+	}
+	if !contains(result, "  - read-files") {
+		t.Error("missing skill 'read-files' with YAML indentation")
+	}
+}
+
+func TestFormatSkillsYAML_Empty(t *testing.T) {
+	if formatSkillsYAML(nil) != "" {
+		t.Error("nil skills should return empty string")
+	}
+	if formatSkillsYAML(json.RawMessage(`null`)) != "" {
+		t.Error("null skills should return empty string")
 	}
 }
 

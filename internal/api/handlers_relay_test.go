@@ -69,8 +69,8 @@ func TestProcessRelayMessage_LeaderResponse(t *testing.T) {
 	if log.ToAgent != "user" {
 		t.Errorf("to_agent: got %q, want 'user'", log.ToAgent)
 	}
-	if log.MessageType != "leader_response" {
-		t.Errorf("message_type: got %q, want 'leader_response'", log.MessageType)
+	if log.MessageType != "task_result" {
+		t.Errorf("message_type: got %q, want 'task_result'", log.MessageType)
 	}
 	if log.TeamID != team.ID {
 		t.Errorf("team_id: got %q, want %q", log.TeamID, team.ID)

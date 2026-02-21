@@ -1,10 +1,34 @@
 package api
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/helmcode/agent-crew/internal/models"
 )
+
+// parseSkills unmarshals a models.JSON skills field into a string slice.
+func parseSkills(t *testing.T, raw models.JSON) []string {
+	t.Helper()
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	var skills []string
+	if err := json.Unmarshal(raw, &skills); err != nil {
+		t.Fatalf("failed to unmarshal sub_agent_skills: %v", err)
+	}
+	return skills
+}
+
+// hasSkill reports whether skill is present in the slice.
+func hasSkill(skills []string, skill string) bool {
+	for _, s := range skills {
+		if s == skill {
+			return true
+		}
+	}
+	return false
+}
 
 // --- Sub-agent configuration fields ---
 
@@ -16,12 +40,11 @@ func TestCreateAgent_SubAgentFields(t *testing.T) {
 	parseJSON(t, teamRec, &team)
 
 	rec := doRequest(srv, "POST", "/api/teams/"+team.ID+"/agents", CreateAgentRequest{
-		Name:                   "researcher",
-		Role:                   "worker",
-		SubAgentDescription:    "Delegate research tasks to this agent",
-		SubAgentTools:          "Read, Grep, Glob",
-		SubAgentModel:          "sonnet",
-		SubAgentPermissionMode: "acceptEdits",
+		Name:                "researcher",
+		Role:                "worker",
+		SubAgentDescription: "Delegate research tasks to this agent",
+		SubAgentSkills:      []string{"Read", "Grep", "Glob"},
+		SubAgentModel:       "sonnet",
 	})
 
 	if rec.Code != 201 {
@@ -34,14 +57,18 @@ func TestCreateAgent_SubAgentFields(t *testing.T) {
 	if agent.SubAgentDescription != "Delegate research tasks to this agent" {
 		t.Errorf("sub_agent_description: got %q", agent.SubAgentDescription)
 	}
-	if agent.SubAgentTools != "Read, Grep, Glob" {
-		t.Errorf("sub_agent_tools: got %q", agent.SubAgentTools)
+	skills := parseSkills(t, agent.SubAgentSkills)
+	if !hasSkill(skills, "Read") {
+		t.Errorf("sub_agent_skills missing 'Read': got %v", skills)
+	}
+	if !hasSkill(skills, "Grep") {
+		t.Errorf("sub_agent_skills missing 'Grep': got %v", skills)
+	}
+	if !hasSkill(skills, "Glob") {
+		t.Errorf("sub_agent_skills missing 'Glob': got %v", skills)
 	}
 	if agent.SubAgentModel != "sonnet" {
 		t.Errorf("sub_agent_model: got %q, want 'sonnet'", agent.SubAgentModel)
-	}
-	if agent.SubAgentPermissionMode != "acceptEdits" {
-		t.Errorf("sub_agent_permission_mode: got %q, want 'acceptEdits'", agent.SubAgentPermissionMode)
 	}
 }
 
@@ -80,15 +107,12 @@ func TestUpdateAgent_SubAgentFields(t *testing.T) {
 
 	agentID := team.Agents[0].ID
 	desc := "Updated delegation trigger"
-	tools := "Read, Bash"
 	model := "opus"
-	perm := "acceptEdits"
 
 	rec := doRequest(srv, "PUT", "/api/teams/"+team.ID+"/agents/"+agentID, UpdateAgentRequest{
-		SubAgentDescription:    &desc,
-		SubAgentTools:          &tools,
-		SubAgentModel:          &model,
-		SubAgentPermissionMode: &perm,
+		SubAgentDescription: &desc,
+		SubAgentSkills:      []string{"Read", "Bash"},
+		SubAgentModel:       &model,
 	})
 
 	if rec.Code != 200 {
@@ -101,14 +125,15 @@ func TestUpdateAgent_SubAgentFields(t *testing.T) {
 	if agent.SubAgentDescription != desc {
 		t.Errorf("sub_agent_description: got %q, want %q", agent.SubAgentDescription, desc)
 	}
-	if agent.SubAgentTools != tools {
-		t.Errorf("sub_agent_tools: got %q, want %q", agent.SubAgentTools, tools)
+	skills := parseSkills(t, agent.SubAgentSkills)
+	if !hasSkill(skills, "Read") {
+		t.Errorf("sub_agent_skills missing 'Read': got %v", skills)
+	}
+	if !hasSkill(skills, "Bash") {
+		t.Errorf("sub_agent_skills missing 'Bash': got %v", skills)
 	}
 	if agent.SubAgentModel != model {
 		t.Errorf("sub_agent_model: got %q, want %q", agent.SubAgentModel, model)
-	}
-	if agent.SubAgentPermissionMode != perm {
-		t.Errorf("sub_agent_permission_mode: got %q, want %q", agent.SubAgentPermissionMode, perm)
 	}
 }
 
@@ -121,11 +146,10 @@ func TestUpdateAgent_SubAgentPartialUpdate(t *testing.T) {
 
 	// Create agent with sub-agent fields.
 	createRec := doRequest(srv, "POST", "/api/teams/"+team.ID+"/agents", CreateAgentRequest{
-		Name:                   "partial-agent",
-		SubAgentDescription:    "Original description",
-		SubAgentTools:          "Read, Grep",
-		SubAgentModel:          "sonnet",
-		SubAgentPermissionMode: "default",
+		Name:                "partial-agent",
+		SubAgentDescription: "Original description",
+		SubAgentSkills:      []string{"Read", "Grep"},
+		SubAgentModel:       "sonnet",
 	})
 	var created models.Agent
 	parseJSON(t, createRec, &created)
@@ -146,14 +170,15 @@ func TestUpdateAgent_SubAgentPartialUpdate(t *testing.T) {
 	if agent.SubAgentDescription != "Updated description only" {
 		t.Errorf("sub_agent_description: got %q", agent.SubAgentDescription)
 	}
-	if agent.SubAgentTools != "Read, Grep" {
-		t.Errorf("sub_agent_tools should be unchanged: got %q", agent.SubAgentTools)
+	skills := parseSkills(t, agent.SubAgentSkills)
+	if !hasSkill(skills, "Read") {
+		t.Errorf("sub_agent_skills 'Read' should be unchanged: got %v", skills)
+	}
+	if !hasSkill(skills, "Grep") {
+		t.Errorf("sub_agent_skills 'Grep' should be unchanged: got %v", skills)
 	}
 	if agent.SubAgentModel != "sonnet" {
 		t.Errorf("sub_agent_model should be unchanged: got %q", agent.SubAgentModel)
-	}
-	if agent.SubAgentPermissionMode != "default" {
-		t.Errorf("sub_agent_permission_mode should be unchanged: got %q", agent.SubAgentPermissionMode)
 	}
 }
 
@@ -164,17 +189,16 @@ func TestCreateTeam_WithSubAgentFields(t *testing.T) {
 		Name: "team-subagent-inline",
 		Agents: []CreateAgentInput{
 			{
-				Name:                   "leader",
-				Role:                   "leader",
-				SystemPrompt:           "You are the team leader",
+				Name:         "leader",
+				Role:         "leader",
+				SystemPrompt: "You are the team leader",
 			},
 			{
-				Name:                   "coder",
-				Role:                   "worker",
-				SubAgentDescription:    "Handles coding tasks",
-				SubAgentTools:          "Read, Edit, Write, Bash",
-				SubAgentModel:          "opus",
-				SubAgentPermissionMode: "acceptEdits",
+				Name:                "coder",
+				Role:                "worker",
+				SubAgentDescription: "Handles coding tasks",
+				SubAgentSkills:      []string{"Read", "Edit", "Write", "Bash"},
+				SubAgentModel:       "opus",
 			},
 		},
 	})
@@ -202,14 +226,15 @@ func TestCreateTeam_WithSubAgentFields(t *testing.T) {
 	if worker.SubAgentDescription != "Handles coding tasks" {
 		t.Errorf("sub_agent_description: got %q", worker.SubAgentDescription)
 	}
-	if worker.SubAgentTools != "Read, Edit, Write, Bash" {
-		t.Errorf("sub_agent_tools: got %q", worker.SubAgentTools)
+	skills := parseSkills(t, worker.SubAgentSkills)
+	if !hasSkill(skills, "Read") {
+		t.Errorf("sub_agent_skills missing 'Read': got %v", skills)
+	}
+	if !hasSkill(skills, "Edit") {
+		t.Errorf("sub_agent_skills missing 'Edit': got %v", skills)
 	}
 	if worker.SubAgentModel != "opus" {
 		t.Errorf("sub_agent_model: got %q, want 'opus'", worker.SubAgentModel)
-	}
-	if worker.SubAgentPermissionMode != "acceptEdits" {
-		t.Errorf("sub_agent_permission_mode: got %q, want 'acceptEdits'", worker.SubAgentPermissionMode)
 	}
 
 	// Leader should have default model.
@@ -235,7 +260,7 @@ func TestGetTeam_ReturnsSubAgentFields(t *testing.T) {
 			{
 				Name:                "sub-agent",
 				SubAgentDescription: "Test delegation",
-				SubAgentTools:       "Read",
+				SubAgentSkills:      []string{"Read"},
 				SubAgentModel:       "haiku",
 			},
 		},
@@ -260,8 +285,9 @@ func TestGetTeam_ReturnsSubAgentFields(t *testing.T) {
 	if agent.SubAgentDescription != "Test delegation" {
 		t.Errorf("sub_agent_description: got %q", agent.SubAgentDescription)
 	}
-	if agent.SubAgentTools != "Read" {
-		t.Errorf("sub_agent_tools: got %q", agent.SubAgentTools)
+	skills := parseSkills(t, agent.SubAgentSkills)
+	if !hasSkill(skills, "Read") {
+		t.Errorf("sub_agent_skills missing 'Read': got %v", skills)
 	}
 	if agent.SubAgentModel != "haiku" {
 		t.Errorf("sub_agent_model: got %q, want 'haiku'", agent.SubAgentModel)

@@ -11,12 +11,11 @@ import (
 // SubAgentInfo holds the metadata needed to generate a sub-agent file
 // at .claude/agents/{name}.md with YAML frontmatter.
 type SubAgentInfo struct {
-	Name           string
-	Description    string
-	Tools          string
-	Model          string
-	PermissionMode string
-	ClaudeMD       string // Body content written after the YAML frontmatter.
+	Name        string
+	Description string
+	Model       string
+	Skills      json.RawMessage
+	ClaudeMD    string // Body content written after the YAML frontmatter.
 }
 
 // TeamMemberInfo describes a teammate for inclusion in the leader's CLAUDE.md.
@@ -37,16 +36,15 @@ type AgentWorkspaceInfo struct {
 	TeamMembers  []TeamMemberInfo
 }
 
-// SetupAgentWorkspace creates the per-agent directory under
-// {workspacePath}/.claude/{agentName}/ and writes a CLAUDE.md
-// with the agent's configuration. Returns the path to the agent's
-// config directory.
+// SetupAgentWorkspace creates the .claude directory under workspacePath and
+// writes a CLAUDE.md with the agent's configuration. The file is written to
+// {workspacePath}/.claude/CLAUDE.md so the Claude Code CLI picks it up as the
+// workspace-level configuration. Returns the path to the .claude directory.
 func SetupAgentWorkspace(workspacePath string, agent AgentWorkspaceInfo) (string, error) {
-	safeName := sanitizeName(agent.Name)
-	agentDir := filepath.Join(workspacePath, ".claude", safeName)
+	claudeDir := filepath.Join(workspacePath, ".claude")
 
-	if err := os.MkdirAll(agentDir, 0755); err != nil {
-		return "", fmt.Errorf("creating agent workspace dir %s: %w", agentDir, err)
+	if err := os.MkdirAll(claudeDir, 0755); err != nil {
+		return "", fmt.Errorf("creating .claude dir %s: %w", claudeDir, err)
 	}
 
 	// Use raw ClaudeMD content if provided; otherwise fall back to generating it.
@@ -54,13 +52,13 @@ func SetupAgentWorkspace(workspacePath string, agent AgentWorkspaceInfo) (string
 	if claudeMD == "" {
 		claudeMD = GenerateClaudeMD(agent)
 	}
-	claudePath := filepath.Join(agentDir, "CLAUDE.md")
+	claudePath := filepath.Join(claudeDir, "CLAUDE.md")
 
 	if err := os.WriteFile(claudePath, []byte(claudeMD), 0644); err != nil {
 		return "", fmt.Errorf("writing CLAUDE.md for agent %s: %w", agent.Name, err)
 	}
 
-	return agentDir, nil
+	return claudeDir, nil
 }
 
 // AgentClaudeDir returns the host path for an agent's .claude directory
@@ -145,7 +143,8 @@ func SetupSubAgentFile(workspacePath string, agent SubAgentInfo) (string, error)
 }
 
 // GenerateSubAgentContent produces the YAML frontmatter + body content for a
-// sub-agent file. Optional frontmatter fields are omitted when empty or default.
+// sub-agent file. background, isolation, and permissionMode are always emitted
+// with fixed values so sub-agents run isolated and with full permissions.
 func GenerateSubAgentContent(agent SubAgentInfo) string {
 	var b strings.Builder
 
@@ -155,14 +154,19 @@ func GenerateSubAgentContent(agent SubAgentInfo) string {
 	if agent.Description != "" {
 		b.WriteString("description: " + yamlQuoteIfNeeded(agent.Description) + "\n")
 	}
-	if agent.Tools != "" {
-		b.WriteString("tools: " + yamlQuoteIfNeeded(agent.Tools) + "\n")
-	}
 	if agent.Model != "" && agent.Model != "inherit" {
 		b.WriteString("model: " + agent.Model + "\n")
 	}
-	if agent.PermissionMode != "" && agent.PermissionMode != "default" {
-		b.WriteString("permissionMode: " + agent.PermissionMode + "\n")
+
+	// Always set these fields for isolated, unrestricted execution.
+	b.WriteString("background: true\n")
+	b.WriteString("isolation: worktree\n")
+	b.WriteString("permissionMode: bypassPermissions\n")
+
+	// Emit skills list if provided.
+	if skills := formatSkillsYAML(agent.Skills); skills != "" {
+		b.WriteString("skills:\n")
+		b.WriteString(skills)
 	}
 
 	b.WriteString("---\n")
@@ -176,6 +180,27 @@ func GenerateSubAgentContent(agent SubAgentInfo) string {
 		}
 	}
 
+	return b.String()
+}
+
+// formatSkillsYAML converts the JSON skills field into a YAML list of strings
+// for inclusion in sub-agent frontmatter (each line: "  - skill-name\n").
+func formatSkillsYAML(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+
+	var skills []string
+	if err := json.Unmarshal(raw, &skills); err != nil || len(skills) == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+	for _, s := range skills {
+		if s != "" {
+			b.WriteString("  - " + s + "\n")
+		}
+	}
 	return b.String()
 }
 
