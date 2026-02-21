@@ -102,7 +102,7 @@ func (c *Client) EnsureStream(ctx context.Context, teamName string) error {
 		Subjects:  subjects,
 		Retention: jetstream.LimitsPolicy,
 		MaxAge:    24 * time.Hour,
-		Storage:   jetstream.MemoryStorage,
+		Storage:   jetstream.FileStorage,
 		Replicas:  1,
 	})
 	if err != nil {

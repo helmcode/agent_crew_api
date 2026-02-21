@@ -33,12 +33,19 @@ type BridgeConfig struct {
 	Gate       *permissions.Gate
 }
 
+// publisher is the interface used by Bridge to publish protocol messages.
+// *Client satisfies this interface.
+type publisher interface {
+	Publish(subject string, msg *protocol.Message) error
+	Subscribe(subject string, handler func(*protocol.Message)) error
+}
+
 // Bridge connects NATS messaging with the Claude Code CLI process.
 // It receives NATS messages, extracts instructions, writes them to Claude's
 // stdin, reads Claude's stdout events, and publishes results back via NATS.
 type Bridge struct {
 	config  BridgeConfig
-	client  *Client
+	client  publisher
 	manager *claude.Manager
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
@@ -384,12 +391,7 @@ func (b *Bridge) processEvent(event *claude.StreamEvent, currentResult *string) 
 
 			// Publish the error as a failed task result so it reaches the
 			// Activity panel via TaskLog → WebSocket.
-			leaderSubject, err := protocol.TeamLeaderChannel(b.config.TeamName)
-			if err != nil {
-				slog.Error("failed to build leader channel", "error", err)
-				return
-			}
-			b.publishTaskResult(leaderSubject, "", "failed", "", friendlyMsg)
+			b.publishTaskResult("leader", "", "failed", "", friendlyMsg)
 			b.publishStatus("error", friendlyMsg)
 			*currentResult = ""
 			return
@@ -409,12 +411,7 @@ func (b *Bridge) processEvent(event *claude.StreamEvent, currentResult *string) 
 		}
 
 		// Publish the result to the leader channel.
-		leaderSubject, err := protocol.TeamLeaderChannel(b.config.TeamName)
-		if err != nil {
-			slog.Error("failed to build leader channel", "error", err)
-			return
-		}
-		b.publishTaskResult(leaderSubject, "", "completed", *currentResult, "")
+		b.publishTaskResult("leader", "", "completed", *currentResult, "")
 
 		// If this agent is the leader, check for task delegations in the result.
 		if b.config.Role == "leader" && *currentResult != "" {
@@ -468,6 +465,8 @@ func (b *Bridge) publishStatus(status, currentTask string) {
 }
 
 // publishTaskResult sends a task result back to the specified recipient.
+// The "to" parameter must be an agent name (e.g. "leader"), never a NATS subject.
+// The NATS subject is always derived from the agent name to keep Message.To clean.
 func (b *Bridge) publishTaskResult(to, refMsgID, status, result, errMsg string) {
 	resultPayload := protocol.TaskResultPayload{
 		Status: status,
@@ -487,24 +486,10 @@ func (b *Bridge) publishTaskResult(to, refMsgID, status, result, errMsg string) 
 	}
 	msg.RefMessageID = refMsgID
 
-	// Determine the NATS subject: if "to" looks like a pre-built subject
-	// (e.g., from TeamLeaderChannel), validate it belongs to our team prefix.
-	// Otherwise, build it from the agent name.
-	var subject string
-	teamPrefix := "team." + b.config.TeamName + "."
-	if strings.Contains(to, ".") {
-		if !strings.HasPrefix(to, teamPrefix) {
-			slog.Error("rejected cross-team subject", "to", to, "team", b.config.TeamName)
-			return
-		}
-		subject = to
-	} else {
-		s, err := protocol.AgentChannel(b.config.TeamName, to)
-		if err != nil {
-			slog.Error("failed to build agent channel", "to", to, "error", err)
-			return
-		}
-		subject = s
+	subject, err := protocol.AgentChannel(b.config.TeamName, to)
+	if err != nil {
+		slog.Error("failed to build agent channel", "to", to, "error", err)
+		return
 	}
 
 	if err := b.client.Publish(subject, msg); err != nil {

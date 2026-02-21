@@ -124,16 +124,16 @@ func TestGetMessages_Pagination(t *testing.T) {
 	}
 }
 
-func TestGetMessages_LimitCappedAt200(t *testing.T) {
+func TestGetMessages_LimitCappedAt500(t *testing.T) {
 	srv, _ := setupTestServer(t)
 
 	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{Name: "limit-cap-team"})
 	var team models.Team
 	parseJSON(t, teamRec, &team)
 
-	// Requesting limit=500 should be capped at 200 (handler caps it).
+	// Requesting limit=999 should be capped at 500 (handler caps it).
 	// We just verify the endpoint doesn't error with large limits.
-	rec := doRequest(srv, "GET", "/api/teams/"+team.ID+"/messages?limit=500", nil)
+	rec := doRequest(srv, "GET", "/api/teams/"+team.ID+"/messages?limit=999", nil)
 	if rec.Code != 200 {
 		t.Fatalf("status: got %d, want 200", rec.Code)
 	}
@@ -179,5 +179,213 @@ func TestSendChat_InvalidBody(t *testing.T) {
 	rec := doRequest(srv, "POST", "/api/teams/"+team.ID+"/chat", ChatRequest{Message: ""})
 	if rec.Code != 400 {
 		t.Fatalf("status: got %d, want 400 for empty message", rec.Code)
+	}
+}
+
+func TestGetMessages_FiltersOutStatusUpdates(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{Name: "filter-team"})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+
+	// Insert a mix of message types directly into DB.
+	types := []struct {
+		msgType string
+		from    string
+	}{
+		{"user_message", "user"},
+		{"status_update", "leader"},
+		{"status_update", "worker-1"},
+		{"task_result", "worker-1"},
+		{"task_assignment", "leader"},
+		{"status_update", "worker-2"},
+		{"user_message", "user"},
+	}
+
+	for i, tt := range types {
+		content, _ := json.Marshal(map[string]string{"content": "msg"})
+		srv.db.Create(&models.TaskLog{
+			ID:          "filter-" + string(rune('a'+i)),
+			TeamID:      team.ID,
+			FromAgent:   tt.from,
+			ToAgent:     "leader",
+			MessageType: tt.msgType,
+			Payload:     models.JSON(content),
+		})
+	}
+
+	// Default GetMessages should only return user_message and task_result.
+	rec := doRequest(srv, "GET", "/api/teams/"+team.ID+"/messages", nil)
+	if rec.Code != 200 {
+		t.Fatalf("status: got %d, want 200", rec.Code)
+	}
+
+	var logs []models.TaskLog
+	parseJSON(t, rec, &logs)
+
+	// Should get: 2 user_message + 1 task_result = 3
+	if len(logs) != 3 {
+		t.Fatalf("filtered messages: got %d, want 3", len(logs))
+	}
+
+	for _, log := range logs {
+		if log.MessageType != "user_message" && log.MessageType != "task_result" {
+			t.Errorf("unexpected message type in filtered results: %q", log.MessageType)
+		}
+	}
+}
+
+func TestGetMessages_CustomTypesFilter(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{Name: "custom-types-team"})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+
+	// Insert different message types.
+	for i, msgType := range []string{"user_message", "status_update", "task_assignment"} {
+		content, _ := json.Marshal(map[string]string{"content": "msg"})
+		srv.db.Create(&models.TaskLog{
+			ID:          "ct-" + string(rune('a'+i)),
+			TeamID:      team.ID,
+			FromAgent:   "user",
+			ToAgent:     "leader",
+			MessageType: msgType,
+			Payload:     models.JSON(content),
+		})
+	}
+
+	// Request only status_update types.
+	rec := doRequest(srv, "GET", "/api/teams/"+team.ID+"/messages?types=status_update", nil)
+	if rec.Code != 200 {
+		t.Fatalf("status: got %d, want 200", rec.Code)
+	}
+
+	var logs []models.TaskLog
+	parseJSON(t, rec, &logs)
+	if len(logs) != 1 {
+		t.Fatalf("custom type filter: got %d, want 1", len(logs))
+	}
+	if logs[0].MessageType != "status_update" {
+		t.Errorf("message_type: got %q, want 'status_update'", logs[0].MessageType)
+	}
+}
+
+func TestGetMessages_CursorPagination(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{Name: "cursor-team"})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+
+	srv.db.Model(&team).Update("status", models.TeamStatusRunning)
+
+	// Send messages via the chat endpoint to get real timestamps.
+	doRequest(srv, "POST", "/api/teams/"+team.ID+"/chat", ChatRequest{Message: "msg-1"})
+	doRequest(srv, "POST", "/api/teams/"+team.ID+"/chat", ChatRequest{Message: "msg-2"})
+	doRequest(srv, "POST", "/api/teams/"+team.ID+"/chat", ChatRequest{Message: "msg-3"})
+
+	// Get all messages to find a cursor.
+	rec := doRequest(srv, "GET", "/api/teams/"+team.ID+"/messages", nil)
+	var allLogs []models.TaskLog
+	parseJSON(t, rec, &allLogs)
+	if len(allLogs) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(allLogs))
+	}
+
+	// Use the oldest message's timestamp as cursor to get nothing.
+	oldest := allLogs[len(allLogs)-1]
+	beforeParam := oldest.CreatedAt.Format("2006-01-02T15:04:05.999999999Z07:00")
+	rec2 := doRequest(srv, "GET", "/api/teams/"+team.ID+"/messages?before="+beforeParam, nil)
+	if rec2.Code != 200 {
+		t.Fatalf("status: got %d, want 200", rec2.Code)
+	}
+
+	var olderLogs []models.TaskLog
+	parseJSON(t, rec2, &olderLogs)
+	if len(olderLogs) != 0 {
+		t.Fatalf("expected 0 messages before oldest, got %d", len(olderLogs))
+	}
+}
+
+func TestGetMessages_InvalidBeforeTimestamp(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{Name: "bad-cursor-team"})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+
+	rec := doRequest(srv, "GET", "/api/teams/"+team.ID+"/messages?before=not-a-timestamp", nil)
+	if rec.Code != 400 {
+		t.Fatalf("status: got %d, want 400 for invalid timestamp", rec.Code)
+	}
+}
+
+func TestGetActivity(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{Name: "activity-team"})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+
+	// Insert a mix of message types.
+	for i, msgType := range []string{"user_message", "status_update", "task_result", "task_assignment"} {
+		content, _ := json.Marshal(map[string]string{"content": "msg"})
+		srv.db.Create(&models.TaskLog{
+			ID:          "act-" + string(rune('a'+i)),
+			TeamID:      team.ID,
+			FromAgent:   "user",
+			ToAgent:     "leader",
+			MessageType: msgType,
+			Payload:     models.JSON(content),
+		})
+	}
+
+	// GetActivity should return ALL types (unfiltered).
+	rec := doRequest(srv, "GET", "/api/teams/"+team.ID+"/activity", nil)
+	if rec.Code != 200 {
+		t.Fatalf("status: got %d, want 200", rec.Code)
+	}
+
+	var logs []models.TaskLog
+	parseJSON(t, rec, &logs)
+	if len(logs) != 4 {
+		t.Fatalf("activity entries: got %d, want 4", len(logs))
+	}
+}
+
+func TestGetActivity_TeamNotFound(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	rec := doRequest(srv, "GET", "/api/teams/nonexistent/activity", nil)
+	if rec.Code != 404 {
+		t.Fatalf("status: got %d, want 404", rec.Code)
+	}
+}
+
+func TestSplitCSV(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected []string
+	}{
+		{"a,b,c", []string{"a", "b", "c"}},
+		{" a , b , c ", []string{"a", "b", "c"}},
+		{"single", []string{"single"}},
+		{",,,", nil},
+		{"a,,b", []string{"a", "b"}},
+	}
+
+	for _, tt := range tests {
+		got := splitCSV(tt.input)
+		if len(got) != len(tt.expected) {
+			t.Errorf("splitCSV(%q): got %v, want %v", tt.input, got, tt.expected)
+			continue
+		}
+		for i := range got {
+			if got[i] != tt.expected[i] {
+				t.Errorf("splitCSV(%q)[%d]: got %q, want %q", tt.input, i, got[i], tt.expected[i])
+			}
+		}
 	}
 }

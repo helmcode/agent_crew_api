@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -153,8 +154,64 @@ func (s *Server) publishToTeamNATS(teamName, message string) error {
 	return nil
 }
 
-// GetMessages returns task logs for a team.
+// chatMessageTypes are the message types that represent actual conversation
+// content (user input and agent responses). Status updates, task assignments,
+// and other operational messages are excluded from the chat history endpoint
+// to prevent them from pushing conversation messages out of the result window.
+var chatMessageTypes = []string{
+	string(protocol.TypeUserMessage),
+	string(protocol.TypeTaskResult),
+}
+
+// GetMessages returns chat messages for a team, filtered to conversation-relevant
+// types by default. Use the "types" query parameter to override (comma-separated).
+// Supports cursor-based pagination via the "before" query parameter (RFC3339 timestamp).
 func (s *Server) GetMessages(c *fiber.Ctx) error {
+	teamID := c.Params("id")
+
+	var team models.Team
+	if err := s.db.First(&team, "id = ?", teamID).Error; err != nil {
+		return fiber.NewError(fiber.StatusNotFound, "team not found")
+	}
+
+	limit := c.QueryInt("limit", 100)
+	if limit > 500 {
+		limit = 500
+	}
+
+	query := s.db.Where("team_id = ?", teamID)
+
+	// Filter by message type. Default to chat-relevant types only.
+	if typesParam := c.Query("types"); typesParam != "" {
+		types := splitCSV(typesParam)
+		query = query.Where("message_type IN ?", types)
+	} else {
+		query = query.Where("message_type IN ?", chatMessageTypes)
+	}
+
+	// Cursor-based pagination: load messages older than the given timestamp.
+	if before := c.Query("before"); before != "" {
+		t, err := time.Parse(time.RFC3339Nano, before)
+		if err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, "invalid 'before' timestamp, use RFC3339 format")
+		}
+		query = query.Where("created_at < ?", t)
+	}
+
+	var logs []models.TaskLog
+	if err := query.Order("created_at DESC").
+		Limit(limit).
+		Find(&logs).Error; err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, "failed to list messages")
+	}
+
+	return c.JSON(logs)
+}
+
+// GetActivity returns all task log entries for a team (including status updates,
+// task assignments, etc.). This is the unfiltered counterpart to GetMessages,
+// intended for the Activity panel.
+func (s *Server) GetActivity(c *fiber.Ctx) error {
 	teamID := c.Params("id")
 
 	var team models.Team
@@ -167,13 +224,34 @@ func (s *Server) GetMessages(c *fiber.Ctx) error {
 		limit = 200
 	}
 
+	query := s.db.Where("team_id = ?", teamID)
+
+	if before := c.Query("before"); before != "" {
+		t, err := time.Parse(time.RFC3339Nano, before)
+		if err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, "invalid 'before' timestamp, use RFC3339 format")
+		}
+		query = query.Where("created_at < ?", t)
+	}
+
 	var logs []models.TaskLog
-	if err := s.db.Where("team_id = ?", teamID).
-		Order("created_at DESC").
+	if err := query.Order("created_at DESC").
 		Limit(limit).
 		Find(&logs).Error; err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, "failed to list messages")
+		return fiber.NewError(fiber.StatusInternalServerError, "failed to list activity")
 	}
 
 	return c.JSON(logs)
+}
+
+// splitCSV splits a comma-separated string into trimmed, non-empty parts.
+func splitCSV(s string) []string {
+	var result []string
+	for _, part := range strings.Split(s, ",") {
+		trimmed := strings.TrimSpace(part)
+		if trimmed != "" {
+			result = append(result, trimmed)
+		}
+	}
+	return result
 }

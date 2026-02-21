@@ -33,6 +33,7 @@ func (s *Server) registerRoutes() {
 	// Chat.
 	teams.Post("/:id/chat", s.SendChat)
 	teams.Get("/:id/messages", s.GetMessages)
+	teams.Get("/:id/activity", s.GetActivity)
 
 	// Settings.
 	api.Get("/settings", s.GetSettings)
