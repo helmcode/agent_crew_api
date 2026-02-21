@@ -272,6 +272,62 @@ func TestProcessRelayMessage_MultipleMessages(t *testing.T) {
 	}
 }
 
+func TestProcessRelayMessage_ActivityEvent(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{Name: "relay-activity-team"})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+
+	data := buildRelayPayload(t, protocol.TypeActivityEvent, "leader", "system",
+		protocol.ActivityEventPayload{
+			EventType: "tool_use",
+			AgentName: "leader",
+			ToolName:  "Bash",
+			Action:    "Bash: ls -la /workspace",
+			Payload:   json.RawMessage(`{"type":"tool_use","name":"Bash"}`),
+		})
+
+	if err := srv.processRelayMessage(team.ID, team.Name, data); err != nil {
+		t.Fatalf("processRelayMessage returned error: %v", err)
+	}
+
+	count := countRelayLogs(t, srv, team.ID)
+	if count != 1 {
+		t.Fatalf("task logs: got %d, want 1", count)
+	}
+
+	var log models.TaskLog
+	srv.db.Where("team_id = ?", team.ID).First(&log)
+
+	if log.MessageType != "activity_event" {
+		t.Errorf("message_type: got %q, want 'activity_event'", log.MessageType)
+	}
+	if log.FromAgent != "leader" {
+		t.Errorf("from_agent: got %q, want 'leader'", log.FromAgent)
+	}
+	if log.ToAgent != "system" {
+		t.Errorf("to_agent: got %q, want 'system'", log.ToAgent)
+	}
+
+	// Verify payload is preserved and can be deserialized.
+	var payload protocol.ActivityEventPayload
+	if err := json.Unmarshal(log.Payload, &payload); err != nil {
+		t.Fatalf("failed to unmarshal payload: %v", err)
+	}
+	if payload.EventType != "tool_use" {
+		t.Errorf("event_type: got %q, want 'tool_use'", payload.EventType)
+	}
+	if payload.AgentName != "leader" {
+		t.Errorf("agent_name: got %q, want 'leader'", payload.AgentName)
+	}
+	if payload.ToolName != "Bash" {
+		t.Errorf("tool_name: got %q, want 'Bash'", payload.ToolName)
+	}
+	if payload.Action != "Bash: ls -la /workspace" {
+		t.Errorf("action: got %q, want 'Bash: ls -la /workspace'", payload.Action)
+	}
+}
+
 func TestProcessRelayMessage_PayloadPreserved(t *testing.T) {
 	srv, _ := setupTestServer(t)
 	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{Name: "relay-payload-team"})

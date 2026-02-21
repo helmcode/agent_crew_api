@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/helmcode/agent-crew/internal/claude"
+	"github.com/helmcode/agent-crew/internal/permissions"
 	"github.com/helmcode/agent-crew/internal/protocol"
 )
 
@@ -407,5 +408,403 @@ func TestProcessEvent_ResultFromResultField(t *testing.T) {
 	}
 	if payload.Result != "Fallback result text" {
 		t.Errorf("result: got %q, want 'Fallback result text'", payload.Result)
+	}
+}
+
+// --- processEvent: tool_result and error event types ---
+
+func TestProcessEvent_ToolResultPublishesActivityEvent(t *testing.T) {
+	pub := &fakePublisher{}
+	bridge := &Bridge{
+		config: BridgeConfig{
+			AgentName: "leader",
+			TeamName:  "toolresteam",
+			Role:      "leader",
+		},
+		client: pub,
+	}
+
+	event := claude.StreamEvent{
+		Type:   "tool_result",
+		Result: "file contents here",
+	}
+
+	var currentResult string
+	bridge.processEvent(&event, &currentResult)
+
+	msgs := pub.getMessages()
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+	if msgs[0].Msg.Type != protocol.TypeActivityEvent {
+		t.Errorf("Type: got %q, want %q", msgs[0].Msg.Type, protocol.TypeActivityEvent)
+	}
+	if msgs[0].Subject != "team.toolresteam.activity" {
+		t.Errorf("Subject: got %q, want 'team.toolresteam.activity'", msgs[0].Subject)
+	}
+
+	var payload protocol.ActivityEventPayload
+	if err := json.Unmarshal(msgs[0].Msg.Payload, &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if payload.EventType != "tool_result" {
+		t.Errorf("EventType: got %q, want 'tool_result'", payload.EventType)
+	}
+	if payload.Action != "tool result" {
+		t.Errorf("Action: got %q, want 'tool result'", payload.Action)
+	}
+}
+
+func TestProcessEvent_ErrorPublishesActivityEvent(t *testing.T) {
+	pub := &fakePublisher{}
+	bridge := &Bridge{
+		config: BridgeConfig{
+			AgentName: "leader",
+			TeamName:  "errteam2",
+			Role:      "leader",
+		},
+		client: pub,
+	}
+
+	event := claude.StreamEvent{
+		Type: "error",
+	}
+
+	var currentResult string
+	bridge.processEvent(&event, &currentResult)
+
+	msgs := pub.getMessages()
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+	if msgs[0].Msg.Type != protocol.TypeActivityEvent {
+		t.Errorf("Type: got %q, want %q", msgs[0].Msg.Type, protocol.TypeActivityEvent)
+	}
+
+	var payload protocol.ActivityEventPayload
+	if err := json.Unmarshal(msgs[0].Msg.Payload, &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if payload.EventType != "error" {
+		t.Errorf("EventType: got %q, want 'error'", payload.EventType)
+	}
+	if payload.Action != "error" {
+		t.Errorf("Action: got %q, want 'error'", payload.Action)
+	}
+}
+
+// --- processEvent: tool_use action format ---
+
+func TestProcessEvent_ToolUseActionFormat_WithCommand(t *testing.T) {
+	pub := &fakePublisher{}
+	bridge := &Bridge{
+		config: BridgeConfig{
+			AgentName: "leader",
+			TeamName:  "actfmt",
+			Role:      "leader",
+		},
+		client: pub,
+	}
+
+	event := claude.StreamEvent{
+		Type:  "tool_use",
+		Name:  "Bash",
+		Input: json.RawMessage(`{"command":"ls -la /workspace"}`),
+	}
+
+	var currentResult string
+	bridge.processEvent(&event, &currentResult)
+
+	msgs := pub.getMessages()
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+
+	var payload protocol.ActivityEventPayload
+	if err := json.Unmarshal(msgs[0].Msg.Payload, &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if payload.Action != "Bash: ls -la /workspace" {
+		t.Errorf("Action: got %q, want 'Bash: ls -la /workspace'", payload.Action)
+	}
+}
+
+func TestProcessEvent_ToolUseActionFormat_WithoutCommand(t *testing.T) {
+	pub := &fakePublisher{}
+	bridge := &Bridge{
+		config: BridgeConfig{
+			AgentName: "leader",
+			TeamName:  "actfmt2",
+			Role:      "leader",
+		},
+		client: pub,
+	}
+
+	event := claude.StreamEvent{
+		Type:  "tool_use",
+		Name:  "Read",
+		Input: json.RawMessage(`{"file_path":"/workspace/main.go"}`),
+	}
+
+	var currentResult string
+	bridge.processEvent(&event, &currentResult)
+
+	msgs := pub.getMessages()
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+
+	var payload protocol.ActivityEventPayload
+	if err := json.Unmarshal(msgs[0].Msg.Payload, &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	// No command field → action should be just the tool name.
+	if payload.Action != "Read" {
+		t.Errorf("Action: got %q, want 'Read'", payload.Action)
+	}
+}
+
+// --- Permission gate integration tests ---
+
+func TestProcessEvent_ToolUseDeniedByGate(t *testing.T) {
+	pub := &fakePublisher{}
+	gate := permissions.NewGate(permissions.PermissionConfig{
+		AllowedTools: []string{"Read", "Write"},
+		// Bash is NOT in the allowed list.
+	})
+	// A real Manager (status="stopped") so SendInput returns error instead of panicking.
+	mgr := claude.NewManager(claude.ProcessConfig{})
+	bridge := &Bridge{
+		config: BridgeConfig{
+			AgentName: "leader",
+			TeamName:  "gateteam",
+			Role:      "leader",
+			Gate:      gate,
+		},
+		client:  pub,
+		manager: mgr,
+	}
+
+	event := claude.StreamEvent{
+		Type:  "tool_use",
+		Name:  "Bash",
+		Input: json.RawMessage(`{"command":"rm -rf /"}`),
+	}
+
+	var currentResult string
+	bridge.processEvent(&event, &currentResult)
+
+	msgs := pub.getMessages()
+	// tool_use denied: should publish 1 activity event but NO leader response.
+	// The activity event is published BEFORE the gate check.
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message (activity event only), got %d", len(msgs))
+	}
+	if msgs[0].Msg.Type != protocol.TypeActivityEvent {
+		t.Errorf("Type: got %q, want %q", msgs[0].Msg.Type, protocol.TypeActivityEvent)
+	}
+}
+
+func TestProcessEvent_ToolUseAllowedByGate(t *testing.T) {
+	pub := &fakePublisher{}
+	gate := permissions.NewGate(permissions.PermissionConfig{
+		AllowedTools: []string{"Read", "Bash"},
+	})
+	bridge := &Bridge{
+		config: BridgeConfig{
+			AgentName: "leader",
+			TeamName:  "allowteam",
+			Role:      "leader",
+			Gate:      gate,
+		},
+		client: pub,
+	}
+
+	event := claude.StreamEvent{
+		Type:  "tool_use",
+		Name:  "Read",
+		Input: json.RawMessage(`{"file_path":"/workspace/main.go"}`),
+	}
+
+	var currentResult string
+	bridge.processEvent(&event, &currentResult)
+
+	msgs := pub.getMessages()
+	// Allowed tool: should publish 1 activity event.
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+	if msgs[0].Msg.Type != protocol.TypeActivityEvent {
+		t.Errorf("Type: got %q, want %q", msgs[0].Msg.Type, protocol.TypeActivityEvent)
+	}
+}
+
+func TestProcessEvent_ToolUseDeniedByDeniedCommand(t *testing.T) {
+	pub := &fakePublisher{}
+	gate := permissions.NewGate(permissions.PermissionConfig{
+		AllowedTools:   []string{"Bash"},
+		DeniedCommands: []string{"rm *"},
+	})
+	mgr := claude.NewManager(claude.ProcessConfig{})
+	bridge := &Bridge{
+		config: BridgeConfig{
+			AgentName: "leader",
+			TeamName:  "denyteam",
+			Role:      "leader",
+			Gate:      gate,
+		},
+		client:  pub,
+		manager: mgr,
+	}
+
+	event := claude.StreamEvent{
+		Type:  "tool_use",
+		Name:  "Bash",
+		Input: json.RawMessage(`{"command":"rm -rf /workspace"}`),
+	}
+
+	var currentResult string
+	bridge.processEvent(&event, &currentResult)
+
+	msgs := pub.getMessages()
+	// Denied command: activity event is published before gate check.
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message (activity event only), got %d", len(msgs))
+	}
+	if msgs[0].Msg.Type != protocol.TypeActivityEvent {
+		t.Errorf("Type: got %q, want %q", msgs[0].Msg.Type, protocol.TypeActivityEvent)
+	}
+}
+
+func TestProcessEvent_FilesystemScopeEnforced(t *testing.T) {
+	pub := &fakePublisher{}
+	gate := permissions.NewGate(permissions.PermissionConfig{
+		AllowedTools:    []string{"Read", "Write"},
+		FilesystemScope: "/workspace",
+	})
+	mgr := claude.NewManager(claude.ProcessConfig{})
+	bridge := &Bridge{
+		config: BridgeConfig{
+			AgentName: "leader",
+			TeamName:  "scopeteam",
+			Role:      "leader",
+			Gate:      gate,
+		},
+		client:  pub,
+		manager: mgr,
+	}
+
+	// Path OUTSIDE scope — should be denied.
+	event := claude.StreamEvent{
+		Type:  "tool_use",
+		Name:  "Read",
+		Input: json.RawMessage(`{"file_path":"/etc/passwd"}`),
+	}
+
+	var currentResult string
+	bridge.processEvent(&event, &currentResult)
+
+	msgs := pub.getMessages()
+	// Activity event published before gate check, but no further action.
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message (activity event only), got %d", len(msgs))
+	}
+	if msgs[0].Msg.Type != protocol.TypeActivityEvent {
+		t.Errorf("Type: got %q, want %q", msgs[0].Msg.Type, protocol.TypeActivityEvent)
+	}
+}
+
+func TestProcessEvent_FilesystemScopeAllowed(t *testing.T) {
+	pub := &fakePublisher{}
+	gate := permissions.NewGate(permissions.PermissionConfig{
+		AllowedTools:    []string{"Read"},
+		FilesystemScope: "/workspace",
+	})
+	bridge := &Bridge{
+		config: BridgeConfig{
+			AgentName: "leader",
+			TeamName:  "scopeokteam",
+			Role:      "leader",
+			Gate:      gate,
+		},
+		client: pub,
+	}
+
+	// Path INSIDE scope — should be allowed.
+	event := claude.StreamEvent{
+		Type:  "tool_use",
+		Name:  "Read",
+		Input: json.RawMessage(`{"file_path":"/workspace/src/main.go"}`),
+	}
+
+	var currentResult string
+	bridge.processEvent(&event, &currentResult)
+
+	msgs := pub.getMessages()
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+	// Should be allowed — activity event published.
+	if msgs[0].Msg.Type != protocol.TypeActivityEvent {
+		t.Errorf("Type: got %q, want %q", msgs[0].Msg.Type, protocol.TypeActivityEvent)
+	}
+}
+
+func TestProcessEvent_NilGateAllowsAll(t *testing.T) {
+	pub := &fakePublisher{}
+	bridge := &Bridge{
+		config: BridgeConfig{
+			AgentName: "leader",
+			TeamName:  "nogateteam",
+			Role:      "leader",
+			Gate:      nil, // No gate configured.
+		},
+		client: pub,
+	}
+
+	event := claude.StreamEvent{
+		Type:  "tool_use",
+		Name:  "Bash",
+		Input: json.RawMessage(`{"command":"echo hello"}`),
+	}
+
+	var currentResult string
+	bridge.processEvent(&event, &currentResult)
+
+	msgs := pub.getMessages()
+	// With no gate, only the activity event is published (no denial).
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+	if msgs[0].Msg.Type != protocol.TypeActivityEvent {
+		t.Errorf("Type: got %q, want %q", msgs[0].Msg.Type, protocol.TypeActivityEvent)
+	}
+}
+
+// --- processEvent: result clears currentResult ---
+
+func TestProcessEvent_ResultClearsCurrentResult(t *testing.T) {
+	pub := &fakePublisher{}
+	bridge := &Bridge{
+		config: BridgeConfig{
+			AgentName: "leader",
+			TeamName:  "clearteam",
+			Role:      "leader",
+		},
+		client: pub,
+	}
+
+	msgContent, _ := json.Marshal(map[string]string{"type": "text", "text": "Final answer"})
+	event := claude.StreamEvent{
+		Type:    "result",
+		Message: msgContent,
+	}
+
+	currentResult := "leftover from previous"
+	bridge.processEvent(&event, &currentResult)
+
+	// After processing a result, currentResult should be reset to empty.
+	if currentResult != "" {
+		t.Errorf("currentResult should be empty after result event, got %q", currentResult)
 	}
 }

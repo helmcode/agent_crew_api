@@ -132,6 +132,76 @@ func TestRunContainerValidation_BrokenSymlink(t *testing.T) {
 	}
 }
 
+func TestRunContainerValidation_SkillsInstalledOK(t *testing.T) {
+	tmpDir := t.TempDir()
+	workDir := tmpDir
+	claudeDir := filepath.Join(tmpDir, ".claude")
+
+	os.MkdirAll(claudeDir, 0755)
+	os.WriteFile(filepath.Join(claudeDir, "CLAUDE.md"), []byte("# test"), 0644)
+
+	// Create global skills directory with packages at $HOME/.claude/skills.
+	globalSkills := filepath.Join(tmpDir, ".claude", "skills")
+	// claudeDir is tmpDir/.claude, so globalSkills = claudeDir/skills.
+	// We need to create it as a real directory with content for skills_installed.
+	os.MkdirAll(globalSkills, 0755)
+	os.WriteFile(filepath.Join(globalSkills, "my-skill-pkg"), []byte("installed"), 0644)
+
+	// The skills_symlink check uses workDir/.claude/skills — since claudeDir
+	// IS workDir/.claude, and skills is a real dir, EvalSymlinks will succeed.
+
+	// Override HOME so skills_installed check uses our tmpDir.
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", origHome)
+
+	checks := runContainerValidation(workDir, claudeDir, true, false)
+
+	checkMap := make(map[string]protocol.ValidationCheck)
+	for _, c := range checks {
+		checkMap[c.Name] = c
+	}
+
+	// skills_installed should be OK because globalSkills has a file.
+	if c, ok := checkMap["skills_installed"]; !ok {
+		t.Error("expected skills_installed check to be present")
+	} else if c.Status != protocol.ValidationOK {
+		t.Errorf("skills_installed: got status %q, want 'ok'; message: %s", c.Status, c.Message)
+	}
+}
+
+func TestRunContainerValidation_SkillsInstalledEmpty(t *testing.T) {
+	tmpDir := t.TempDir()
+	workDir := tmpDir
+	claudeDir := filepath.Join(tmpDir, ".claude")
+
+	os.MkdirAll(claudeDir, 0755)
+	os.WriteFile(filepath.Join(claudeDir, "CLAUDE.md"), []byte("# test"), 0644)
+
+	// Create global skills directory but leave it EMPTY.
+	globalSkills := filepath.Join(tmpDir, ".claude", "skills")
+	os.MkdirAll(globalSkills, 0755)
+
+	// Override HOME so skills_installed check uses our tmpDir.
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", origHome)
+
+	checks := runContainerValidation(workDir, claudeDir, true, false)
+
+	checkMap := make(map[string]protocol.ValidationCheck)
+	for _, c := range checks {
+		checkMap[c.Name] = c
+	}
+
+	// skills_installed should be WARNING because the directory is empty.
+	if c, ok := checkMap["skills_installed"]; !ok {
+		t.Error("expected skills_installed check to be present")
+	} else if c.Status != protocol.ValidationWarning {
+		t.Errorf("skills_installed: got status %q, want 'warning'; message: %s", c.Status, c.Message)
+	}
+}
+
 func TestRunContainerValidation_NoSkillsOrAgentsConfigured(t *testing.T) {
 	tmpDir := t.TempDir()
 	workDir := tmpDir

@@ -265,6 +265,79 @@ func TestParsePayload_ContainerValidation(t *testing.T) {
 	}
 }
 
+func TestParsePayload_ActivityEvent(t *testing.T) {
+	original := ActivityEventPayload{
+		EventType: "tool_use",
+		AgentName: "leader",
+		ToolName:  "Bash",
+		Action:    "Bash: ls -la /workspace",
+		Payload:   json.RawMessage(`{"type":"tool_use","name":"Bash"}`),
+	}
+
+	msg, err := NewMessage("leader", "system", TypeActivityEvent, original)
+	if err != nil {
+		t.Fatalf("NewMessage: %v", err)
+	}
+
+	if msg.Type != TypeActivityEvent {
+		t.Errorf("type: got %q, want %q", msg.Type, TypeActivityEvent)
+	}
+
+	parsed, err := ParsePayload[ActivityEventPayload](msg)
+	if err != nil {
+		t.Fatalf("ParsePayload: %v", err)
+	}
+
+	if parsed.EventType != "tool_use" {
+		t.Errorf("event_type: got %q, want 'tool_use'", parsed.EventType)
+	}
+	if parsed.AgentName != "leader" {
+		t.Errorf("agent_name: got %q, want 'leader'", parsed.AgentName)
+	}
+	if parsed.ToolName != "Bash" {
+		t.Errorf("tool_name: got %q, want 'Bash'", parsed.ToolName)
+	}
+	if parsed.Action != "Bash: ls -la /workspace" {
+		t.Errorf("action: got %q, want 'Bash: ls -la /workspace'", parsed.Action)
+	}
+	if len(parsed.Payload) == 0 {
+		t.Error("expected non-empty payload")
+	}
+}
+
+func TestActivityEventPayload_JSONRoundTrip(t *testing.T) {
+	original := ActivityEventPayload{
+		EventType: "assistant",
+		AgentName: "worker-1",
+		ToolName:  "",
+		Action:    "assistant message",
+		Payload:   json.RawMessage(`{"type":"assistant","message":{"text":"thinking..."}}`),
+	}
+
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	var decoded ActivityEventPayload
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	if decoded.EventType != original.EventType {
+		t.Errorf("event_type mismatch: got %q, want %q", decoded.EventType, original.EventType)
+	}
+	if decoded.AgentName != original.AgentName {
+		t.Errorf("agent_name mismatch: got %q, want %q", decoded.AgentName, original.AgentName)
+	}
+	if decoded.Action != original.Action {
+		t.Errorf("action mismatch: got %q, want %q", decoded.Action, original.Action)
+	}
+	if string(decoded.Payload) != string(original.Payload) {
+		t.Errorf("payload mismatch: got %s, want %s", decoded.Payload, original.Payload)
+	}
+}
+
 func TestValidationCheckStatus_Values(t *testing.T) {
 	if string(ValidationOK) != "ok" {
 		t.Errorf("ValidationOK: got %q, want 'ok'", ValidationOK)
