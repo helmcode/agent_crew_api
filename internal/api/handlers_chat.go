@@ -160,7 +160,7 @@ func (s *Server) publishToTeamNATS(teamName, message string) error {
 // to prevent them from pushing conversation messages out of the result window.
 var chatMessageTypes = []string{
 	string(protocol.TypeUserMessage),
-	string(protocol.TypeTaskResult),
+	string(protocol.TypeLeaderResponse),
 }
 
 // GetMessages returns chat messages for a team, filtered to conversation-relevant

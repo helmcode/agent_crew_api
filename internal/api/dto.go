@@ -29,38 +29,50 @@ type UpdateTeamRequest struct {
 
 // CreateAgentInput defines an agent to be created alongside a team.
 type CreateAgentInput struct {
-	Name         string      `json:"name" validate:"required"`
-	Role         string      `json:"role"`
-	Specialty    string      `json:"specialty"`
-	SystemPrompt string      `json:"system_prompt"`
-	ClaudeMD     string      `json:"claude_md"`
-	Skills       interface{} `json:"skills"`
-	Permissions  interface{} `json:"permissions"`
-	Resources    interface{} `json:"resources"`
+	Name                   string      `json:"name" validate:"required"`
+	Role                   string      `json:"role"`
+	Specialty              string      `json:"specialty"`
+	SystemPrompt           string      `json:"system_prompt"`
+	ClaudeMD               string      `json:"claude_md"`
+	Skills                 interface{} `json:"skills"`
+	Permissions            interface{} `json:"permissions"`
+	Resources              interface{} `json:"resources"`
+	SubAgentDescription    string      `json:"sub_agent_description"`
+	SubAgentTools          string      `json:"sub_agent_tools"`
+	SubAgentModel          string      `json:"sub_agent_model"`
+	SubAgentPermissionMode string      `json:"sub_agent_permission_mode"`
 }
 
 // CreateAgentRequest is the payload for POST /api/teams/:id/agents.
 type CreateAgentRequest struct {
-	Name         string      `json:"name" validate:"required"`
-	Role         string      `json:"role"`
-	Specialty    string      `json:"specialty"`
-	SystemPrompt string      `json:"system_prompt"`
-	ClaudeMD     string      `json:"claude_md"`
-	Skills       interface{} `json:"skills"`
-	Permissions  interface{} `json:"permissions"`
-	Resources    interface{} `json:"resources"`
+	Name                   string      `json:"name" validate:"required"`
+	Role                   string      `json:"role"`
+	Specialty              string      `json:"specialty"`
+	SystemPrompt           string      `json:"system_prompt"`
+	ClaudeMD               string      `json:"claude_md"`
+	Skills                 interface{} `json:"skills"`
+	Permissions            interface{} `json:"permissions"`
+	Resources              interface{} `json:"resources"`
+	SubAgentDescription    string      `json:"sub_agent_description"`
+	SubAgentTools          string      `json:"sub_agent_tools"`
+	SubAgentModel          string      `json:"sub_agent_model"`
+	SubAgentPermissionMode string      `json:"sub_agent_permission_mode"`
 }
 
 // UpdateAgentRequest is the payload for PUT /api/teams/:id/agents/:agentId.
 type UpdateAgentRequest struct {
-	Name         *string     `json:"name"`
-	Role         *string     `json:"role"`
-	Specialty    *string     `json:"specialty"`
-	SystemPrompt *string     `json:"system_prompt"`
-	ClaudeMD     *string     `json:"claude_md"`
-	Skills       interface{} `json:"skills"`
-	Permissions  interface{} `json:"permissions"`
-	Resources    interface{} `json:"resources"`
+	Name                   *string     `json:"name"`
+	Role                   *string     `json:"role"`
+	Specialty              *string     `json:"specialty"`
+	SystemPrompt           *string     `json:"system_prompt"`
+	ClaudeMD               *string     `json:"claude_md"`
+	Skills                 interface{} `json:"skills"`
+	Permissions            interface{} `json:"permissions"`
+	Resources              interface{} `json:"resources"`
+	SubAgentDescription    *string     `json:"sub_agent_description"`
+	SubAgentTools          *string     `json:"sub_agent_tools"`
+	SubAgentModel          *string     `json:"sub_agent_model"`
+	SubAgentPermissionMode *string     `json:"sub_agent_permission_mode"`
 }
 
 // ChatRequest is the payload for POST /api/teams/:id/chat.

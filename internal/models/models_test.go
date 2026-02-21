@@ -137,14 +137,14 @@ func TestTaskLog_Create(t *testing.T) {
 		t.Fatalf("InitDB: %v", err)
 	}
 
-	payload, _ := json.Marshal(map[string]string{"task": "deploy"})
+	payload, _ := json.Marshal(map[string]string{"status": "completed", "result": "done"})
 	log := TaskLog{
 		ID:          "log-001",
 		TeamID:      "team-001",
 		MessageID:   "msg-001",
 		FromAgent:   "leader",
-		ToAgent:     "worker",
-		MessageType: "task_assignment",
+		ToAgent:     "user",
+		MessageType: "leader_response",
 		Payload:     JSON(payload),
 	}
 

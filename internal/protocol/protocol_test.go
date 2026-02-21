@@ -6,12 +6,12 @@ import (
 )
 
 func TestNewMessage(t *testing.T) {
-	payload := TaskAssignmentPayload{
-		Instruction:    "Deploy the service",
-		ExpectedOutput: "Service running",
+	payload := LeaderResponsePayload{
+		Status: "completed",
+		Result: "Deployment successful",
 	}
 
-	msg, err := NewMessage("leader", "worker-1", TypeTaskAssignment, payload)
+	msg, err := NewMessage("leader", "user", TypeLeaderResponse, payload)
 	if err != nil {
 		t.Fatalf("NewMessage: %v", err)
 	}
@@ -22,55 +22,29 @@ func TestNewMessage(t *testing.T) {
 	if msg.From != "leader" {
 		t.Errorf("expected from 'leader', got %q", msg.From)
 	}
-	if msg.To != "worker-1" {
-		t.Errorf("expected to 'worker-1', got %q", msg.To)
+	if msg.To != "user" {
+		t.Errorf("expected to 'user', got %q", msg.To)
 	}
-	if msg.Type != TypeTaskAssignment {
-		t.Errorf("expected type %q, got %q", TypeTaskAssignment, msg.Type)
+	if msg.Type != TypeLeaderResponse {
+		t.Errorf("expected type %q, got %q", TypeLeaderResponse, msg.Type)
 	}
 	if msg.Timestamp.IsZero() {
 		t.Error("expected non-zero timestamp")
 	}
 }
 
-func TestParsePayload_TaskAssignment(t *testing.T) {
-	original := TaskAssignmentPayload{
-		Instruction:     "Run terraform plan",
-		ExpectedOutput:  "No errors",
-		DeadlineSeconds: 300,
+func TestParsePayload_LeaderResponse(t *testing.T) {
+	original := LeaderResponsePayload{
+		Status: "completed",
+		Result: "All tasks finished",
 	}
 
-	msg, err := NewMessage("leader", "devops", TypeTaskAssignment, original)
+	msg, err := NewMessage("leader", "user", TypeLeaderResponse, original)
 	if err != nil {
 		t.Fatalf("NewMessage: %v", err)
 	}
 
-	parsed, err := ParsePayload[TaskAssignmentPayload](msg)
-	if err != nil {
-		t.Fatalf("ParsePayload: %v", err)
-	}
-
-	if parsed.Instruction != original.Instruction {
-		t.Errorf("instruction: got %q, want %q", parsed.Instruction, original.Instruction)
-	}
-	if parsed.DeadlineSeconds != 300 {
-		t.Errorf("deadline: got %d, want 300", parsed.DeadlineSeconds)
-	}
-}
-
-func TestParsePayload_TaskResult(t *testing.T) {
-	original := TaskResultPayload{
-		Status:    "completed",
-		Result:    "Deployment successful",
-		Artifacts: []string{"terraform.tfstate"},
-	}
-
-	msg, err := NewMessage("devops", "leader", TypeTaskResult, original)
-	if err != nil {
-		t.Fatalf("NewMessage: %v", err)
-	}
-
-	parsed, err := ParsePayload[TaskResultPayload](msg)
+	parsed, err := ParsePayload[LeaderResponsePayload](msg)
 	if err != nil {
 		t.Fatalf("ParsePayload: %v", err)
 	}
@@ -78,32 +52,33 @@ func TestParsePayload_TaskResult(t *testing.T) {
 	if parsed.Status != "completed" {
 		t.Errorf("status: got %q, want 'completed'", parsed.Status)
 	}
-	if len(parsed.Artifacts) != 1 {
-		t.Errorf("artifacts: got %d, want 1", len(parsed.Artifacts))
+	if parsed.Result != "All tasks finished" {
+		t.Errorf("result: got %q, want 'All tasks finished'", parsed.Result)
 	}
 }
 
-func TestParsePayload_StatusUpdate(t *testing.T) {
-	original := StatusUpdatePayload{
-		Agent:           "worker-1",
-		Status:          "working",
-		CurrentTask:     "Deploying service",
-		ContextUsagePct: 45,
-		TasksCompleted:  3,
+func TestParsePayload_LeaderResponseWithError(t *testing.T) {
+	original := LeaderResponsePayload{
+		Status: "failed",
+		Result: "",
+		Error:  "context limit exceeded",
 	}
 
-	msg, err := NewMessage("worker-1", "leader", TypeStatusUpdate, original)
+	msg, err := NewMessage("leader", "user", TypeLeaderResponse, original)
 	if err != nil {
 		t.Fatalf("NewMessage: %v", err)
 	}
 
-	parsed, err := ParsePayload[StatusUpdatePayload](msg)
+	parsed, err := ParsePayload[LeaderResponsePayload](msg)
 	if err != nil {
 		t.Fatalf("ParsePayload: %v", err)
 	}
 
-	if parsed.ContextUsagePct != 45 {
-		t.Errorf("context usage: got %d, want 45", parsed.ContextUsagePct)
+	if parsed.Status != "failed" {
+		t.Errorf("status: got %q, want 'failed'", parsed.Status)
+	}
+	if parsed.Error != "context limit exceeded" {
+		t.Errorf("error: got %q, want 'context limit exceeded'", parsed.Error)
 	}
 }
 
@@ -136,16 +111,16 @@ func TestParsePayload_InvalidPayload(t *testing.T) {
 		Payload: json.RawMessage(`{"invalid json`),
 	}
 
-	_, err := ParsePayload[TaskAssignmentPayload](msg)
+	_, err := ParsePayload[LeaderResponsePayload](msg)
 	if err == nil {
 		t.Fatal("expected error for invalid JSON payload")
 	}
 }
 
 func TestMessage_JSONRoundTrip(t *testing.T) {
-	msg, err := NewMessage("a", "b", TypeQuestion, QuestionPayload{
-		Question: "Which approach?",
-		Options:  []string{"A", "B"},
+	msg, err := NewMessage("leader", "user", TypeLeaderResponse, LeaderResponsePayload{
+		Status: "completed",
+		Result: "Task done",
 	})
 	if err != nil {
 		t.Fatalf("NewMessage: %v", err)
@@ -178,92 +153,47 @@ func TestMessage_JSONRoundTrip(t *testing.T) {
 }
 
 func TestChannels(t *testing.T) {
-	tests := []struct {
-		name     string
-		fn       func() (string, error)
-		expected string
-	}{
-		{"leader channel", func() (string, error) { return TeamLeaderChannel("myteam") }, "team.myteam.leader"},
-		{"agent channel", func() (string, error) { return AgentChannel("myteam", "worker-1") }, "team.myteam.worker-1"},
-		{"broadcast channel", func() (string, error) { return BroadcastChannel("myteam") }, "team.myteam.broadcast"},
-		{"status channel", func() (string, error) { return StatusChannel("myteam") }, "team.myteam.status"},
+	got, err := TeamLeaderChannel("myteam")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := tt.fn()
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if got != tt.expected {
-				t.Errorf("got %q, want %q", got, tt.expected)
-			}
-		})
+	if got != "team.myteam.leader" {
+		t.Errorf("got %q, want %q", got, "team.myteam.leader")
 	}
 }
 
 func TestChannels_InvalidNames(t *testing.T) {
 	tests := []struct {
-		name      string
-		teamName  string
-		agentName string
+		name     string
+		teamName string
 	}{
-		{"dot in team name", "my.team", ""},
-		{"wildcard in team name", "my*team", ""},
-		{"gt in team name", "my>team", ""},
-		{"space in team name", "my team", ""},
-		{"empty team name", "", ""},
-		{"dot in agent name", "myteam", "agent.1"},
-		{"wildcard in agent name", "myteam", "agent*"},
+		{"dot in team name", "my.team"},
+		{"wildcard in team name", "my*team"},
+		{"gt in team name", "my>team"},
+		{"space in team name", "my team"},
+		{"empty team name", ""},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := TeamLeaderChannel(tt.teamName)
-			if tt.teamName == "" || containsNATSSpecial(tt.teamName) {
-				if err == nil {
-					t.Error("expected error for invalid team name")
-				}
-			}
-
-			if tt.agentName != "" {
-				_, err = AgentChannel(tt.teamName, tt.agentName)
-				if err == nil {
-					t.Error("expected error for invalid name")
-				}
+			if err == nil {
+				t.Error("expected error for invalid team name")
 			}
 		})
 	}
 }
 
-func containsNATSSpecial(s string) bool {
-	for _, c := range s {
-		switch c {
-		case '.', '*', '>', ' ', '\t', '\n', '\r':
-			return true
-		}
-	}
-	return false
-}
-
 func TestMessageTypes(t *testing.T) {
 	types := []MessageType{
-		TypeTaskAssignment,
-		TypeTaskResult,
-		TypeQuestion,
-		TypeStatusUpdate,
-		TypeContextShare,
 		TypeUserMessage,
+		TypeLeaderResponse,
 		TypeSystemCommand,
 	}
 
 	expected := []string{
-		"task_assignment",
-		"task_result",
-		"question",
-		"status_update",
-		"context_share",
 		"user_message",
+		"leader_response",
 		"system_command",
 	}
 

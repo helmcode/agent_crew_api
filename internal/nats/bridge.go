@@ -5,32 +5,19 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"regexp"
-	"strings"
 	"sync"
-	"time"
 
 	"github.com/helmcode/agent-crew/internal/claude"
 	"github.com/helmcode/agent-crew/internal/permissions"
 	"github.com/helmcode/agent-crew/internal/protocol"
 )
 
-// Delegation represents a task delegation extracted from the leader's Claude output.
-type Delegation struct {
-	TargetAgent string
-	Instruction string
-}
-
-// delegationRe matches task delegation blocks in Claude's output.
-// Format: [TASK:agent-name] instruction [/TASK] (single or multi-line).
-var delegationRe = regexp.MustCompile(`(?s)\[TASK:([a-zA-Z0-9_-]+)\]\s*(.*?)\s*\[/TASK\]`)
-
 // BridgeConfig holds configuration for the NATS-Claude bridge.
 type BridgeConfig struct {
-	AgentName  string
-	TeamName   string
-	Role       string // "leader" or "worker"
-	Gate       *permissions.Gate
+	AgentName string
+	TeamName  string
+	Role      string // "leader"
+	Gate      *permissions.Gate
 }
 
 // publisher is the interface used by Bridge to publish protocol messages.
@@ -41,8 +28,9 @@ type publisher interface {
 }
 
 // Bridge connects NATS messaging with the Claude Code CLI process.
-// It receives NATS messages, extracts instructions, writes them to Claude's
-// stdin, reads Claude's stdout events, and publishes results back via NATS.
+// It receives user messages via the team leader NATS channel, forwards them
+// to Claude's stdin, reads Claude's stdout events, and publishes leader
+// responses back via NATS.
 type Bridge struct {
 	config  BridgeConfig
 	client  publisher
@@ -61,37 +49,17 @@ func NewBridge(config BridgeConfig, client *Client, manager *claude.Manager) *Br
 }
 
 // Start begins listening for NATS messages and forwarding Claude events.
-// It subscribes to the agent's direct channel and the team broadcast channel.
+// It subscribes only to the team leader channel for user↔leader communication.
 func (b *Bridge) Start(ctx context.Context) error {
 	ctx, b.cancel = context.WithCancel(ctx)
 
-	// Subscribe to direct messages for this agent.
-	agentSubject, err := protocol.AgentChannel(b.config.TeamName, b.config.AgentName)
+	// Subscribe to the team leader channel.
+	leaderSubject, err := protocol.TeamLeaderChannel(b.config.TeamName)
 	if err != nil {
-		return fmt.Errorf("building agent channel: %w", err)
+		return fmt.Errorf("building leader channel: %w", err)
 	}
-	if err := b.client.Subscribe(agentSubject, b.handleIncoming); err != nil {
+	if err := b.client.Subscribe(leaderSubject, b.handleIncoming); err != nil {
 		return err
-	}
-
-	// Subscribe to team broadcast messages.
-	broadcastSubject, err := protocol.BroadcastChannel(b.config.TeamName)
-	if err != nil {
-		return fmt.Errorf("building broadcast channel: %w", err)
-	}
-	if err := b.client.Subscribe(broadcastSubject, b.handleIncoming); err != nil {
-		return err
-	}
-
-	// If this is the leader, also subscribe to the leader channel.
-	if b.config.Role == "leader" {
-		leaderSubject, err := protocol.TeamLeaderChannel(b.config.TeamName)
-		if err != nil {
-			return fmt.Errorf("building leader channel: %w", err)
-		}
-		if err := b.client.Subscribe(leaderSubject, b.handleIncoming); err != nil {
-			return err
-		}
 	}
 
 	// Start goroutine to forward Claude stdout events to NATS.
@@ -124,40 +92,12 @@ func (b *Bridge) handleIncoming(msg *protocol.Message) {
 	)
 
 	switch msg.Type {
-	case protocol.TypeTaskAssignment:
-		b.handleTaskAssignment(msg)
-	case protocol.TypeTaskResult:
-		b.handleTaskResult(msg)
 	case protocol.TypeUserMessage:
 		b.handleUserMessage(msg)
 	case protocol.TypeSystemCommand:
 		b.handleSystemCommand(msg)
-	case protocol.TypeQuestion:
-		b.handleQuestion(msg)
-	case protocol.TypeContextShare:
-		b.handleContextShare(msg)
 	default:
 		slog.Debug("unhandled message type", "type", msg.Type)
-	}
-}
-
-// handleTaskAssignment extracts the instruction and sends it to Claude.
-func (b *Bridge) handleTaskAssignment(msg *protocol.Message) {
-	payload, err := protocol.ParsePayload[protocol.TaskAssignmentPayload](msg)
-	if err != nil {
-		slog.Error("failed to parse task assignment", "error", err)
-		b.publishError(msg.From, msg.MessageID, "failed to parse task assignment")
-		return
-	}
-
-	// Send status update: working.
-	b.publishStatus("working", payload.Instruction)
-
-	// Write instruction to Claude stdin.
-	if err := b.manager.SendInput(payload.Instruction); err != nil {
-		slog.Error("failed to send input to claude", "error", err)
-		b.publishTaskResult(msg.From, msg.MessageID, "failed", "", err.Error())
-		return
 	}
 }
 
@@ -205,130 +145,6 @@ func (b *Bridge) handleSystemCommand(msg *protocol.Message) {
 	}
 }
 
-// handleQuestion forwards questions to Claude for processing.
-func (b *Bridge) handleQuestion(msg *protocol.Message) {
-	payload, err := protocol.ParsePayload[protocol.QuestionPayload](msg)
-	if err != nil {
-		slog.Error("failed to parse question", "error", err)
-		return
-	}
-
-	input := "Question from " + msg.From + ": " + payload.Question
-	if len(payload.Options) > 0 {
-		input += "\nOptions: "
-		for i, opt := range payload.Options {
-			if i > 0 {
-				input += ", "
-			}
-			input += opt
-		}
-	}
-
-	if err := b.manager.SendInput(input); err != nil {
-		slog.Error("failed to send question to claude", "error", err)
-	}
-}
-
-// handleContextShare forwards shared context to Claude.
-func (b *Bridge) handleContextShare(msg *protocol.Message) {
-	raw, err := json.Marshal(msg.Payload)
-	if err != nil {
-		slog.Error("failed to marshal context share payload", "error", err)
-		return
-	}
-
-	input := "Context shared by " + msg.From + ": " + string(raw)
-	if err := b.manager.SendInput(input); err != nil {
-		slog.Error("failed to send context to claude", "error", err)
-	}
-}
-
-// handleTaskResult processes a task result from another agent. The leader uses
-// this to receive worker completions and feed them back to Claude for further
-// processing or summarisation.
-func (b *Bridge) handleTaskResult(msg *protocol.Message) {
-	// Ignore own results to prevent feedback loops.
-	if msg.From == b.config.AgentName {
-		return
-	}
-
-	payload, err := protocol.ParsePayload[protocol.TaskResultPayload](msg)
-	if err != nil {
-		slog.Error("failed to parse task result", "error", err)
-		return
-	}
-
-	slog.Info("received task result from agent",
-		"from", msg.From,
-		"status", payload.Status,
-		"agent", b.config.AgentName,
-	)
-
-	var input string
-	if payload.Status == "failed" {
-		input = fmt.Sprintf("Agent %s reported an error while executing the assigned task:\n%s", msg.From, payload.Error)
-	} else {
-		input = fmt.Sprintf("Agent %s completed the assigned task. Result:\n%s", msg.From, payload.Result)
-	}
-
-	b.publishStatus("working", "processing result from "+msg.From)
-
-	if err := b.manager.SendInput(input); err != nil {
-		slog.Error("failed to forward task result to claude", "error", err)
-	}
-}
-
-// parseDelegations extracts task delegation blocks from the leader's Claude output.
-func parseDelegations(text string) []Delegation {
-	matches := delegationRe.FindAllStringSubmatch(text, -1)
-	if len(matches) == 0 {
-		return nil
-	}
-
-	var delegations []Delegation
-	for _, m := range matches {
-		agent := strings.TrimSpace(m[1])
-		instruction := strings.TrimSpace(m[2])
-		if agent != "" && instruction != "" {
-			delegations = append(delegations, Delegation{
-				TargetAgent: agent,
-				Instruction: instruction,
-			})
-		}
-	}
-	return delegations
-}
-
-// publishTaskAssignment sends a task assignment to a specific agent's NATS channel.
-func (b *Bridge) publishTaskAssignment(targetAgent, instruction string) {
-	payload := protocol.TaskAssignmentPayload{
-		Instruction: instruction,
-	}
-
-	msg, err := protocol.NewMessage(
-		b.config.AgentName,
-		targetAgent,
-		protocol.TypeTaskAssignment,
-		payload,
-	)
-	if err != nil {
-		slog.Error("failed to create task assignment", "target", targetAgent, "error", err)
-		return
-	}
-
-	subject, err := protocol.AgentChannel(b.config.TeamName, targetAgent)
-	if err != nil {
-		slog.Error("failed to build agent channel for delegation", "target", targetAgent, "error", err)
-		return
-	}
-
-	if err := b.client.Publish(subject, msg); err != nil {
-		slog.Error("failed to publish task assignment", "target", targetAgent, "error", err)
-	} else {
-		slog.Info("task assignment published", "target", targetAgent, "subject", subject)
-	}
-}
-
 // forwardEvents reads Claude stdout events and publishes significant ones to NATS.
 func (b *Bridge) forwardEvents(ctx context.Context) {
 	defer b.wg.Done()
@@ -344,7 +160,6 @@ func (b *Bridge) forwardEvents(ctx context.Context) {
 			if !ok {
 				// Channel closed, process exited.
 				slog.Info("claude events channel closed", "agent", b.config.AgentName)
-				b.publishStatus("stopped", "")
 				return
 			}
 			b.processEvent(&event, &currentResult)
@@ -389,10 +204,7 @@ func (b *Bridge) processEvent(event *claude.StreamEvent, currentResult *string) 
 				"friendly", friendlyMsg,
 			)
 
-			// Publish the error as a failed task result so it reaches the
-			// Activity panel via TaskLog → WebSocket.
-			b.publishTaskResult("leader", "", "failed", "", friendlyMsg)
-			b.publishStatus("error", friendlyMsg)
+			b.publishLeaderResponse("", "failed", "", friendlyMsg)
 			*currentResult = ""
 			return
 		}
@@ -411,64 +223,17 @@ func (b *Bridge) processEvent(event *claude.StreamEvent, currentResult *string) 
 		}
 
 		// Publish the result to the leader channel.
-		b.publishTaskResult("leader", "", "completed", *currentResult, "")
-
-		// If this agent is the leader, check for task delegations in the result.
-		if b.config.Role == "leader" && *currentResult != "" {
-			delegations := parseDelegations(*currentResult)
-			for _, d := range delegations {
-				slog.Info("delegating task to agent",
-					"target", d.TargetAgent,
-					"instruction_length", len(d.Instruction),
-				)
-				b.publishTaskAssignment(d.TargetAgent, d.Instruction)
-			}
-		}
-
-		b.publishStatus("idle", "")
+		b.publishLeaderResponse("", "completed", *currentResult, "")
 		*currentResult = ""
 
 	case "error":
 		slog.Error("claude error event", "agent", b.config.AgentName)
-		b.publishStatus("error", "")
 	}
 }
 
-// publishStatus sends a status update to the team status channel.
-func (b *Bridge) publishStatus(status, currentTask string) {
-	statusPayload := protocol.StatusUpdatePayload{
-		Agent:       b.config.AgentName,
-		Status:      status,
-		CurrentTask: currentTask,
-		LastActivity: time.Now().UTC(),
-	}
-
-	msg, err := protocol.NewMessage(
-		b.config.AgentName,
-		"",
-		protocol.TypeStatusUpdate,
-		statusPayload,
-	)
-	if err != nil {
-		slog.Error("failed to create status message", "error", err)
-		return
-	}
-
-	subject, err := protocol.StatusChannel(b.config.TeamName)
-	if err != nil {
-		slog.Error("failed to build status channel", "error", err)
-		return
-	}
-	if err := b.client.Publish(subject, msg); err != nil {
-		slog.Error("failed to publish status", "error", err)
-	}
-}
-
-// publishTaskResult sends a task result back to the specified recipient.
-// The "to" parameter must be an agent name (e.g. "leader"), never a NATS subject.
-// The NATS subject is always derived from the agent name to keep Message.To clean.
-func (b *Bridge) publishTaskResult(to, refMsgID, status, result, errMsg string) {
-	resultPayload := protocol.TaskResultPayload{
+// publishLeaderResponse sends a leader response to the team leader NATS channel.
+func (b *Bridge) publishLeaderResponse(refMsgID, status, result, errMsg string) {
+	payload := protocol.LeaderResponsePayload{
 		Status: status,
 		Result: result,
 		Error:  errMsg,
@@ -476,28 +241,23 @@ func (b *Bridge) publishTaskResult(to, refMsgID, status, result, errMsg string) 
 
 	msg, err := protocol.NewMessage(
 		b.config.AgentName,
-		to,
-		protocol.TypeTaskResult,
-		resultPayload,
+		"user",
+		protocol.TypeLeaderResponse,
+		payload,
 	)
 	if err != nil {
-		slog.Error("failed to create result message", "error", err)
+		slog.Error("failed to create leader response message", "error", err)
 		return
 	}
 	msg.RefMessageID = refMsgID
 
-	subject, err := protocol.AgentChannel(b.config.TeamName, to)
+	subject, err := protocol.TeamLeaderChannel(b.config.TeamName)
 	if err != nil {
-		slog.Error("failed to build agent channel", "to", to, "error", err)
+		slog.Error("failed to build leader channel", "error", err)
 		return
 	}
 
 	if err := b.client.Publish(subject, msg); err != nil {
-		slog.Error("failed to publish task result", "error", err)
+		slog.Error("failed to publish leader response", "error", err)
 	}
-}
-
-// publishError sends an error result back to the sender.
-func (b *Bridge) publishError(to, refMsgID, errMsg string) {
-	b.publishTaskResult(to, refMsgID, "failed", "", errMsg)
 }

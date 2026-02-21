@@ -8,6 +8,17 @@ import (
 	"strings"
 )
 
+// SubAgentInfo holds the metadata needed to generate a sub-agent file
+// at .claude/agents/{name}.md with YAML frontmatter.
+type SubAgentInfo struct {
+	Name           string
+	Description    string
+	Tools          string
+	Model          string
+	PermissionMode string
+	ClaudeMD       string // Body content written after the YAML frontmatter.
+}
+
 // TeamMemberInfo describes a teammate for inclusion in the leader's CLAUDE.md.
 type TeamMemberInfo struct {
 	Name      string
@@ -111,6 +122,74 @@ func GenerateClaudeMD(agent AgentWorkspaceInfo) string {
 	}
 
 	return b.String()
+}
+
+// SetupSubAgentFile creates a sub-agent definition file at
+// {workspacePath}/.claude/agents/{agentName}.md with YAML frontmatter.
+// This is used for non-leader agents in the native Claude Code sub-agent architecture.
+func SetupSubAgentFile(workspacePath string, agent SubAgentInfo) (string, error) {
+	agentsDir := filepath.Join(workspacePath, ".claude", "agents")
+	if err := os.MkdirAll(agentsDir, 0755); err != nil {
+		return "", fmt.Errorf("creating agents dir %s: %w", agentsDir, err)
+	}
+
+	safeName := sanitizeName(agent.Name)
+	filePath := filepath.Join(agentsDir, safeName+".md")
+	content := GenerateSubAgentContent(agent)
+
+	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
+		return "", fmt.Errorf("writing sub-agent file for %s: %w", agent.Name, err)
+	}
+
+	return filePath, nil
+}
+
+// GenerateSubAgentContent produces the YAML frontmatter + body content for a
+// sub-agent file. Optional frontmatter fields are omitted when empty or default.
+func GenerateSubAgentContent(agent SubAgentInfo) string {
+	var b strings.Builder
+
+	b.WriteString("---\n")
+	b.WriteString("name: " + agent.Name + "\n")
+
+	if agent.Description != "" {
+		b.WriteString("description: " + yamlQuoteIfNeeded(agent.Description) + "\n")
+	}
+	if agent.Tools != "" {
+		b.WriteString("tools: " + yamlQuoteIfNeeded(agent.Tools) + "\n")
+	}
+	if agent.Model != "" && agent.Model != "inherit" {
+		b.WriteString("model: " + agent.Model + "\n")
+	}
+	if agent.PermissionMode != "" && agent.PermissionMode != "default" {
+		b.WriteString("permissionMode: " + agent.PermissionMode + "\n")
+	}
+
+	b.WriteString("---\n")
+
+	if agent.ClaudeMD != "" {
+		b.WriteString("\n")
+		b.WriteString(agent.ClaudeMD)
+		// Ensure trailing newline.
+		if !strings.HasSuffix(agent.ClaudeMD, "\n") {
+			b.WriteString("\n")
+		}
+	}
+
+	return b.String()
+}
+
+// yamlQuoteIfNeeded wraps a string in double quotes if it contains characters
+// that could be problematic in YAML (colons, brackets, newlines, etc.).
+func yamlQuoteIfNeeded(s string) string {
+	if strings.ContainsAny(s, ":{}[]&*#?|->!%@`,\n\r") {
+		escaped := strings.ReplaceAll(s, `\`, `\\`)
+		escaped = strings.ReplaceAll(escaped, `"`, `\"`)
+		escaped = strings.ReplaceAll(escaped, "\n", `\n`)
+		escaped = strings.ReplaceAll(escaped, "\r", `\r`)
+		return `"` + escaped + `"`
+	}
+	return s
 }
 
 // formatSkills converts the JSON skills field into a readable markdown list.

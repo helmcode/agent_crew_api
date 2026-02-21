@@ -63,7 +63,7 @@ func TestStopTeam_WorksFromErrorStatus(t *testing.T) {
 	}
 }
 
-func TestStopTeam_ClearsAgentContainerIDs(t *testing.T) {
+func TestStopTeam_ClearsLeaderContainerOnly(t *testing.T) {
 	srv, _ := setupTestServer(t)
 
 	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
@@ -76,29 +76,119 @@ func TestStopTeam_ClearsAgentContainerIDs(t *testing.T) {
 	var team models.Team
 	parseJSON(t, teamRec, &team)
 
-	// Simulate running state with container IDs.
+	// Simulate running state — only the leader has a container in the new model.
 	srv.db.Model(&team).Update("status", models.TeamStatusRunning)
 	for i := range team.Agents {
-		srv.db.Model(&team.Agents[i]).Updates(map[string]interface{}{
-			"container_id":     "container-" + team.Agents[i].Name,
-			"container_status": models.ContainerStatusRunning,
-		})
+		if team.Agents[i].Role == models.AgentRoleLeader {
+			srv.db.Model(&team.Agents[i]).Updates(map[string]interface{}{
+				"container_id":     "container-" + team.Agents[i].Name,
+				"container_status": models.ContainerStatusRunning,
+			})
+		}
 	}
 
 	// Stop the team.
 	doRequest(srv, "POST", "/api/teams/"+team.ID+"/stop", nil)
 
-	// Verify agent container IDs and statuses were cleared.
+	// Verify leader container state was cleared.
 	var agents []models.Agent
 	srv.db.Where("team_id = ?", team.ID).Find(&agents)
 
 	for _, a := range agents {
-		if a.ContainerID != "" {
-			t.Errorf("agent %s container_id should be empty, got %q", a.Name, a.ContainerID)
+		if a.Role == models.AgentRoleLeader {
+			if a.ContainerID != "" {
+				t.Errorf("leader container_id should be empty, got %q", a.ContainerID)
+			}
+			if a.ContainerStatus != models.ContainerStatusStopped {
+				t.Errorf("leader container_status: got %q, want %q", a.ContainerStatus, models.ContainerStatusStopped)
+			}
+		} else {
+			// Workers should never have had container state in the single-container model.
+			if a.ContainerID != "" {
+				t.Errorf("worker %s should have no container_id, got %q", a.Name, a.ContainerID)
+			}
 		}
-		if a.ContainerStatus != models.ContainerStatusStopped {
-			t.Errorf("agent %s container_status: got %q, want %q", a.Name, a.ContainerStatus, models.ContainerStatusStopped)
+	}
+}
+
+func TestDeployTeamAsync_OnlyDeploysLeader(t *testing.T) {
+	srv, mock := setupTestServer(t)
+
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name: "single-container-team",
+		Agents: []CreateAgentInput{
+			{Name: "the-leader", Role: "leader", SystemPrompt: "You lead"},
+			{Name: "sub-agent-1", Role: "worker", Specialty: "frontend"},
+			{Name: "sub-agent-2", Role: "worker", Specialty: "backend"},
+		},
+	})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+
+	// Call deployTeamAsync synchronously.
+	srv.deployTeamAsync(team)
+
+	// Only the leader should have been deployed as a container.
+	if len(mock.deployedAgents) != 1 {
+		t.Fatalf("deployed agents: got %d, want 1", len(mock.deployedAgents))
+	}
+	if mock.deployedAgents[0] != "the-leader" {
+		t.Errorf("deployed agent name: got %q, want 'the-leader'", mock.deployedAgents[0])
+	}
+
+	// Verify team status is running.
+	var updated models.Team
+	srv.db.First(&updated, "id = ?", team.ID)
+	if updated.Status != models.TeamStatusRunning {
+		t.Errorf("team status: got %q, want %q", updated.Status, models.TeamStatusRunning)
+	}
+
+	// Verify leader has container state.
+	var leader models.Agent
+	srv.db.Where("team_id = ? AND role = ?", team.ID, models.AgentRoleLeader).First(&leader)
+	if leader.ContainerID != "container-the-leader" {
+		t.Errorf("leader container_id: got %q, want 'container-the-leader'", leader.ContainerID)
+	}
+	if leader.ContainerStatus != models.ContainerStatusRunning {
+		t.Errorf("leader container_status: got %q, want %q", leader.ContainerStatus, models.ContainerStatusRunning)
+	}
+
+	// Verify workers have no container state.
+	var workers []models.Agent
+	srv.db.Where("team_id = ? AND role = ?", team.ID, models.AgentRoleWorker).Find(&workers)
+	for _, w := range workers {
+		if w.ContainerID != "" {
+			t.Errorf("worker %s should have no container_id, got %q", w.Name, w.ContainerID)
 		}
+	}
+}
+
+func TestDeployTeamAsync_NoLeader_SetsError(t *testing.T) {
+	srv, mock := setupTestServer(t)
+
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name: "no-leader-team",
+		Agents: []CreateAgentInput{
+			{Name: "worker-1", Role: "worker"},
+			{Name: "worker-2", Role: "worker"},
+		},
+	})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+
+	// Call deployTeamAsync synchronously.
+	srv.deployTeamAsync(team)
+
+	// No containers should have been deployed.
+	if len(mock.deployedAgents) != 0 {
+		t.Fatalf("deployed agents: got %d, want 0", len(mock.deployedAgents))
+	}
+
+	// Verify team status is error (no leader found).
+	var updated models.Team
+	srv.db.First(&updated, "id = ?", team.ID)
+	if updated.Status != models.TeamStatusError {
+		t.Errorf("team status: got %q, want %q", updated.Status, models.TeamStatusError)
 	}
 }
 

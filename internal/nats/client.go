@@ -142,46 +142,6 @@ func (c *Client) Subscribe(subject string, handler func(*protocol.Message)) erro
 	return nil
 }
 
-// Request sends a protocol message and waits for a reply within the given timeout.
-// This implements the request/reply pattern used for leader → agent task assignment.
-func (c *Client) Request(subject string, msg *protocol.Message, timeout time.Duration) (*protocol.Message, error) {
-	data, err := json.Marshal(msg)
-	if err != nil {
-		return nil, fmt.Errorf("marshaling request: %w", err)
-	}
-
-	reply, err := c.conn.Request(subject, data, timeout)
-	if err != nil {
-		return nil, fmt.Errorf("request to %s: %w", subject, err)
-	}
-
-	var response protocol.Message
-	if err := json.Unmarshal(reply.Data, &response); err != nil {
-		return nil, fmt.Errorf("unmarshaling reply: %w", err)
-	}
-	return &response, nil
-}
-
-// QueueSubscribe registers a handler for messages using a queue group.
-// This distributes messages among multiple subscribers in the same group.
-func (c *Client) QueueSubscribe(subject, queue string, handler func(*protocol.Message)) error {
-	sub, err := c.conn.QueueSubscribe(subject, queue, func(natsMsg *nats.Msg) {
-		var msg protocol.Message
-		if err := json.Unmarshal(natsMsg.Data, &msg); err != nil {
-			slog.Warn("failed to unmarshal nats message", "subject", subject, "error", err)
-			return
-		}
-		handler(&msg)
-	})
-	if err != nil {
-		return fmt.Errorf("queue subscribing to %s: %w", subject, err)
-	}
-
-	c.subs = append(c.subs, sub)
-	slog.Debug("queue subscribed", "subject", subject, "queue", queue)
-	return nil
-}
-
 // Flush flushes the connection buffer to the server.
 func (c *Client) Flush() error {
 	return c.conn.Flush()

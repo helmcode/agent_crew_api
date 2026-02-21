@@ -40,158 +40,53 @@ func (f *fakePublisher) getMessages() []publishedMsg {
 	return out
 }
 
-// --- parseDelegations tests ---
+// --- publishLeaderResponse tests ---
 
-func TestParseDelegations_NoDelegations(t *testing.T) {
-	tests := []struct {
-		name  string
-		input string
-	}{
-		{"empty string", ""},
-		{"plain text", "Just some regular output from Claude."},
-		{"partial tag", "[TASK:agent] no closing tag"},
-		{"mismatched tags", "[TASK:agent] hello [/TASK:wrong]"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := parseDelegations(tt.input)
-			if len(got) != 0 {
-				t.Errorf("parseDelegations(%q): got %d delegations, want 0", tt.input, len(got))
-			}
-		})
-	}
-}
-
-func TestParseDelegations_SingleDelegation(t *testing.T) {
-	input := "Some preamble text.\n[TASK:worker-1] Please implement the login page [/TASK]\nSome follow-up."
-	got := parseDelegations(input)
-
-	if len(got) != 1 {
-		t.Fatalf("got %d delegations, want 1", len(got))
-	}
-	if got[0].TargetAgent != "worker-1" {
-		t.Errorf("TargetAgent: got %q, want 'worker-1'", got[0].TargetAgent)
-	}
-	if got[0].Instruction != "Please implement the login page" {
-		t.Errorf("Instruction: got %q, want 'Please implement the login page'", got[0].Instruction)
-	}
-}
-
-func TestParseDelegations_MultipleDelegations(t *testing.T) {
-	input := `I'll delegate these tasks:
-[TASK:frontend-dev] Build the UI components for the dashboard [/TASK]
-[TASK:backend-dev] Create the REST API endpoints [/TASK]
-[TASK:devops] Set up the CI/CD pipeline [/TASK]`
-
-	got := parseDelegations(input)
-	if len(got) != 3 {
-		t.Fatalf("got %d delegations, want 3", len(got))
-	}
-
-	expected := []struct {
-		agent       string
-		instruction string
-	}{
-		{"frontend-dev", "Build the UI components for the dashboard"},
-		{"backend-dev", "Create the REST API endpoints"},
-		{"devops", "Set up the CI/CD pipeline"},
-	}
-
-	for i, e := range expected {
-		if got[i].TargetAgent != e.agent {
-			t.Errorf("[%d] TargetAgent: got %q, want %q", i, got[i].TargetAgent, e.agent)
-		}
-		if got[i].Instruction != e.instruction {
-			t.Errorf("[%d] Instruction: got %q, want %q", i, got[i].Instruction, e.instruction)
-		}
-	}
-}
-
-func TestParseDelegations_MultilineInstruction(t *testing.T) {
-	input := `[TASK:worker-1]
-Please do the following:
-1. Read the config file
-2. Update the database schema
-3. Run the migrations
-[/TASK]`
-
-	got := parseDelegations(input)
-	if len(got) != 1 {
-		t.Fatalf("got %d delegations, want 1", len(got))
-	}
-	if got[0].TargetAgent != "worker-1" {
-		t.Errorf("TargetAgent: got %q, want 'worker-1'", got[0].TargetAgent)
-	}
-	// Instruction should contain all lines, trimmed.
-	if got[0].Instruction == "" {
-		t.Error("Instruction should not be empty")
-	}
-}
-
-func TestParseDelegations_AgentNameValidation(t *testing.T) {
-	// Agent names with hyphens and underscores should work.
-	input := "[TASK:my_agent-01] do stuff [/TASK]"
-	got := parseDelegations(input)
-	if len(got) != 1 {
-		t.Fatalf("got %d delegations, want 1", len(got))
-	}
-	if got[0].TargetAgent != "my_agent-01" {
-		t.Errorf("TargetAgent: got %q, want 'my_agent-01'", got[0].TargetAgent)
-	}
-}
-
-func TestParseDelegations_EmptyInstruction(t *testing.T) {
-	// Empty instruction should be skipped.
-	input := "[TASK:worker-1]   [/TASK]"
-	got := parseDelegations(input)
-	if len(got) != 0 {
-		t.Errorf("got %d delegations, want 0 (empty instruction)", len(got))
-	}
-}
-
-// --- publishTaskResult tests ---
-
-func TestPublishTaskResult_SetsAgentNameNotSubject(t *testing.T) {
+func TestPublishLeaderResponse(t *testing.T) {
 	pub := &fakePublisher{}
 	bridge := &Bridge{
 		config: BridgeConfig{
-			AgentName: "worker-1",
+			AgentName: "leader",
 			TeamName:  "testteam",
-			Role:      "worker",
+			Role:      "leader",
 		},
 		client: pub,
 	}
 
-	bridge.publishTaskResult("leader", "ref-123", "completed", "task done", "")
+	bridge.publishLeaderResponse("ref-123", "completed", "task done", "")
 
 	msgs := pub.getMessages()
 	if len(msgs) != 1 {
 		t.Fatalf("expected 1 published message, got %d", len(msgs))
 	}
 
-	// Verify Message.To is the agent name, not a NATS subject.
-	if msgs[0].Msg.To != "leader" {
-		t.Errorf("Message.To: got %q, want 'leader'", msgs[0].Msg.To)
+	// Message.To must be "user".
+	if msgs[0].Msg.To != "user" {
+		t.Errorf("Message.To: got %q, want 'user'", msgs[0].Msg.To)
 	}
 
-	// Verify the NATS subject is correctly built.
+	// NATS subject must be the team leader channel.
 	if msgs[0].Subject != "team.testteam.leader" {
 		t.Errorf("Subject: got %q, want 'team.testteam.leader'", msgs[0].Subject)
 	}
 
-	// Verify From is set correctly.
-	if msgs[0].Msg.From != "worker-1" {
-		t.Errorf("Message.From: got %q, want 'worker-1'", msgs[0].Msg.From)
+	// From must be the agent name.
+	if msgs[0].Msg.From != "leader" {
+		t.Errorf("Message.From: got %q, want 'leader'", msgs[0].Msg.From)
 	}
 
-	// Verify RefMessageID is set.
+	// Message type must be leader_response.
+	if msgs[0].Msg.Type != protocol.TypeLeaderResponse {
+		t.Errorf("Type: got %q, want %q", msgs[0].Msg.Type, protocol.TypeLeaderResponse)
+	}
+
+	// RefMessageID must be set.
 	if msgs[0].Msg.RefMessageID != "ref-123" {
 		t.Errorf("RefMessageID: got %q, want 'ref-123'", msgs[0].Msg.RefMessageID)
 	}
 
 	// Verify the payload.
-	var payload protocol.TaskResultPayload
+	var payload protocol.LeaderResponsePayload
 	if err := json.Unmarshal(msgs[0].Msg.Payload, &payload); err != nil {
 		t.Fatalf("unmarshal payload: %v", err)
 	}
@@ -203,29 +98,29 @@ func TestPublishTaskResult_SetsAgentNameNotSubject(t *testing.T) {
 	}
 }
 
-func TestPublishTaskResult_ErrorPayload(t *testing.T) {
+func TestPublishLeaderResponse_ErrorPayload(t *testing.T) {
 	pub := &fakePublisher{}
 	bridge := &Bridge{
 		config: BridgeConfig{
-			AgentName: "worker-2",
+			AgentName: "leader",
 			TeamName:  "myteam",
-			Role:      "worker",
+			Role:      "leader",
 		},
 		client: pub,
 	}
 
-	bridge.publishTaskResult("leader", "", "failed", "", "something went wrong")
+	bridge.publishLeaderResponse("", "failed", "", "something went wrong")
 
 	msgs := pub.getMessages()
 	if len(msgs) != 1 {
 		t.Fatalf("expected 1 published message, got %d", len(msgs))
 	}
 
-	if msgs[0].Msg.To != "leader" {
-		t.Errorf("Message.To: got %q, want 'leader'", msgs[0].Msg.To)
+	if msgs[0].Msg.To != "user" {
+		t.Errorf("Message.To: got %q, want 'user'", msgs[0].Msg.To)
 	}
 
-	var payload protocol.TaskResultPayload
+	var payload protocol.LeaderResponsePayload
 	if err := json.Unmarshal(msgs[0].Msg.Payload, &payload); err != nil {
 		t.Fatalf("unmarshal payload: %v", err)
 	}
@@ -237,119 +132,15 @@ func TestPublishTaskResult_ErrorPayload(t *testing.T) {
 	}
 }
 
-func TestPublishTaskResult_SubjectBuiltFromAgentName(t *testing.T) {
-	// Verify that different agent names produce the correct NATS subjects.
-	tests := []struct {
-		to              string
-		expectedSubject string
-	}{
-		{"leader", "team.alpha.leader"},
-		{"worker-1", "team.alpha.worker-1"},
-		{"frontend-dev", "team.alpha.frontend-dev"},
-	}
+// --- processEvent tests ---
 
-	for _, tt := range tests {
-		pub := &fakePublisher{}
-		bridge := &Bridge{
-			config: BridgeConfig{
-				AgentName: "sender",
-				TeamName:  "alpha",
-				Role:      "leader",
-			},
-			client: pub,
-		}
-
-		bridge.publishTaskResult(tt.to, "", "completed", "done", "")
-
-		msgs := pub.getMessages()
-		if len(msgs) != 1 {
-			t.Fatalf("to=%q: expected 1 message, got %d", tt.to, len(msgs))
-		}
-		if msgs[0].Subject != tt.expectedSubject {
-			t.Errorf("to=%q: Subject got %q, want %q", tt.to, msgs[0].Subject, tt.expectedSubject)
-		}
-		if msgs[0].Msg.To != tt.to {
-			t.Errorf("to=%q: Message.To got %q, want %q", tt.to, msgs[0].Msg.To, tt.to)
-		}
-	}
-}
-
-// --- publishStatus tests ---
-
-func TestPublishStatus(t *testing.T) {
-	pub := &fakePublisher{}
-	bridge := &Bridge{
-		config: BridgeConfig{
-			AgentName: "worker-1",
-			TeamName:  "statusteam",
-			Role:      "worker",
-		},
-		client: pub,
-	}
-
-	bridge.publishStatus("idle", "")
-
-	msgs := pub.getMessages()
-	if len(msgs) != 1 {
-		t.Fatalf("expected 1 published message, got %d", len(msgs))
-	}
-
-	if msgs[0].Subject != "team.statusteam.status" {
-		t.Errorf("Subject: got %q, want 'team.statusteam.status'", msgs[0].Subject)
-	}
-	if msgs[0].Msg.Type != protocol.TypeStatusUpdate {
-		t.Errorf("Type: got %q, want %q", msgs[0].Msg.Type, protocol.TypeStatusUpdate)
-	}
-}
-
-// --- publishTaskAssignment tests ---
-
-func TestPublishTaskAssignment(t *testing.T) {
+func TestProcessEvent_ResultPublishesLeaderResponse(t *testing.T) {
 	pub := &fakePublisher{}
 	bridge := &Bridge{
 		config: BridgeConfig{
 			AgentName: "leader",
-			TeamName:  "delegteam",
-			Role:      "leader",
-		},
-		client: pub,
-	}
-
-	bridge.publishTaskAssignment("worker-1", "implement the feature")
-
-	msgs := pub.getMessages()
-	if len(msgs) != 1 {
-		t.Fatalf("expected 1 published message, got %d", len(msgs))
-	}
-
-	if msgs[0].Subject != "team.delegteam.worker-1" {
-		t.Errorf("Subject: got %q, want 'team.delegteam.worker-1'", msgs[0].Subject)
-	}
-	if msgs[0].Msg.To != "worker-1" {
-		t.Errorf("Message.To: got %q, want 'worker-1'", msgs[0].Msg.To)
-	}
-	if msgs[0].Msg.From != "leader" {
-		t.Errorf("Message.From: got %q, want 'leader'", msgs[0].Msg.From)
-	}
-
-	var payload protocol.TaskAssignmentPayload
-	if err := json.Unmarshal(msgs[0].Msg.Payload, &payload); err != nil {
-		t.Fatalf("unmarshal payload: %v", err)
-	}
-	if payload.Instruction != "implement the feature" {
-		t.Errorf("Instruction: got %q, want 'implement the feature'", payload.Instruction)
-	}
-}
-
-// --- processEvent tests ---
-
-func TestProcessEvent_ResultPublishesToLeaderWithAgentName(t *testing.T) {
-	pub := &fakePublisher{}
-	bridge := &Bridge{
-		config: BridgeConfig{
-			AgentName: "worker-1",
 			TeamName:  "evtteam",
-			Role:      "worker",
+			Role:      "leader",
 		},
 		client: pub,
 	}
@@ -366,32 +157,28 @@ func TestProcessEvent_ResultPublishesToLeaderWithAgentName(t *testing.T) {
 
 	msgs := pub.getMessages()
 
-	// Should produce: 1 task_result + 1 status_update (idle).
-	var taskResults []publishedMsg
-	for _, m := range msgs {
-		if m.Msg.Type == protocol.TypeTaskResult {
-			taskResults = append(taskResults, m)
-		}
+	// Should produce exactly 1 leader_response.
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
 	}
 
-	if len(taskResults) != 1 {
-		t.Fatalf("expected 1 task_result, got %d (total msgs: %d)", len(taskResults), len(msgs))
+	if msgs[0].Msg.Type != protocol.TypeLeaderResponse {
+		t.Errorf("Type: got %q, want %q", msgs[0].Msg.Type, protocol.TypeLeaderResponse)
 	}
 
-	// The critical assertion: Message.To must be "leader" (agent name),
-	// NOT "team.evtteam.leader" (NATS subject).
-	if taskResults[0].Msg.To != "leader" {
-		t.Errorf("Message.To: got %q, want 'leader'", taskResults[0].Msg.To)
+	// Message.To must be "user".
+	if msgs[0].Msg.To != "user" {
+		t.Errorf("Message.To: got %q, want 'user'", msgs[0].Msg.To)
 	}
 
-	// The NATS subject should be the full subject.
-	if taskResults[0].Subject != "team.evtteam.leader" {
-		t.Errorf("Subject: got %q, want 'team.evtteam.leader'", taskResults[0].Subject)
+	// NATS subject must be team leader channel.
+	if msgs[0].Subject != "team.evtteam.leader" {
+		t.Errorf("Subject: got %q, want 'team.evtteam.leader'", msgs[0].Subject)
 	}
 
 	// Verify the result content.
-	var payload protocol.TaskResultPayload
-	if err := json.Unmarshal(taskResults[0].Msg.Payload, &payload); err != nil {
+	var payload protocol.LeaderResponsePayload
+	if err := json.Unmarshal(msgs[0].Msg.Payload, &payload); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if payload.Status != "completed" {
@@ -402,13 +189,13 @@ func TestProcessEvent_ResultPublishesToLeaderWithAgentName(t *testing.T) {
 	}
 }
 
-func TestProcessEvent_ErrorResultPublishesFailedToLeader(t *testing.T) {
+func TestProcessEvent_ErrorResultPublishesFailedResponse(t *testing.T) {
 	pub := &fakePublisher{}
 	bridge := &Bridge{
 		config: BridgeConfig{
-			AgentName: "worker-1",
+			AgentName: "leader",
 			TeamName:  "errteam",
-			Role:      "worker",
+			Role:      "leader",
 		},
 		client: pub,
 	}
@@ -425,24 +212,21 @@ func TestProcessEvent_ErrorResultPublishesFailedToLeader(t *testing.T) {
 
 	msgs := pub.getMessages()
 
-	var taskResults []publishedMsg
-	for _, m := range msgs {
-		if m.Msg.Type == protocol.TypeTaskResult {
-			taskResults = append(taskResults, m)
-		}
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
 	}
 
-	if len(taskResults) != 1 {
-		t.Fatalf("expected 1 task_result, got %d", len(taskResults))
+	if msgs[0].Msg.Type != protocol.TypeLeaderResponse {
+		t.Errorf("Type: got %q, want %q", msgs[0].Msg.Type, protocol.TypeLeaderResponse)
 	}
 
-	// Message.To must be "leader", not a NATS subject.
-	if taskResults[0].Msg.To != "leader" {
-		t.Errorf("Message.To: got %q, want 'leader'", taskResults[0].Msg.To)
+	// Message.To must be "user".
+	if msgs[0].Msg.To != "user" {
+		t.Errorf("Message.To: got %q, want 'user'", msgs[0].Msg.To)
 	}
 
-	var payload protocol.TaskResultPayload
-	if err := json.Unmarshal(taskResults[0].Msg.Payload, &payload); err != nil {
+	var payload protocol.LeaderResponsePayload
+	if err := json.Unmarshal(msgs[0].Msg.Payload, &payload); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if payload.Status != "failed" {
@@ -453,96 +237,13 @@ func TestProcessEvent_ErrorResultPublishesFailedToLeader(t *testing.T) {
 	}
 }
 
-func TestProcessEvent_LeaderDelegates(t *testing.T) {
-	pub := &fakePublisher{}
-	bridge := &Bridge{
-		config: BridgeConfig{
-			AgentName: "leader",
-			TeamName:  "delegtest",
-			Role:      "leader",
-		},
-		client: pub,
-	}
-
-	resultText := "I'll delegate:\n[TASK:worker-1] Do task A [/TASK]\n[TASK:worker-2] Do task B [/TASK]"
-	msgContent, _ := json.Marshal(map[string]string{"type": "text", "text": resultText})
-	event := claude.StreamEvent{
-		Type:    "result",
-		Message: msgContent,
-	}
-
-	var currentResult string
-	bridge.processEvent(&event, &currentResult)
-
-	msgs := pub.getMessages()
-
-	// Count task_assignment messages.
-	var assignments []publishedMsg
-	for _, m := range msgs {
-		if m.Msg.Type == protocol.TypeTaskAssignment {
-			assignments = append(assignments, m)
-		}
-	}
-
-	if len(assignments) != 2 {
-		t.Fatalf("expected 2 task_assignments, got %d", len(assignments))
-	}
-
-	// Verify first delegation.
-	if assignments[0].Msg.To != "worker-1" {
-		t.Errorf("[0] Message.To: got %q, want 'worker-1'", assignments[0].Msg.To)
-	}
-	if assignments[0].Subject != "team.delegtest.worker-1" {
-		t.Errorf("[0] Subject: got %q, want 'team.delegtest.worker-1'", assignments[0].Subject)
-	}
-
-	// Verify second delegation.
-	if assignments[1].Msg.To != "worker-2" {
-		t.Errorf("[1] Message.To: got %q, want 'worker-2'", assignments[1].Msg.To)
-	}
-	if assignments[1].Subject != "team.delegtest.worker-2" {
-		t.Errorf("[1] Subject: got %q, want 'team.delegtest.worker-2'", assignments[1].Subject)
-	}
-}
-
-func TestProcessEvent_WorkerDoesNotDelegate(t *testing.T) {
-	pub := &fakePublisher{}
-	bridge := &Bridge{
-		config: BridgeConfig{
-			AgentName: "worker-1",
-			TeamName:  "nodelegtest",
-			Role:      "worker",
-		},
-		client: pub,
-	}
-
-	resultText := "[TASK:worker-2] This should NOT be delegated [/TASK]"
-	msgContent, _ := json.Marshal(map[string]string{"type": "text", "text": resultText})
-	event := claude.StreamEvent{
-		Type:    "result",
-		Message: msgContent,
-	}
-
-	var currentResult string
-	bridge.processEvent(&event, &currentResult)
-
-	msgs := pub.getMessages()
-
-	// Workers should not produce task_assignment messages.
-	for _, m := range msgs {
-		if m.Msg.Type == protocol.TypeTaskAssignment {
-			t.Error("worker should not produce task_assignment messages")
-		}
-	}
-}
-
 func TestProcessEvent_ResultFromResultField(t *testing.T) {
 	pub := &fakePublisher{}
 	bridge := &Bridge{
 		config: BridgeConfig{
-			AgentName: "worker-1",
+			AgentName: "leader",
 			TeamName:  "resultfield",
-			Role:      "worker",
+			Role:      "leader",
 		},
 		client: pub,
 	}
@@ -557,58 +258,19 @@ func TestProcessEvent_ResultFromResultField(t *testing.T) {
 	bridge.processEvent(&event, &currentResult)
 
 	msgs := pub.getMessages()
-	var taskResults []publishedMsg
-	for _, m := range msgs {
-		if m.Msg.Type == protocol.TypeTaskResult {
-			taskResults = append(taskResults, m)
-		}
-	}
-
-	if len(taskResults) != 1 {
-		t.Fatalf("expected 1 task_result, got %d", len(taskResults))
-	}
-
-	var payload protocol.TaskResultPayload
-	if err := json.Unmarshal(taskResults[0].Msg.Payload, &payload); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if payload.Result != "Fallback result text" {
-		t.Errorf("result: got %q, want 'Fallback result text'", payload.Result)
-	}
-}
-
-// --- publishError tests ---
-
-func TestPublishError(t *testing.T) {
-	pub := &fakePublisher{}
-	bridge := &Bridge{
-		config: BridgeConfig{
-			AgentName: "worker-1",
-			TeamName:  "errteam2",
-			Role:      "worker",
-		},
-		client: pub,
-	}
-
-	bridge.publishError("leader", "msg-123", "parse failed")
-
-	msgs := pub.getMessages()
 	if len(msgs) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(msgs))
 	}
 
-	if msgs[0].Msg.To != "leader" {
-		t.Errorf("Message.To: got %q, want 'leader'", msgs[0].Msg.To)
+	if msgs[0].Msg.Type != protocol.TypeLeaderResponse {
+		t.Errorf("Type: got %q, want %q", msgs[0].Msg.Type, protocol.TypeLeaderResponse)
 	}
 
-	var payload protocol.TaskResultPayload
+	var payload protocol.LeaderResponsePayload
 	if err := json.Unmarshal(msgs[0].Msg.Payload, &payload); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if payload.Status != "failed" {
-		t.Errorf("status: got %q, want 'failed'", payload.Status)
-	}
-	if payload.Error != "parse failed" {
-		t.Errorf("error: got %q, want 'parse failed'", payload.Error)
+	if payload.Result != "Fallback result text" {
+		t.Errorf("result: got %q, want 'Fallback result text'", payload.Result)
 	}
 }

@@ -73,8 +73,16 @@ type Agent struct {
 	Resources       JSON      `gorm:"type:text" json:"resources"`
 	ContainerID     string    `gorm:"size:128" json:"container_id"`
 	ContainerStatus string    `gorm:"size:50;default:stopped" json:"container_status"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+
+	// Sub-agent configuration fields for .claude/agents/{name}.md frontmatter.
+	// These are only used for non-leader agents in the native sub-agent architecture.
+	SubAgentDescription    string `gorm:"type:text" json:"sub_agent_description"`
+	SubAgentTools          string `gorm:"size:512" json:"sub_agent_tools"`
+	SubAgentModel          string `gorm:"size:50;default:inherit" json:"sub_agent_model"`
+	SubAgentPermissionMode string `gorm:"size:50" json:"sub_agent_permission_mode"`
+
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // TaskLog records inter-agent messages for auditing and replay.

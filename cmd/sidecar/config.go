@@ -114,7 +114,7 @@ func LoadConfig(path string) (*AgentConfig, error) {
 
 	// Defaults.
 	if cfg.Agent.Role == "" {
-		cfg.Agent.Role = "worker"
+		cfg.Agent.Role = "leader"
 	}
 	if cfg.Agent.Permissions.FilesystemScope == "" {
 		cfg.Agent.Permissions.FilesystemScope = "/workspace"

@@ -6,12 +6,10 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/helmcode/agent-crew/internal/claude"
 	agentNats "github.com/helmcode/agent-crew/internal/nats"
 	"github.com/helmcode/agent-crew/internal/permissions"
-	"github.com/helmcode/agent-crew/internal/protocol"
 )
 
 func main() {
@@ -92,7 +90,6 @@ func main() {
 	}
 
 	// 5. Start Claude Manager.
-
 	processCfg := claude.ProcessConfig{
 		SystemPrompt: cfg.Agent.SystemPrompt,
 		AllowedTools: cfg.Agent.Permissions.AllowedTools,
@@ -120,13 +117,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 7. Start Health Reporter (periodic status to NATS).
-	healthCtx, healthCancel := context.WithCancel(ctx)
-	go runHealthReporter(healthCtx, natsClient, manager, cfg)
-
-	// 8. Publish initial status: idle.
-	publishInitialStatus(natsClient, cfg)
-
 	slog.Info("agent sidecar ready",
 		"agent", cfg.Agent.Name,
 		"team", cfg.Agent.Team,
@@ -141,7 +131,6 @@ func main() {
 	slog.Info("shutting down agent sidecar")
 
 	// Graceful shutdown in reverse order.
-	healthCancel()
 	bridge.Stop()
 	if err := manager.Stop(); err != nil {
 		slog.Error("error stopping claude process", "error", err)
@@ -149,76 +138,4 @@ func main() {
 	natsClient.Close()
 
 	slog.Info("agent sidecar stopped")
-}
-
-// runHealthReporter periodically publishes agent status updates to NATS.
-func runHealthReporter(ctx context.Context, client *agentNats.Client, manager *claude.Manager, cfg *AgentConfig) {
-	ticker := time.NewTicker(15 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			status := manager.Status()
-
-			payload := protocol.StatusUpdatePayload{
-				Agent:        cfg.Agent.Name,
-				Status:       status,
-				LastActivity: time.Now().UTC(),
-			}
-
-			msg, err := protocol.NewMessage(
-				cfg.Agent.Name,
-				"",
-				protocol.TypeStatusUpdate,
-				payload,
-			)
-			if err != nil {
-				slog.Debug("failed to create health message", "error", err)
-				continue
-			}
-
-			subject, err := protocol.StatusChannel(cfg.Agent.Team)
-			if err != nil {
-				slog.Debug("failed to build status channel", "error", err)
-				continue
-			}
-
-			if err := client.Publish(subject, msg); err != nil {
-				slog.Debug("failed to publish health status", "error", err)
-			}
-		}
-	}
-}
-
-// publishInitialStatus sends the initial idle status announcement.
-func publishInitialStatus(client *agentNats.Client, cfg *AgentConfig) {
-	payload := protocol.StatusUpdatePayload{
-		Agent:        cfg.Agent.Name,
-		Status:       "idle",
-		LastActivity: time.Now().UTC(),
-	}
-
-	msg, err := protocol.NewMessage(
-		cfg.Agent.Name,
-		"",
-		protocol.TypeStatusUpdate,
-		payload,
-	)
-	if err != nil {
-		slog.Warn("failed to create initial status message", "error", err)
-		return
-	}
-
-	subject, err := protocol.StatusChannel(cfg.Agent.Team)
-	if err != nil {
-		slog.Warn("failed to build status channel", "error", err)
-		return
-	}
-
-	if err := client.Publish(subject, msg); err != nil {
-		slog.Warn("failed to publish initial status", "error", err)
-	}
 }

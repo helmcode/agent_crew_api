@@ -195,11 +195,9 @@ func TestGetMessages_FiltersOutStatusUpdates(t *testing.T) {
 		from    string
 	}{
 		{"user_message", "user"},
-		{"status_update", "leader"},
-		{"status_update", "worker-1"},
-		{"task_result", "worker-1"},
-		{"task_assignment", "leader"},
-		{"status_update", "worker-2"},
+		{"system_command", "system"},
+		{"leader_response", "leader"},
+		{"system_command", "system"},
 		{"user_message", "user"},
 	}
 
@@ -215,7 +213,7 @@ func TestGetMessages_FiltersOutStatusUpdates(t *testing.T) {
 		})
 	}
 
-	// Default GetMessages should only return user_message and task_result.
+	// Default GetMessages should only return user_message and leader_response.
 	rec := doRequest(srv, "GET", "/api/teams/"+team.ID+"/messages", nil)
 	if rec.Code != 200 {
 		t.Fatalf("status: got %d, want 200", rec.Code)
@@ -224,13 +222,13 @@ func TestGetMessages_FiltersOutStatusUpdates(t *testing.T) {
 	var logs []models.TaskLog
 	parseJSON(t, rec, &logs)
 
-	// Should get: 2 user_message + 1 task_result = 3
+	// Should get: 2 user_message + 1 leader_response = 3
 	if len(logs) != 3 {
 		t.Fatalf("filtered messages: got %d, want 3", len(logs))
 	}
 
 	for _, log := range logs {
-		if log.MessageType != "user_message" && log.MessageType != "task_result" {
+		if log.MessageType != "user_message" && log.MessageType != "leader_response" {
 			t.Errorf("unexpected message type in filtered results: %q", log.MessageType)
 		}
 	}
@@ -244,7 +242,7 @@ func TestGetMessages_CustomTypesFilter(t *testing.T) {
 	parseJSON(t, teamRec, &team)
 
 	// Insert different message types.
-	for i, msgType := range []string{"user_message", "status_update", "task_assignment"} {
+	for i, msgType := range []string{"user_message", "leader_response", "system_command"} {
 		content, _ := json.Marshal(map[string]string{"content": "msg"})
 		srv.db.Create(&models.TaskLog{
 			ID:          "ct-" + string(rune('a'+i)),
@@ -256,8 +254,8 @@ func TestGetMessages_CustomTypesFilter(t *testing.T) {
 		})
 	}
 
-	// Request only status_update types.
-	rec := doRequest(srv, "GET", "/api/teams/"+team.ID+"/messages?types=status_update", nil)
+	// Request only system_command types.
+	rec := doRequest(srv, "GET", "/api/teams/"+team.ID+"/messages?types=system_command", nil)
 	if rec.Code != 200 {
 		t.Fatalf("status: got %d, want 200", rec.Code)
 	}
@@ -267,8 +265,8 @@ func TestGetMessages_CustomTypesFilter(t *testing.T) {
 	if len(logs) != 1 {
 		t.Fatalf("custom type filter: got %d, want 1", len(logs))
 	}
-	if logs[0].MessageType != "status_update" {
-		t.Errorf("message_type: got %q, want 'status_update'", logs[0].MessageType)
+	if logs[0].MessageType != "system_command" {
+		t.Errorf("message_type: got %q, want 'system_command'", logs[0].MessageType)
 	}
 }
 
@@ -330,7 +328,7 @@ func TestGetActivity(t *testing.T) {
 	parseJSON(t, teamRec, &team)
 
 	// Insert a mix of message types.
-	for i, msgType := range []string{"user_message", "status_update", "task_result", "task_assignment"} {
+	for i, msgType := range []string{"user_message", "leader_response", "system_command"} {
 		content, _ := json.Marshal(map[string]string{"content": "msg"})
 		srv.db.Create(&models.TaskLog{
 			ID:          "act-" + string(rune('a'+i)),
@@ -350,8 +348,8 @@ func TestGetActivity(t *testing.T) {
 
 	var logs []models.TaskLog
 	parseJSON(t, rec, &logs)
-	if len(logs) != 4 {
-		t.Fatalf("activity entries: got %d, want 4", len(logs))
+	if len(logs) != 3 {
+		t.Fatalf("activity entries: got %d, want 3", len(logs))
 	}
 }
 

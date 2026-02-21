@@ -75,16 +75,25 @@ func (s *Server) CreateTeam(c *fiber.Ctx) error {
 		perms, _ := json.Marshal(a.Permissions)
 		resources, _ := json.Marshal(a.Resources)
 
+		subAgentModel := a.SubAgentModel
+		if subAgentModel == "" {
+			subAgentModel = "inherit"
+		}
+
 		team.Agents = append(team.Agents, models.Agent{
-			ID:           uuid.New().String(),
-			Name:         a.Name,
-			Role:         role,
-			Specialty:    a.Specialty,
-			SystemPrompt: a.SystemPrompt,
-			ClaudeMD:     a.ClaudeMD,
-			Skills:       models.JSON(skills),
-			Permissions:  models.JSON(perms),
-			Resources:    models.JSON(resources),
+			ID:                     uuid.New().String(),
+			Name:                   a.Name,
+			Role:                   role,
+			Specialty:              a.Specialty,
+			SystemPrompt:           a.SystemPrompt,
+			ClaudeMD:               a.ClaudeMD,
+			Skills:                 models.JSON(skills),
+			Permissions:            models.JSON(perms),
+			Resources:              models.JSON(resources),
+			SubAgentDescription:    a.SubAgentDescription,
+			SubAgentTools:          a.SubAgentTools,
+			SubAgentModel:          subAgentModel,
+			SubAgentPermissionMode: a.SubAgentPermissionMode,
 		})
 	}
 
@@ -218,8 +227,9 @@ func (s *Server) deployTeamAsync(team models.Team) {
 		})
 	}
 
-	// Deploy each agent.
-	var failedAgents int
+	// Setup workspace files for all agents and deploy only the leader container.
+	// Non-leader agents are sub-agent files only — no containers.
+	var leader *models.Agent
 	for i := range team.Agents {
 		agent := &team.Agents[i]
 
@@ -237,64 +247,91 @@ func (s *Server) deployTeamAsync(team models.Team) {
 			info.TeamMembers = teamMembers
 		}
 
-		// Try writing CLAUDE.md to disk (works when API runs on host).
+		// Write workspace files to disk (works when API runs on host).
 		if team.WorkspacePath != "" {
-			if _, err := runtime.SetupAgentWorkspace(team.WorkspacePath, info); err != nil {
-				slog.Error("failed to setup agent workspace", "agent", agent.Name, "error", err)
+			if agent.Role == models.AgentRoleLeader {
+				// Leader gets a CLAUDE.md at .claude/{name}/CLAUDE.md.
+				if _, err := runtime.SetupAgentWorkspace(team.WorkspacePath, info); err != nil {
+					slog.Error("failed to setup agent workspace", "agent", agent.Name, "error", err)
+				}
+			} else {
+				// Non-leader agents get a sub-agent file at .claude/agents/{name}.md.
+				subInfo := runtime.SubAgentInfo{
+					Name:           agent.Name,
+					Description:    agent.SubAgentDescription,
+					Tools:          agent.SubAgentTools,
+					Model:          agent.SubAgentModel,
+					PermissionMode: agent.SubAgentPermissionMode,
+					ClaudeMD:       agent.ClaudeMD,
+				}
+				if subInfo.ClaudeMD == "" {
+					subInfo.ClaudeMD = runtime.GenerateClaudeMD(info)
+				}
+				if _, err := runtime.SetupSubAgentFile(team.WorkspacePath, subInfo); err != nil {
+					slog.Error("failed to setup sub-agent file", "agent", agent.Name, "error", err)
+				}
 			}
 		}
 
-		var perms json.RawMessage
-		if len(agent.Permissions) > 0 {
-			perms = json.RawMessage(agent.Permissions)
+		if agent.Role == models.AgentRoleLeader {
+			leader = agent
 		}
-		var res runtime.ResourceConfig
-		if len(agent.Resources) > 0 {
-			_ = json.Unmarshal(agent.Resources, &res)
-		}
-		_ = perms // permissions parsed by runtime
-
-		// Build CLAUDE.md content for passing via env var to the sidecar.
-		// This ensures agents get their CLAUDE.md even when the API runs
-		// inside Docker without access to the host workspace path.
-		claudeMDContent := agent.ClaudeMD
-		if claudeMDContent == "" {
-			claudeMDContent = runtime.GenerateClaudeMD(info)
-		}
-
-		agentCfg := runtime.AgentConfig{
-			Name:          agent.Name,
-			TeamName:      team.Name,
-			Role:          agent.Role,
-			SystemPrompt:  agent.SystemPrompt,
-			ClaudeMD:      claudeMDContent,
-			Resources:     res,
-			NATSUrl:       natsURL,
-			WorkspacePath: team.WorkspacePath,
-			Env:           envFromSettings,
-		}
-
-		instance, err := s.runtime.DeployAgent(ctx, agentCfg)
-		if err != nil {
-			slog.Error("failed to deploy agent", "agent", agent.Name, "error", err)
-			s.db.Model(agent).Updates(map[string]interface{}{
-				"container_status": models.ContainerStatusError,
-			})
-			failedAgents++
-			continue
-		}
-
-		s.db.Model(agent).Updates(map[string]interface{}{
-			"container_id":     instance.ID,
-			"container_status": models.ContainerStatusRunning,
-		})
 	}
 
-	if failedAgents > 0 {
-		slog.Error("team deployed with errors", "team", team.Name, "failed_agents", failedAgents, "total_agents", len(team.Agents))
+	// Only the leader gets a container. Sub-agents are file-based.
+	if leader == nil {
+		slog.Error("no leader agent found in team", "team", team.Name)
 		s.db.Model(&team).Update("status", models.TeamStatusError)
 		return
 	}
+
+	// Build leader workspace info for CLAUDE.md content.
+	leaderInfo := runtime.AgentWorkspaceInfo{
+		Name:         leader.Name,
+		Role:         leader.Role,
+		Specialty:    leader.Specialty,
+		SystemPrompt: leader.SystemPrompt,
+		ClaudeMD:     leader.ClaudeMD,
+		Skills:       json.RawMessage(leader.Skills),
+		TeamMembers:  teamMembers,
+	}
+
+	var res runtime.ResourceConfig
+	if len(leader.Resources) > 0 {
+		_ = json.Unmarshal(leader.Resources, &res)
+	}
+
+	claudeMDContent := leader.ClaudeMD
+	if claudeMDContent == "" {
+		claudeMDContent = runtime.GenerateClaudeMD(leaderInfo)
+	}
+
+	agentCfg := runtime.AgentConfig{
+		Name:          leader.Name,
+		TeamName:      team.Name,
+		Role:          leader.Role,
+		SystemPrompt:  leader.SystemPrompt,
+		ClaudeMD:      claudeMDContent,
+		Resources:     res,
+		NATSUrl:       natsURL,
+		WorkspacePath: team.WorkspacePath,
+		Env:           envFromSettings,
+	}
+
+	instance, err := s.runtime.DeployAgent(ctx, agentCfg)
+	if err != nil {
+		slog.Error("failed to deploy leader agent", "agent", leader.Name, "error", err)
+		s.db.Model(leader).Updates(map[string]interface{}{
+			"container_status": models.ContainerStatusError,
+		})
+		s.db.Model(&team).Update("status", models.TeamStatusError)
+		return
+	}
+
+	s.db.Model(leader).Updates(map[string]interface{}{
+		"container_id":     instance.ID,
+		"container_status": models.ContainerStatusRunning,
+	})
 
 	s.db.Model(&team).Update("status", models.TeamStatusRunning)
 	slog.Info("team deployed successfully", "team", team.Name)
@@ -354,12 +391,15 @@ func (s *Server) StopTeam(c *fiber.Ctx) error {
 		slog.Error("failed to teardown infrastructure", "team", team.Name, "error", err)
 	}
 
-	// Update all agents to stopped.
+	// Clear container state for the leader agent only (non-leaders have no containers).
 	for i := range team.Agents {
-		s.db.Model(&team.Agents[i]).Updates(map[string]interface{}{
-			"container_id":     "",
-			"container_status": models.ContainerStatusStopped,
-		})
+		if team.Agents[i].Role == models.AgentRoleLeader {
+			s.db.Model(&team.Agents[i]).Updates(map[string]interface{}{
+				"container_id":     "",
+				"container_status": models.ContainerStatusStopped,
+			})
+			break
+		}
 	}
 
 	// Stop the relay goroutine for this team.

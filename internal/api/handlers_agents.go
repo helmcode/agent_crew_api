@@ -63,22 +63,41 @@ func (s *Server) CreateAgent(c *fiber.Ctx) error {
 	if role == "" {
 		role = models.AgentRoleWorker
 	}
+	if role != models.AgentRoleLeader && role != models.AgentRoleWorker {
+		return fiber.NewError(fiber.StatusBadRequest, "role must be 'leader' or 'worker'")
+	}
+
+	if req.SubAgentModel != "" && !isValidSubAgentModel(req.SubAgentModel) {
+		return fiber.NewError(fiber.StatusBadRequest, "sub_agent_model must be one of: inherit, sonnet, opus, haiku")
+	}
+	if req.SubAgentPermissionMode != "" && !isValidSubAgentPermissionMode(req.SubAgentPermissionMode) {
+		return fiber.NewError(fiber.StatusBadRequest, "sub_agent_permission_mode must be one of: default, acceptEdits, bypassPermissions")
+	}
 
 	skills, _ := json.Marshal(req.Skills)
 	perms, _ := json.Marshal(req.Permissions)
 	resources, _ := json.Marshal(req.Resources)
 
+	subAgentModel := req.SubAgentModel
+	if subAgentModel == "" {
+		subAgentModel = "inherit"
+	}
+
 	agent := models.Agent{
-		ID:           uuid.New().String(),
-		TeamID:       teamID,
-		Name:         req.Name,
-		Role:         role,
-		Specialty:    req.Specialty,
-		SystemPrompt: req.SystemPrompt,
-		ClaudeMD:     req.ClaudeMD,
-		Skills:       models.JSON(skills),
-		Permissions:  models.JSON(perms),
-		Resources:    models.JSON(resources),
+		ID:                     uuid.New().String(),
+		TeamID:                 teamID,
+		Name:                   req.Name,
+		Role:                   role,
+		Specialty:              req.Specialty,
+		SystemPrompt:           req.SystemPrompt,
+		ClaudeMD:               req.ClaudeMD,
+		Skills:                 models.JSON(skills),
+		Permissions:            models.JSON(perms),
+		Resources:              models.JSON(resources),
+		SubAgentDescription:    req.SubAgentDescription,
+		SubAgentTools:          req.SubAgentTools,
+		SubAgentModel:          subAgentModel,
+		SubAgentPermissionMode: req.SubAgentPermissionMode,
 	}
 
 	if err := s.db.Create(&agent).Error; err != nil {
@@ -134,6 +153,24 @@ func (s *Server) UpdateAgent(c *fiber.Ctx) error {
 		raw, _ := json.Marshal(req.Resources)
 		updates["resources"] = models.JSON(raw)
 	}
+	if req.SubAgentDescription != nil {
+		updates["sub_agent_description"] = *req.SubAgentDescription
+	}
+	if req.SubAgentTools != nil {
+		updates["sub_agent_tools"] = *req.SubAgentTools
+	}
+	if req.SubAgentModel != nil {
+		if *req.SubAgentModel != "" && !isValidSubAgentModel(*req.SubAgentModel) {
+			return fiber.NewError(fiber.StatusBadRequest, "sub_agent_model must be one of: inherit, sonnet, opus, haiku")
+		}
+		updates["sub_agent_model"] = *req.SubAgentModel
+	}
+	if req.SubAgentPermissionMode != nil {
+		if *req.SubAgentPermissionMode != "" && !isValidSubAgentPermissionMode(*req.SubAgentPermissionMode) {
+			return fiber.NewError(fiber.StatusBadRequest, "sub_agent_permission_mode must be one of: default, acceptEdits, bypassPermissions")
+		}
+		updates["sub_agent_permission_mode"] = *req.SubAgentPermissionMode
+	}
 
 	if len(updates) > 0 {
 		if err := s.db.Model(&agent).Updates(updates).Error; err != nil {
@@ -143,6 +180,24 @@ func (s *Server) UpdateAgent(c *fiber.Ctx) error {
 
 	s.db.Where("id = ? AND team_id = ?", agentID, teamID).First(&agent)
 	return c.JSON(agent)
+}
+
+// isValidSubAgentModel returns true if v is a recognized Claude Code model value.
+func isValidSubAgentModel(v string) bool {
+	switch v {
+	case "inherit", "sonnet", "opus", "haiku":
+		return true
+	}
+	return false
+}
+
+// isValidSubAgentPermissionMode returns true if v is a recognized Claude Code permission mode.
+func isValidSubAgentPermissionMode(v string) bool {
+	switch v {
+	case "default", "acceptEdits", "bypassPermissions":
+		return true
+	}
+	return false
 }
 
 // DeleteAgent removes an agent from a team.

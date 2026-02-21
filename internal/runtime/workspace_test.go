@@ -171,6 +171,206 @@ func TestSetupAgentWorkspace_EmptyClaudeMD_FallsBackToGenerated(t *testing.T) {
 	}
 }
 
+// --- Sub-agent file tests ---
+
+func TestSetupSubAgentFile_AllFields(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	agent := SubAgentInfo{
+		Name:           "researcher",
+		Description:    "Delegate research tasks to this agent",
+		Tools:          "Read, Grep, Glob",
+		Model:          "sonnet",
+		PermissionMode: "acceptEdits",
+		ClaudeMD:       "You are a research specialist.\n",
+	}
+
+	filePath, err := SetupSubAgentFile(tmpDir, agent)
+	if err != nil {
+		t.Fatalf("SetupSubAgentFile: %v", err)
+	}
+
+	expectedPath := filepath.Join(tmpDir, ".claude", "agents", "researcher.md")
+	if filePath != expectedPath {
+		t.Errorf("path: got %q, want %q", filePath, expectedPath)
+	}
+
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatalf("reading sub-agent file: %v", err)
+	}
+
+	content := string(data)
+	if !contains(content, "---\n") {
+		t.Error("missing YAML frontmatter delimiters")
+	}
+	if !contains(content, "name: researcher") {
+		t.Error("missing name in frontmatter")
+	}
+	if !contains(content, "description: ") {
+		t.Error("missing description in frontmatter")
+	}
+	if !contains(content, "tools: ") {
+		t.Error("missing tools in frontmatter")
+	}
+	if !contains(content, "model: sonnet") {
+		t.Error("missing model in frontmatter")
+	}
+	if !contains(content, "permissionMode: acceptEdits") {
+		t.Error("missing permissionMode in frontmatter")
+	}
+	if !contains(content, "You are a research specialist.") {
+		t.Error("missing body content")
+	}
+}
+
+func TestSetupSubAgentFile_CreatesAgentsDir(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	agent := SubAgentInfo{Name: "test-agent"}
+	_, err := SetupSubAgentFile(tmpDir, agent)
+	if err != nil {
+		t.Fatalf("SetupSubAgentFile: %v", err)
+	}
+
+	agentsDir := filepath.Join(tmpDir, ".claude", "agents")
+	info, err := os.Stat(agentsDir)
+	if err != nil {
+		t.Fatalf(".claude/agents/ dir not created: %v", err)
+	}
+	if !info.IsDir() {
+		t.Error(".claude/agents/ should be a directory")
+	}
+}
+
+func TestGenerateSubAgentContent_OmitsEmptyFields(t *testing.T) {
+	agent := SubAgentInfo{
+		Name: "minimal-agent",
+	}
+
+	content := GenerateSubAgentContent(agent)
+
+	if !contains(content, "name: minimal-agent") {
+		t.Error("missing name")
+	}
+	if contains(content, "description:") {
+		t.Error("empty description should be omitted")
+	}
+	if contains(content, "tools:") {
+		t.Error("empty tools should be omitted")
+	}
+	if contains(content, "model:") {
+		t.Error("empty model should be omitted")
+	}
+	if contains(content, "permissionMode:") {
+		t.Error("empty permissionMode should be omitted")
+	}
+}
+
+func TestGenerateSubAgentContent_OmitsDefaults(t *testing.T) {
+	agent := SubAgentInfo{
+		Name:           "default-agent",
+		Model:          "inherit",
+		PermissionMode: "default",
+	}
+
+	content := GenerateSubAgentContent(agent)
+
+	if contains(content, "model:") {
+		t.Error("model 'inherit' should be omitted")
+	}
+	if contains(content, "permissionMode:") {
+		t.Error("permissionMode 'default' should be omitted")
+	}
+}
+
+func TestGenerateSubAgentContent_WithBody(t *testing.T) {
+	agent := SubAgentInfo{
+		Name:     "body-agent",
+		ClaudeMD: "Custom instructions for this agent.",
+	}
+
+	content := GenerateSubAgentContent(agent)
+
+	// Body should appear after the closing ---
+	parts := splitFrontmatter(content)
+	if len(parts) < 2 {
+		t.Fatal("expected frontmatter and body sections")
+	}
+	if !contains(parts[1], "Custom instructions for this agent.") {
+		t.Errorf("body section should contain ClaudeMD content, got %q", parts[1])
+	}
+}
+
+func TestGenerateSubAgentContent_NoBodyWhenEmpty(t *testing.T) {
+	agent := SubAgentInfo{
+		Name: "no-body-agent",
+	}
+
+	content := GenerateSubAgentContent(agent)
+
+	// Should end right after the closing ---
+	expected := "---\nname: no-body-agent\n---\n"
+	if content != expected {
+		t.Errorf("content: got %q, want %q", content, expected)
+	}
+}
+
+func TestGenerateSubAgentContent_YAMLQuoting(t *testing.T) {
+	agent := SubAgentInfo{
+		Name:        "quoted-agent",
+		Description: "Agent: handles complex tasks",
+		Tools:       "Read, Grep, Glob",
+	}
+
+	content := GenerateSubAgentContent(agent)
+
+	// Description with colon should be quoted.
+	if !contains(content, `description: "Agent`) {
+		t.Errorf("description with colon should be quoted, got:\n%s", content)
+	}
+	// Tools with comma should be quoted.
+	if !contains(content, `tools: "Read`) {
+		t.Errorf("tools with comma should be quoted, got:\n%s", content)
+	}
+}
+
+func TestSetupSubAgentFile_SanitizesName(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	agent := SubAgentInfo{Name: "My Agent Name"}
+	filePath, err := SetupSubAgentFile(tmpDir, agent)
+	if err != nil {
+		t.Fatalf("SetupSubAgentFile: %v", err)
+	}
+
+	expectedPath := filepath.Join(tmpDir, ".claude", "agents", "my-agent-name.md")
+	if filePath != expectedPath {
+		t.Errorf("path: got %q, want %q", filePath, expectedPath)
+	}
+}
+
+// splitFrontmatter splits content by the second "---\n" delimiter.
+func splitFrontmatter(content string) []string {
+	// Find first --- at beginning
+	if !contains(content, "---\n") {
+		return []string{content}
+	}
+	// Remove the opening ---\n
+	rest := content[4:]
+	idx := 0
+	for i := 0; i <= len(rest)-4; i++ {
+		if rest[i:i+4] == "---\n" {
+			idx = i + 4
+			break
+		}
+	}
+	if idx == 0 {
+		return []string{content}
+	}
+	return []string{rest[:idx-4], rest[idx:]}
+}
+
 func TestFormatSkills_Empty(t *testing.T) {
 	if formatSkills(nil) != "" {
 		t.Error("nil skills should return empty string")

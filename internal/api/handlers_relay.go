@@ -92,29 +92,9 @@ func (s *Server) runTeamRelay(ctx context.Context, teamID, teamName string) {
 
 	subject := "team." + sanitized + ".>"
 	sub, err := nc.Subscribe(subject, func(msg *nats.Msg) {
-		var protoMsg protocol.Message
-		if err := json.Unmarshal(msg.Data, &protoMsg); err != nil {
-			return
+		if err := s.processRelayMessage(teamID, teamName, msg.Data); err != nil {
+			slog.Error("relay: failed to process message", "team", teamName, "error", err)
 		}
-		// Skip user messages — already saved by the chat handler.
-		if protoMsg.Type == protocol.TypeUserMessage {
-			return
-		}
-
-		log := models.TaskLog{
-			ID:          uuid.New().String(),
-			TeamID:      teamID,
-			MessageID:   protoMsg.MessageID,
-			FromAgent:   protoMsg.From,
-			ToAgent:     protoMsg.To,
-			MessageType: string(protoMsg.Type),
-			Payload:     models.JSON(protoMsg.Payload),
-		}
-		if err := s.db.Create(&log).Error; err != nil {
-			slog.Error("relay: failed to save task log", "team", teamName, "error", err)
-			return
-		}
-		slog.Info("relay: saved agent message", "team", teamName, "type", protoMsg.Type, "from", protoMsg.From)
 	})
 	if err != nil {
 		slog.Error("relay: failed to subscribe to team NATS", "team", teamName, "error", err)
@@ -125,4 +105,35 @@ func (s *Server) runTeamRelay(ctx context.Context, teamID, teamName string) {
 	slog.Info("relay: watching team NATS", "team", teamName, "subject", subject)
 	<-ctx.Done()
 	slog.Info("relay: stopped", "team", teamName)
+}
+
+// processRelayMessage parses a raw NATS payload and saves it as a TaskLog.
+// It is extracted from the inline callback so it can be unit-tested without
+// a real NATS server.
+func (s *Server) processRelayMessage(teamID, teamName string, data []byte) error {
+	var protoMsg protocol.Message
+	if err := json.Unmarshal(data, &protoMsg); err != nil {
+		return err
+	}
+	// Only save leader responses — user messages are saved by the chat
+	// handler and system commands are internal control messages.
+	if protoMsg.Type != protocol.TypeLeaderResponse {
+		return nil
+	}
+
+	log := models.TaskLog{
+		ID:          uuid.New().String(),
+		TeamID:      teamID,
+		MessageID:   protoMsg.MessageID,
+		FromAgent:   protoMsg.From,
+		ToAgent:     protoMsg.To,
+		MessageType: string(protoMsg.Type),
+		Payload:     models.JSON(protoMsg.Payload),
+	}
+	if err := s.db.Create(&log).Error; err != nil {
+		slog.Error("relay: failed to save task log", "team", teamName, "error", err)
+		return err
+	}
+	slog.Info("relay: saved agent message", "team", teamName, "type", protoMsg.Type, "from", protoMsg.From)
+	return nil
 }
