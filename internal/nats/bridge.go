@@ -171,10 +171,17 @@ func (b *Bridge) forwardEvents(ctx context.Context) {
 func (b *Bridge) processEvent(event *claude.StreamEvent, currentResult *string) {
 	switch event.Type {
 	case "tool_use":
+		// Publish activity event for the tool call so the UI can show progress.
+		toolName, command, _ := claude.ExtractToolCommand(event)
+		action := toolName
+		if command != "" {
+			action = toolName + ": " + command
+		}
+		b.publishActivityEvent(event, action)
+
 		// Check permissions before allowing tool execution.
 		if b.config.Gate != nil {
-			toolName, command, paths := claude.ExtractToolCommand(event)
-			decision := b.config.Gate.Evaluate(toolName, command, paths)
+			decision := b.config.Gate.Evaluate(toolName, command, nil)
 			if !decision.Allowed {
 				slog.Warn("tool use denied by permission gate",
 					"tool", toolName,
@@ -192,6 +199,11 @@ func (b *Bridge) processEvent(event *claude.StreamEvent, currentResult *string) 
 				return
 			}
 		}
+
+	case "assistant":
+		// Publish assistant messages as activity events so the UI shows
+		// intermediate thinking/responses in real time.
+		b.publishActivityEvent(event, "assistant message")
 
 	case "result":
 		// Check if Claude returned an error (billing, auth, etc.).
@@ -226,8 +238,51 @@ func (b *Bridge) processEvent(event *claude.StreamEvent, currentResult *string) 
 		b.publishLeaderResponse("", "completed", *currentResult, "")
 		*currentResult = ""
 
+	case "tool_result":
+		// Publish tool results as activity events for visibility.
+		b.publishActivityEvent(event, "tool result")
+
 	case "error":
 		slog.Error("claude error event", "agent", b.config.AgentName)
+		b.publishActivityEvent(event, "error")
+	}
+}
+
+// publishActivityEvent sends an intermediate activity event to the team activity NATS channel.
+func (b *Bridge) publishActivityEvent(event *claude.StreamEvent, action string) {
+	rawEvent, err := json.Marshal(event)
+	if err != nil {
+		slog.Error("failed to marshal activity event", "error", err)
+		return
+	}
+
+	payload := protocol.ActivityEventPayload{
+		EventType: event.Type,
+		AgentName: b.config.AgentName,
+		ToolName:  event.Name,
+		Action:    action,
+		Payload:   rawEvent,
+	}
+
+	msg, err := protocol.NewMessage(
+		b.config.AgentName,
+		"system",
+		protocol.TypeActivityEvent,
+		payload,
+	)
+	if err != nil {
+		slog.Error("failed to create activity event message", "error", err)
+		return
+	}
+
+	subject, err := protocol.TeamActivityChannel(b.config.TeamName)
+	if err != nil {
+		slog.Error("failed to build activity channel", "error", err)
+		return
+	}
+
+	if err := b.client.Publish(subject, msg); err != nil {
+		slog.Debug("failed to publish activity event", "error", err)
 	}
 }
 

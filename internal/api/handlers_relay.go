@@ -115,9 +115,15 @@ func (s *Server) processRelayMessage(teamID, teamName string, data []byte) error
 	if err := json.Unmarshal(data, &protoMsg); err != nil {
 		return err
 	}
-	// Only save leader responses — user messages are saved by the chat
-	// handler and system commands are internal control messages.
-	if protoMsg.Type != protocol.TypeLeaderResponse {
+	// Only save leader responses and activity events — user messages are
+	// saved by the chat handler and system commands are internal control messages.
+	var messageType string
+	switch protoMsg.Type {
+	case protocol.TypeLeaderResponse:
+		messageType = "task_result"
+	case protocol.TypeActivityEvent:
+		messageType = "activity_event"
+	default:
 		return nil
 	}
 
@@ -127,7 +133,7 @@ func (s *Server) processRelayMessage(teamID, teamName string, data []byte) error
 		MessageID:   protoMsg.MessageID,
 		FromAgent:   protoMsg.From,
 		ToAgent:     protoMsg.To,
-		MessageType: "task_result",
+		MessageType: messageType,
 		Payload:     models.JSON(protoMsg.Payload),
 	}
 	if err := s.db.Create(&log).Error; err != nil {

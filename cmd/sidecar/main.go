@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/helmcode/agent-crew/internal/claude"
@@ -73,15 +74,17 @@ func main() {
 		FilesystemScope: cfg.Agent.Permissions.FilesystemScope,
 	})
 
-	// 4. Write CLAUDE.md if content was passed via env var.
-	// This ensures agents get their CLAUDE.md even when the API server
-	// runs inside Docker and cannot write to the host workspace path.
+	// 4. Write workspace config files if content was passed via env vars.
+	// This ensures agents get their files even when the API server runs inside
+	// Docker and cannot write directly to the host workspace path.
 	workDir := os.Getenv("WORKSPACE_PATH")
 	if workDir == "" {
 		workDir = "/workspace"
 	}
+
+	claudeDir := workDir + "/.claude"
+
 	if claudeMD := os.Getenv("AGENT_CLAUDE_MD"); claudeMD != "" {
-		claudeDir := workDir + "/.claude"
 		if err := os.MkdirAll(claudeDir, 0755); err != nil {
 			slog.Warn("failed to create .claude dir", "error", err)
 		} else if err := os.WriteFile(claudeDir+"/CLAUDE.md", []byte(claudeMD), 0644); err != nil {
@@ -91,24 +94,82 @@ func main() {
 		}
 	}
 
-	// 5. Install sub-agent skills if requested.
+	if subAgentFilesEnv := os.Getenv("AGENT_SUB_AGENT_FILES"); subAgentFilesEnv != "" {
+		var subAgentFiles map[string]string
+		if err := json.Unmarshal([]byte(subAgentFilesEnv), &subAgentFiles); err != nil {
+			slog.Warn("failed to parse AGENT_SUB_AGENT_FILES", "error", err)
+		} else {
+			agentsDir := claudeDir + "/agents"
+			if err := os.MkdirAll(agentsDir, 0755); err != nil {
+				slog.Warn("failed to create .claude/agents dir", "error", err)
+			} else {
+				for filename, content := range subAgentFiles {
+					path := agentsDir + "/" + filename
+					if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+						slog.Warn("failed to write sub-agent file", "file", filename, "error", err)
+					} else {
+						slog.Info("wrote sub-agent file from env var", "path", path)
+					}
+				}
+			}
+		}
+	}
+
+	// 5. Install sub-agent skills globally and symlink into workspace.
 	if skillsEnv := os.Getenv("AGENT_SKILLS_INSTALL"); skillsEnv != "" {
 		var skills []string
 		if err := json.Unmarshal([]byte(skillsEnv), &skills); err != nil {
 			slog.Warn("failed to parse AGENT_SKILLS_INSTALL", "error", err)
 		} else {
+			installed := 0
+			failed := 0
 			for _, skill := range skills {
 				if skill == "" {
 					continue
 				}
-				slog.Info("installing skill", "skill", skill)
-				cmd := exec.Command("skills", "add", skill, "--all", "-y")
+				slog.Info("installing skill globally", "skill", skill)
+				cmd := exec.Command("npx", "skills", "add", skill, "-g", "--yes")
 				cmd.Stdout = os.Stdout
 				cmd.Stderr = os.Stderr
 				if err := cmd.Run(); err != nil {
-					slog.Warn("failed to install skill", "skill", skill, "error", err)
+					slog.Error("failed to install skill", "skill", skill, "error", err)
+					failed++
 				} else {
-					slog.Info("skill installed", "skill", skill)
+					slog.Info("skill installed globally", "skill", skill)
+					installed++
+				}
+			}
+			slog.Info("skills install summary", "installed", installed, "failed", failed, "total", len(skills))
+
+			// Create symlink from global skills dir to workspace so Claude
+			// Code discovers the skills at its expected path.
+			homeDir, err := os.UserHomeDir()
+			if err != nil {
+				slog.Warn("failed to get home dir for skills symlink", "error", err)
+			} else {
+				globalSkillsDir := filepath.Join(homeDir, ".claude", "skills")
+				workspaceSkillsDir := filepath.Join(workDir, ".claude", "skills")
+
+				// Ensure the global skills directory exists.
+				if err := os.MkdirAll(globalSkillsDir, 0755); err != nil {
+					slog.Warn("failed to create global skills dir", "path", globalSkillsDir, "error", err)
+				} else {
+					// Remove existing workspace skills path if it exists (file or dir)
+					// so the symlink can be created cleanly.
+					if _, err := os.Lstat(workspaceSkillsDir); err == nil {
+						if err := os.RemoveAll(workspaceSkillsDir); err != nil {
+							slog.Warn("failed to remove existing workspace skills path", "path", workspaceSkillsDir, "error", err)
+						}
+					}
+
+					// Ensure parent directory exists.
+					if err := os.MkdirAll(filepath.Dir(workspaceSkillsDir), 0755); err != nil {
+						slog.Warn("failed to create workspace .claude dir", "error", err)
+					} else if err := os.Symlink(globalSkillsDir, workspaceSkillsDir); err != nil {
+						slog.Warn("failed to create skills symlink", "from", globalSkillsDir, "to", workspaceSkillsDir, "error", err)
+					} else {
+						slog.Info("created skills symlink", "from", globalSkillsDir, "to", workspaceSkillsDir)
+					}
 				}
 			}
 		}

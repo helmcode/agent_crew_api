@@ -13,6 +13,7 @@ const (
 	TypeUserMessage    MessageType = "user_message"
 	TypeLeaderResponse MessageType = "leader_response"
 	TypeSystemCommand  MessageType = "system_command"
+	TypeActivityEvent  MessageType = "activity_event"
 )
 
 // MessageContext carries optional conversation context.
@@ -49,4 +50,14 @@ type LeaderResponsePayload struct {
 type SystemCommandPayload struct {
 	Command string            `json:"command"` // shutdown, restart, compact_context
 	Args    map[string]string `json:"args,omitempty"`
+}
+
+// ActivityEventPayload carries an intermediate activity event from the Claude
+// Code process (tool calls, assistant messages, sub-agent delegation, etc.).
+type ActivityEventPayload struct {
+	EventType string          `json:"event_type"`          // tool_use, assistant, tool_result, system
+	AgentName string          `json:"agent_name"`          // Name of the agent producing the event
+	ToolName  string          `json:"tool_name,omitempty"` // Tool name (for tool_use events)
+	Action    string          `json:"action,omitempty"`    // Human-readable action summary
+	Payload   json.RawMessage `json:"payload,omitempty"`   // Raw event data
 }

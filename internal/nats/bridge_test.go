@@ -237,6 +237,141 @@ func TestProcessEvent_ErrorResultPublishesFailedResponse(t *testing.T) {
 	}
 }
 
+// --- publishActivityEvent tests ---
+
+func TestPublishActivityEvent(t *testing.T) {
+	pub := &fakePublisher{}
+	bridge := &Bridge{
+		config: BridgeConfig{
+			AgentName: "leader",
+			TeamName:  "actteam",
+			Role:      "leader",
+		},
+		client: pub,
+	}
+
+	event := &claude.StreamEvent{
+		Type: "tool_use",
+		Name: "Bash",
+		Input: json.RawMessage(`{"command":"ls -la"}`),
+	}
+
+	bridge.publishActivityEvent(event, "Bash: ls -la")
+
+	msgs := pub.getMessages()
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 published message, got %d", len(msgs))
+	}
+
+	if msgs[0].Subject != "team.actteam.activity" {
+		t.Errorf("Subject: got %q, want 'team.actteam.activity'", msgs[0].Subject)
+	}
+
+	if msgs[0].Msg.Type != protocol.TypeActivityEvent {
+		t.Errorf("Type: got %q, want %q", msgs[0].Msg.Type, protocol.TypeActivityEvent)
+	}
+
+	if msgs[0].Msg.From != "leader" {
+		t.Errorf("From: got %q, want 'leader'", msgs[0].Msg.From)
+	}
+
+	if msgs[0].Msg.To != "system" {
+		t.Errorf("To: got %q, want 'system'", msgs[0].Msg.To)
+	}
+
+	var payload protocol.ActivityEventPayload
+	if err := json.Unmarshal(msgs[0].Msg.Payload, &payload); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if payload.EventType != "tool_use" {
+		t.Errorf("payload.EventType: got %q, want 'tool_use'", payload.EventType)
+	}
+	if payload.AgentName != "leader" {
+		t.Errorf("payload.AgentName: got %q, want 'leader'", payload.AgentName)
+	}
+	if payload.ToolName != "Bash" {
+		t.Errorf("payload.ToolName: got %q, want 'Bash'", payload.ToolName)
+	}
+	if payload.Action != "Bash: ls -la" {
+		t.Errorf("payload.Action: got %q, want 'Bash: ls -la'", payload.Action)
+	}
+}
+
+func TestProcessEvent_ToolUsePublishesActivityEvent(t *testing.T) {
+	pub := &fakePublisher{}
+	bridge := &Bridge{
+		config: BridgeConfig{
+			AgentName: "leader",
+			TeamName:  "toolteam",
+			Role:      "leader",
+		},
+		client: pub,
+	}
+
+	event := claude.StreamEvent{
+		Type:  "tool_use",
+		Name:  "Read",
+		Input: json.RawMessage(`{"file_path":"/workspace/main.go"}`),
+	}
+
+	var currentResult string
+	bridge.processEvent(&event, &currentResult)
+
+	msgs := pub.getMessages()
+	// tool_use should produce exactly 1 activity event (no leader response).
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+
+	if msgs[0].Msg.Type != protocol.TypeActivityEvent {
+		t.Errorf("Type: got %q, want %q", msgs[0].Msg.Type, protocol.TypeActivityEvent)
+	}
+	if msgs[0].Subject != "team.toolteam.activity" {
+		t.Errorf("Subject: got %q, want 'team.toolteam.activity'", msgs[0].Subject)
+	}
+}
+
+func TestProcessEvent_AssistantPublishesActivityEvent(t *testing.T) {
+	pub := &fakePublisher{}
+	bridge := &Bridge{
+		config: BridgeConfig{
+			AgentName: "leader",
+			TeamName:  "asstteam",
+			Role:      "leader",
+		},
+		client: pub,
+	}
+
+	msgContent, _ := json.Marshal(map[string]string{"type": "text", "text": "Thinking about the problem..."})
+	event := claude.StreamEvent{
+		Type:    "assistant",
+		Message: msgContent,
+	}
+
+	var currentResult string
+	bridge.processEvent(&event, &currentResult)
+
+	msgs := pub.getMessages()
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+
+	if msgs[0].Msg.Type != protocol.TypeActivityEvent {
+		t.Errorf("Type: got %q, want %q", msgs[0].Msg.Type, protocol.TypeActivityEvent)
+	}
+
+	var payload protocol.ActivityEventPayload
+	if err := json.Unmarshal(msgs[0].Msg.Payload, &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if payload.EventType != "assistant" {
+		t.Errorf("EventType: got %q, want 'assistant'", payload.EventType)
+	}
+	if payload.Action != "assistant message" {
+		t.Errorf("Action: got %q, want 'assistant message'", payload.Action)
+	}
+}
+
 func TestProcessEvent_ResultFromResultField(t *testing.T) {
 	pub := &fakePublisher{}
 	bridge := &Bridge{

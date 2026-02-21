@@ -160,6 +160,14 @@ func TestChannels(t *testing.T) {
 	if got != "team.myteam.leader" {
 		t.Errorf("got %q, want %q", got, "team.myteam.leader")
 	}
+
+	got, err = TeamActivityChannel("myteam")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "team.myteam.activity" {
+		t.Errorf("got %q, want %q", got, "team.myteam.activity")
+	}
 }
 
 func TestChannels_InvalidNames(t *testing.T) {
@@ -178,7 +186,11 @@ func TestChannels_InvalidNames(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := TeamLeaderChannel(tt.teamName)
 			if err == nil {
-				t.Error("expected error for invalid team name")
+				t.Error("expected error for invalid team name (leader)")
+			}
+			_, err = TeamActivityChannel(tt.teamName)
+			if err == nil {
+				t.Error("expected error for invalid team name (activity)")
 			}
 		})
 	}
@@ -189,12 +201,14 @@ func TestMessageTypes(t *testing.T) {
 		TypeUserMessage,
 		TypeLeaderResponse,
 		TypeSystemCommand,
+		TypeActivityEvent,
 	}
 
 	expected := []string{
 		"user_message",
 		"leader_response",
 		"system_command",
+		"activity_event",
 	}
 
 	for i, mt := range types {

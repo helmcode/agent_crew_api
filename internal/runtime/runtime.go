@@ -22,6 +22,7 @@ type AgentConfig struct {
 	WorkspacePath   string
 	ClaudeMD        string            // CLAUDE.md content passed via env var for sidecar to write
 	AgentConfigYAML string            // serialized agent config to mount into the container
+	SubAgentFiles   map[string]string // filename → content for .claude/agents/*.md, passed via env var to sidecar
 	Env             map[string]string // extra environment variables (e.g. from Settings DB)
 }
 

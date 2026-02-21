@@ -25,3 +25,12 @@ func TeamLeaderChannel(teamName string) (string, error) {
 	}
 	return fmt.Sprintf("team.%s.leader", teamName), nil
 }
+
+// TeamActivityChannel returns the NATS subject for streaming intermediate
+// activity events (tool calls, assistant messages, etc.) from agents.
+func TeamActivityChannel(teamName string) (string, error) {
+	if err := ValidateSubjectToken(teamName); err != nil {
+		return "", fmt.Errorf("invalid team name: %w", err)
+	}
+	return fmt.Sprintf("team.%s.activity", teamName), nil
+}

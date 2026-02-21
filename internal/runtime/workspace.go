@@ -122,6 +122,12 @@ func GenerateClaudeMD(agent AgentWorkspaceInfo) string {
 	return b.String()
 }
 
+// SubAgentFileName returns the sanitized filename (without path) for a sub-agent,
+// e.g. "my-agent.md". Use this to compute the key for SubAgentFiles in AgentConfig.
+func SubAgentFileName(name string) string {
+	return sanitizeName(name) + ".md"
+}
+
 // SetupSubAgentFile creates a sub-agent definition file at
 // {workspacePath}/.claude/agents/{agentName}.md with YAML frontmatter.
 // This is used for non-leader agents in the native Claude Code sub-agent architecture.

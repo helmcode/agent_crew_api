@@ -230,6 +230,7 @@ func (s *Server) deployTeamAsync(team models.Team) {
 	// Setup workspace files for all agents and deploy only the leader container.
 	// Non-leader agents are sub-agent files only — no containers.
 	var leader *models.Agent
+	subAgentFiles := map[string]string{}
 	for i := range team.Agents {
 		agent := &team.Agents[i]
 
@@ -247,28 +248,33 @@ func (s *Server) deployTeamAsync(team models.Team) {
 			info.TeamMembers = teamMembers
 		}
 
-		// Write workspace files to disk (works when API runs on host).
-		if team.WorkspacePath != "" {
-			if agent.Role == models.AgentRoleLeader {
-				// Leader gets a CLAUDE.md at .claude/{name}/CLAUDE.md.
-				if _, err := runtime.SetupAgentWorkspace(team.WorkspacePath, info); err != nil {
-					slog.Error("failed to setup agent workspace", "agent", agent.Name, "error", err)
-				}
-			} else {
-				// Non-leader agents get a sub-agent file at .claude/agents/{name}.md.
-				subInfo := runtime.SubAgentInfo{
-					Name:        agent.Name,
-					Description: agent.SubAgentDescription,
-					Model:       agent.SubAgentModel,
-					Skills:      json.RawMessage(agent.SubAgentSkills),
-					ClaudeMD:    agent.ClaudeMD,
-				}
-				if subInfo.ClaudeMD == "" {
-					subInfo.ClaudeMD = runtime.GenerateClaudeMD(info)
-				}
+		if agent.Role != models.AgentRoleLeader {
+			subInfo := runtime.SubAgentInfo{
+				Name:        agent.Name,
+				Description: agent.SubAgentDescription,
+				Model:       agent.SubAgentModel,
+				Skills:      json.RawMessage(agent.SubAgentSkills),
+				ClaudeMD:    agent.ClaudeMD,
+			}
+			if subInfo.ClaudeMD == "" {
+				subInfo.ClaudeMD = runtime.GenerateClaudeMD(info)
+			}
+
+			// Always collect sub-agent content for env var delivery to the sidecar.
+			// This ensures files are created even when using a Docker volume (no WorkspacePath).
+			filename := runtime.SubAgentFileName(agent.Name)
+			subAgentFiles[filename] = runtime.GenerateSubAgentContent(subInfo)
+
+			// Also write to disk when the API has direct filesystem access.
+			if team.WorkspacePath != "" {
 				if _, err := runtime.SetupSubAgentFile(team.WorkspacePath, subInfo); err != nil {
 					slog.Error("failed to setup sub-agent file", "agent", agent.Name, "error", err)
 				}
+			}
+		} else if team.WorkspacePath != "" {
+			// Leader gets a CLAUDE.md at .claude/CLAUDE.md when API has filesystem access.
+			if _, err := runtime.SetupAgentWorkspace(team.WorkspacePath, info); err != nil {
+				slog.Error("failed to setup agent workspace", "agent", agent.Name, "error", err)
 			}
 		}
 
@@ -342,6 +348,7 @@ func (s *Server) deployTeamAsync(team models.Team) {
 		Resources:     res,
 		NATSUrl:       natsURL,
 		WorkspacePath: team.WorkspacePath,
+		SubAgentFiles: subAgentFiles,
 		Env:           agentEnv,
 	}
 

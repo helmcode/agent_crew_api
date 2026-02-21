@@ -408,6 +408,13 @@ func (d *DockerRuntime) DeployAgent(ctx context.Context, config AgentConfig) (*A
 		env = append(env, "AGENT_CLAUDE_MD="+config.ClaudeMD)
 	}
 
+	// Pass sub-agent file contents via env var so the sidecar can write them to
+	// .claude/agents/. Required when using a Docker volume (no WorkspacePath).
+	if len(config.SubAgentFiles) > 0 {
+		filesJSON, _ := json.Marshal(config.SubAgentFiles)
+		env = append(env, "AGENT_SUB_AGENT_FILES="+string(filesJSON))
+	}
+
 	// Resource limits.
 	resources := container.Resources{}
 	if config.Resources.Memory != "" {
