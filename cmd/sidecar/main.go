@@ -3,16 +3,20 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"syscall"
 
 	"github.com/helmcode/agent-crew/internal/claude"
 	agentNats "github.com/helmcode/agent-crew/internal/nats"
 	"github.com/helmcode/agent-crew/internal/permissions"
+	"github.com/helmcode/agent-crew/internal/protocol"
 )
 
 func main() {
@@ -94,7 +98,8 @@ func main() {
 		}
 	}
 
-	if subAgentFilesEnv := os.Getenv("AGENT_SUB_AGENT_FILES"); subAgentFilesEnv != "" {
+	subAgentFilesEnv := os.Getenv("AGENT_SUB_AGENT_FILES")
+	if subAgentFilesEnv != "" {
 		var subAgentFiles map[string]string
 		if err := json.Unmarshal([]byte(subAgentFilesEnv), &subAgentFiles); err != nil {
 			slog.Warn("failed to parse AGENT_SUB_AGENT_FILES", "error", err)
@@ -104,9 +109,15 @@ func main() {
 				slog.Warn("failed to create .claude/agents dir", "error", err)
 			} else {
 				for filename, content := range subAgentFiles {
-					path := agentsDir + "/" + filename
+					// Security: sanitize filename to prevent path traversal.
+					safe := filepath.Base(filename)
+					if safe != filename || strings.Contains(filename, "..") || strings.Contains(filename, "/") {
+						slog.Warn("rejected sub-agent filename with path traversal", "original", filename, "sanitized", safe)
+						continue
+					}
+					path := filepath.Join(agentsDir, safe)
 					if err := os.WriteFile(path, []byte(content), 0644); err != nil {
-						slog.Warn("failed to write sub-agent file", "file", filename, "error", err)
+						slog.Warn("failed to write sub-agent file", "file", safe, "error", err)
 					} else {
 						slog.Info("wrote sub-agent file from env var", "path", path)
 					}
@@ -116,7 +127,10 @@ func main() {
 	}
 
 	// 5. Install sub-agent skills globally and symlink into workspace.
-	if skillsEnv := os.Getenv("AGENT_SKILLS_INSTALL"); skillsEnv != "" {
+	skillsEnv := os.Getenv("AGENT_SKILLS_INSTALL")
+	if skillsEnv != "" {
+		// Security: only allow skill names matching a safe pattern to prevent command injection.
+		validSkillName := regexp.MustCompile(`^[a-zA-Z0-9@/_.-]+$`)
 		var skills []string
 		if err := json.Unmarshal([]byte(skillsEnv), &skills); err != nil {
 			slog.Warn("failed to parse AGENT_SKILLS_INSTALL", "error", err)
@@ -125,6 +139,11 @@ func main() {
 			failed := 0
 			for _, skill := range skills {
 				if skill == "" {
+					continue
+				}
+				if !validSkillName.MatchString(skill) {
+					slog.Warn("rejected skill with invalid name", "skill", skill)
+					failed++
 					continue
 				}
 				slog.Info("installing skill globally", "skill", skill)
@@ -175,6 +194,10 @@ func main() {
 		}
 	}
 
+	// 6. Container file validation phase.
+	checks := runContainerValidation(workDir, claudeDir, skillsEnv != "", subAgentFilesEnv != "")
+	publishValidationResults(natsClient, cfg.Agent.Name, cfg.Agent.Team, checks)
+
 	// 7. Start Claude Manager.
 	processCfg := claude.ProcessConfig{
 		SystemPrompt: cfg.Agent.SystemPrompt,
@@ -224,4 +247,130 @@ func main() {
 	natsClient.Close()
 
 	slog.Info("agent sidecar stopped")
+}
+
+// runContainerValidation checks that all expected workspace files and
+// directories exist after the setup phase. Returns a list of validation checks.
+func runContainerValidation(workDir, claudeDir string, skillsConfigured, subAgentsConfigured bool) []protocol.ValidationCheck {
+	var checks []protocol.ValidationCheck
+
+	// Check 1: CLAUDE.md must exist.
+	claudeMDPath := filepath.Join(claudeDir, "CLAUDE.md")
+	if _, err := os.Stat(claudeMDPath); err != nil {
+		checks = append(checks, protocol.ValidationCheck{
+			Name:    "claude_md",
+			Status:  protocol.ValidationError,
+			Message: fmt.Sprintf("CLAUDE.md not found at %s", claudeMDPath),
+		})
+	} else {
+		checks = append(checks, protocol.ValidationCheck{
+			Name:    "claude_md",
+			Status:  protocol.ValidationOK,
+			Message: "CLAUDE.md exists",
+		})
+	}
+
+	// Check 2: agents directory has files (only if sub-agents were configured).
+	agentsDir := filepath.Join(claudeDir, "agents")
+	if subAgentsConfigured {
+		entries, err := os.ReadDir(agentsDir)
+		if err != nil || len(entries) == 0 {
+			checks = append(checks, protocol.ValidationCheck{
+				Name:    "agents_dir",
+				Status:  protocol.ValidationError,
+				Message: fmt.Sprintf("agents directory missing or empty at %s", agentsDir),
+			})
+		} else {
+			checks = append(checks, protocol.ValidationCheck{
+				Name:    "agents_dir",
+				Status:  protocol.ValidationOK,
+				Message: fmt.Sprintf("agents directory has %d file(s)", len(entries)),
+			})
+		}
+	}
+
+	// Check 3: skills symlink exists and resolves (only if skills were configured).
+	if skillsConfigured {
+		workspaceSkillsDir := filepath.Join(workDir, ".claude", "skills")
+		resolved, err := filepath.EvalSymlinks(workspaceSkillsDir)
+		if err != nil {
+			checks = append(checks, protocol.ValidationCheck{
+				Name:    "skills_symlink",
+				Status:  protocol.ValidationWarning,
+				Message: fmt.Sprintf("skills symlink missing or broken at %s: %v", workspaceSkillsDir, err),
+			})
+		} else {
+			checks = append(checks, protocol.ValidationCheck{
+				Name:    "skills_symlink",
+				Status:  protocol.ValidationOK,
+				Message: fmt.Sprintf("skills symlink resolves to %s", resolved),
+			})
+		}
+
+		// Check 4: global skills directory has installed packages.
+		homeDir, err := os.UserHomeDir()
+		if err == nil {
+			globalSkillsDir := filepath.Join(homeDir, ".claude", "skills")
+			entries, err := os.ReadDir(globalSkillsDir)
+			if err != nil || len(entries) == 0 {
+				checks = append(checks, protocol.ValidationCheck{
+					Name:    "skills_installed",
+					Status:  protocol.ValidationWarning,
+					Message: fmt.Sprintf("no installed skill packages found in %s", globalSkillsDir),
+				})
+			} else {
+				checks = append(checks, protocol.ValidationCheck{
+					Name:    "skills_installed",
+					Status:  protocol.ValidationOK,
+					Message: fmt.Sprintf("%d skill package(s) installed", len(entries)),
+				})
+			}
+		}
+	}
+
+	return checks
+}
+
+// publishValidationResults publishes validation check results to the team
+// activity NATS channel so the API relay can save them as TaskLogs.
+func publishValidationResults(client *agentNats.Client, agentName, teamName string, checks []protocol.ValidationCheck) {
+	okCount, warnCount, errCount := 0, 0, 0
+	for _, c := range checks {
+		switch c.Status {
+		case protocol.ValidationOK:
+			okCount++
+		case protocol.ValidationWarning:
+			warnCount++
+		case protocol.ValidationError:
+			errCount++
+		}
+	}
+	summary := fmt.Sprintf("%d ok, %d warning(s), %d error(s)", okCount, warnCount, errCount)
+
+	slog.Info("container validation complete", "summary", summary)
+	for _, c := range checks {
+		slog.Info("validation check", "name", c.Name, "status", c.Status, "message", c.Message)
+	}
+
+	payload := protocol.ContainerValidationPayload{
+		AgentName: agentName,
+		Checks:    checks,
+		Summary:   summary,
+	}
+
+	msg, err := protocol.NewMessage(agentName, "system", protocol.TypeContainerValidation, payload)
+	if err != nil {
+		slog.Error("failed to create validation message", "error", err)
+		return
+	}
+
+	subject, err := protocol.TeamActivityChannel(teamName)
+	if err != nil {
+		slog.Error("failed to build activity channel for validation", "error", err)
+		return
+	}
+
+	if err := client.Publish(subject, msg); err != nil {
+		slog.Error("failed to publish validation results", "error", err)
+	}
 }

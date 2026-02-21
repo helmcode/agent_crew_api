@@ -190,6 +190,54 @@ func TestProcessRelayMessage_TeamIsolation(t *testing.T) {
 	}
 }
 
+func TestProcessRelayMessage_ContainerValidation(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{Name: "relay-val-team"})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+
+	data := buildRelayPayload(t, protocol.TypeContainerValidation, "leader", "system",
+		protocol.ContainerValidationPayload{
+			AgentName: "leader",
+			Checks: []protocol.ValidationCheck{
+				{Name: "claude_md", Status: protocol.ValidationOK, Message: "CLAUDE.md exists"},
+				{Name: "skills_symlink", Status: protocol.ValidationWarning, Message: "symlink broken"},
+			},
+			Summary: "1 ok, 1 warning(s), 0 error(s)",
+		})
+
+	if err := srv.processRelayMessage(team.ID, team.Name, data); err != nil {
+		t.Fatalf("processRelayMessage returned error: %v", err)
+	}
+
+	count := countRelayLogs(t, srv, team.ID)
+	if count != 1 {
+		t.Fatalf("task logs: got %d, want 1", count)
+	}
+
+	var log models.TaskLog
+	srv.db.Where("team_id = ?", team.ID).First(&log)
+
+	if log.MessageType != "container_validation" {
+		t.Errorf("message_type: got %q, want 'container_validation'", log.MessageType)
+	}
+	if log.FromAgent != "leader" {
+		t.Errorf("from_agent: got %q, want 'leader'", log.FromAgent)
+	}
+
+	// Verify payload is preserved.
+	var payload protocol.ContainerValidationPayload
+	if err := json.Unmarshal(log.Payload, &payload); err != nil {
+		t.Fatalf("failed to unmarshal payload: %v", err)
+	}
+	if len(payload.Checks) != 2 {
+		t.Errorf("checks: got %d, want 2", len(payload.Checks))
+	}
+	if payload.Summary != "1 ok, 1 warning(s), 0 error(s)" {
+		t.Errorf("summary: got %q", payload.Summary)
+	}
+}
+
 func TestProcessRelayMessage_MultipleMessages(t *testing.T) {
 	srv, _ := setupTestServer(t)
 	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{Name: "relay-multi-team"})
@@ -197,13 +245,14 @@ func TestProcessRelayMessage_MultipleMessages(t *testing.T) {
 	parseJSON(t, teamRec, &team)
 
 	messages := []struct {
-		msgType  protocol.MessageType
-		from     string
-		to       string
-		payload  interface{}
+		msgType    protocol.MessageType
+		from       string
+		to         string
+		payload    interface{}
 		shouldSave bool
 	}{
 		{protocol.TypeLeaderResponse, "leader", "user", protocol.LeaderResponsePayload{Status: "completed", Result: "done"}, true},
+		{protocol.TypeContainerValidation, "leader", "system", protocol.ContainerValidationPayload{AgentName: "leader", Summary: "ok"}, true},
 		// These must be skipped.
 		{protocol.TypeUserMessage, "user", "leader", protocol.UserMessagePayload{Content: "ignored"}, false},
 		{protocol.TypeSystemCommand, "system", "leader", protocol.SystemCommandPayload{Command: "shutdown"}, false},
@@ -216,10 +265,10 @@ func TestProcessRelayMessage_MultipleMessages(t *testing.T) {
 		}
 	}
 
-	// Only leader_response should be saved (1 out of 3).
+	// leader_response + container_validation should be saved (2 out of 4).
 	count := countRelayLogs(t, srv, team.ID)
-	if count != 1 {
-		t.Fatalf("task logs: got %d, want 1 (only leader_response saved)", count)
+	if count != 2 {
+		t.Fatalf("task logs: got %d, want 2 (leader_response + container_validation saved)", count)
 	}
 }
 

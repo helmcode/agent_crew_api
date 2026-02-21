@@ -172,7 +172,7 @@ func (b *Bridge) processEvent(event *claude.StreamEvent, currentResult *string) 
 	switch event.Type {
 	case "tool_use":
 		// Publish activity event for the tool call so the UI can show progress.
-		toolName, command, _ := claude.ExtractToolCommand(event)
+		toolName, command, paths := claude.ExtractToolCommand(event)
 		action := toolName
 		if command != "" {
 			action = toolName + ": " + command
@@ -181,7 +181,7 @@ func (b *Bridge) processEvent(event *claude.StreamEvent, currentResult *string) 
 
 		// Check permissions before allowing tool execution.
 		if b.config.Gate != nil {
-			decision := b.config.Gate.Evaluate(toolName, command, nil)
+			decision := b.config.Gate.Evaluate(toolName, command, paths)
 			if !decision.Allowed {
 				slog.Warn("tool use denied by permission gate",
 					"tool", toolName,

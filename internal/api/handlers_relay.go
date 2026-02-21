@@ -123,6 +123,8 @@ func (s *Server) processRelayMessage(teamID, teamName string, data []byte) error
 		messageType = "task_result"
 	case protocol.TypeActivityEvent:
 		messageType = "activity_event"
+	case protocol.TypeContainerValidation:
+		messageType = "container_validation"
 	default:
 		return nil
 	}

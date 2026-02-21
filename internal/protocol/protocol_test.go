@@ -202,6 +202,7 @@ func TestMessageTypes(t *testing.T) {
 		TypeLeaderResponse,
 		TypeSystemCommand,
 		TypeActivityEvent,
+		TypeContainerValidation,
 	}
 
 	expected := []string{
@@ -209,11 +210,69 @@ func TestMessageTypes(t *testing.T) {
 		"leader_response",
 		"system_command",
 		"activity_event",
+		"container_validation",
 	}
 
 	for i, mt := range types {
 		if string(mt) != expected[i] {
 			t.Errorf("type %d: got %q, want %q", i, string(mt), expected[i])
 		}
+	}
+}
+
+func TestParsePayload_ContainerValidation(t *testing.T) {
+	original := ContainerValidationPayload{
+		AgentName: "leader",
+		Checks: []ValidationCheck{
+			{Name: "claude_md", Status: ValidationOK, Message: "CLAUDE.md exists"},
+			{Name: "agents_dir", Status: ValidationError, Message: "agents directory missing"},
+			{Name: "skills_symlink", Status: ValidationWarning, Message: "skills symlink broken"},
+		},
+		Summary: "1 ok, 1 warning(s), 1 error(s)",
+	}
+
+	msg, err := NewMessage("leader", "system", TypeContainerValidation, original)
+	if err != nil {
+		t.Fatalf("NewMessage: %v", err)
+	}
+
+	if msg.Type != TypeContainerValidation {
+		t.Errorf("type: got %q, want %q", msg.Type, TypeContainerValidation)
+	}
+
+	parsed, err := ParsePayload[ContainerValidationPayload](msg)
+	if err != nil {
+		t.Fatalf("ParsePayload: %v", err)
+	}
+
+	if parsed.AgentName != "leader" {
+		t.Errorf("agent_name: got %q, want 'leader'", parsed.AgentName)
+	}
+	if len(parsed.Checks) != 3 {
+		t.Fatalf("checks: got %d, want 3", len(parsed.Checks))
+	}
+	if parsed.Checks[0].Status != ValidationOK {
+		t.Errorf("check[0].status: got %q, want %q", parsed.Checks[0].Status, ValidationOK)
+	}
+	if parsed.Checks[1].Status != ValidationError {
+		t.Errorf("check[1].status: got %q, want %q", parsed.Checks[1].Status, ValidationError)
+	}
+	if parsed.Checks[2].Status != ValidationWarning {
+		t.Errorf("check[2].status: got %q, want %q", parsed.Checks[2].Status, ValidationWarning)
+	}
+	if parsed.Summary != "1 ok, 1 warning(s), 1 error(s)" {
+		t.Errorf("summary: got %q", parsed.Summary)
+	}
+}
+
+func TestValidationCheckStatus_Values(t *testing.T) {
+	if string(ValidationOK) != "ok" {
+		t.Errorf("ValidationOK: got %q, want 'ok'", ValidationOK)
+	}
+	if string(ValidationWarning) != "warning" {
+		t.Errorf("ValidationWarning: got %q, want 'warning'", ValidationWarning)
+	}
+	if string(ValidationError) != "error" {
+		t.Errorf("ValidationError: got %q, want 'error'", ValidationError)
 	}
 }
