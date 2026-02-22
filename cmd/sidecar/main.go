@@ -6,10 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"syscall"
 
@@ -129,67 +127,19 @@ func main() {
 	// 5. Install sub-agent skills globally and symlink into workspace.
 	skillsEnv := os.Getenv("AGENT_SKILLS_INSTALL")
 	if skillsEnv != "" {
-		// Security: only allow skill names matching a safe pattern to prevent command injection.
-		validSkillName := regexp.MustCompile(`^[a-zA-Z0-9@/_.-]+$`)
 		var skills []string
 		if err := json.Unmarshal([]byte(skillsEnv), &skills); err != nil {
 			slog.Warn("failed to parse AGENT_SKILLS_INSTALL", "error", err)
 		} else {
-			installed := 0
-			failed := 0
-			for _, skill := range skills {
-				if skill == "" {
-					continue
-				}
-				if !validSkillName.MatchString(skill) {
-					slog.Warn("rejected skill with invalid name", "skill", skill)
-					failed++
-					continue
-				}
-				slog.Info("installing skill globally", "skill", skill)
-				cmd := exec.Command("npx", "skills", "add", skill, "-g", "--yes")
-				cmd.Stdout = os.Stdout
-				cmd.Stderr = os.Stderr
-				if err := cmd.Run(); err != nil {
-					slog.Error("failed to install skill", "skill", skill, "error", err)
-					failed++
-				} else {
-					slog.Info("skill installed globally", "skill", skill)
-					installed++
-				}
-			}
-			slog.Info("skills install summary", "installed", installed, "failed", failed, "total", len(skills))
+			results := installSkills(skills)
+
+			// Report per-skill status via NATS.
+			publishSkillStatus(natsClient, cfg.Agent.Name, cfg.Agent.Team, results)
 
 			// Create symlink from global skills dir to workspace so Claude
 			// Code discovers the skills at its expected path.
-			homeDir, err := os.UserHomeDir()
-			if err != nil {
-				slog.Warn("failed to get home dir for skills symlink", "error", err)
-			} else {
-				globalSkillsDir := filepath.Join(homeDir, ".claude", "skills")
-				workspaceSkillsDir := filepath.Join(workDir, ".claude", "skills")
-
-				// Ensure the global skills directory exists.
-				if err := os.MkdirAll(globalSkillsDir, 0755); err != nil {
-					slog.Warn("failed to create global skills dir", "path", globalSkillsDir, "error", err)
-				} else {
-					// Remove existing workspace skills path if it exists (file or dir)
-					// so the symlink can be created cleanly.
-					if _, err := os.Lstat(workspaceSkillsDir); err == nil {
-						if err := os.RemoveAll(workspaceSkillsDir); err != nil {
-							slog.Warn("failed to remove existing workspace skills path", "path", workspaceSkillsDir, "error", err)
-						}
-					}
-
-					// Ensure parent directory exists.
-					if err := os.MkdirAll(filepath.Dir(workspaceSkillsDir), 0755); err != nil {
-						slog.Warn("failed to create workspace .claude dir", "error", err)
-					} else if err := os.Symlink(globalSkillsDir, workspaceSkillsDir); err != nil {
-						slog.Warn("failed to create skills symlink", "from", globalSkillsDir, "to", workspaceSkillsDir, "error", err)
-					} else {
-						slog.Info("created skills symlink", "from", globalSkillsDir, "to", workspaceSkillsDir)
-					}
-				}
+			if err := symlinkSkillsDir(workDir); err != nil {
+				slog.Warn("failed to symlink skills directory", "error", err)
 			}
 		}
 	}

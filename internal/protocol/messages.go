@@ -15,6 +15,7 @@ const (
 	TypeSystemCommand        MessageType = "system_command"
 	TypeActivityEvent        MessageType = "activity_event"
 	TypeContainerValidation  MessageType = "container_validation"
+	TypeSkillStatus          MessageType = "skill_status"
 )
 
 // MessageContext carries optional conversation context.
@@ -84,4 +85,18 @@ type ContainerValidationPayload struct {
 	AgentName string            `json:"agent_name"`
 	Checks    []ValidationCheck `json:"checks"`
 	Summary   string            `json:"summary"` // Overall summary (e.g., "3 ok, 1 warning, 0 errors")
+}
+
+// SkillInstallResult represents the installation outcome for a single skill package.
+type SkillInstallResult struct {
+	Package string `json:"package"`
+	Status  string `json:"status"` // installed, failed
+	Error   string `json:"error,omitempty"`
+}
+
+// SkillStatusPayload carries per-skill installation results from the sidecar.
+type SkillStatusPayload struct {
+	AgentName string               `json:"agent_name"`
+	Skills    []SkillInstallResult `json:"skills"`
+	Summary   string               `json:"summary"` // e.g., "2 installed, 1 failed"
 }
