@@ -336,6 +336,19 @@ func (k *K8sRuntime) DeployAgent(ctx context.Context, config AgentConfig) (*Agen
 		env = append(env, corev1.EnvVar{Name: "CLAUDE_CODE_OAUTH_TOKEN", Value: oauthToken})
 	}
 
+	// Forward remaining env vars from config.Env (e.g. AGENT_SKILLS_INSTALL)
+	// that were not already handled above via specific logic.
+	handledEnvKeys := map[string]bool{
+		"ANTHROPIC_API_KEY":       true,
+		"CLAUDE_CODE_OAUTH_TOKEN": true,
+		"ANTHROPIC_AUTH_TOKEN":    true,
+	}
+	for k, v := range config.Env {
+		if !handledEnvKeys[k] && v != "" {
+			env = append(env, corev1.EnvVar{Name: k, Value: v})
+		}
+	}
+
 	// Build resource requirements.
 	resources := corev1.ResourceRequirements{}
 	if config.Resources.Memory != "" || config.Resources.CPU != "" {

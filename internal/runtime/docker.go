@@ -415,6 +415,19 @@ func (d *DockerRuntime) DeployAgent(ctx context.Context, config AgentConfig) (*A
 		env = append(env, "AGENT_SUB_AGENT_FILES="+string(filesJSON))
 	}
 
+	// Forward remaining env vars from config.Env (e.g. AGENT_SKILLS_INSTALL)
+	// that were not already handled above via specific logic.
+	handledEnvKeys := map[string]bool{
+		"ANTHROPIC_API_KEY":       true,
+		"CLAUDE_CODE_OAUTH_TOKEN": true,
+		"ANTHROPIC_AUTH_TOKEN":    true,
+	}
+	for k, v := range config.Env {
+		if !handledEnvKeys[k] && v != "" {
+			env = append(env, k+"="+v)
+		}
+	}
+
 	// Resource limits.
 	resources := container.Resources{}
 	if config.Resources.Memory != "" {
