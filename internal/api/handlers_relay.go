@@ -120,11 +120,13 @@ func (s *Server) processRelayMessage(teamID, teamName string, data []byte) error
 	var messageType string
 	switch protoMsg.Type {
 	case protocol.TypeLeaderResponse:
-		messageType = "task_result"
+		messageType = string(protocol.TypeLeaderResponse)
 	case protocol.TypeActivityEvent:
 		messageType = "activity_event"
 	case protocol.TypeContainerValidation:
 		messageType = "container_validation"
+	case protocol.TypeSkillStatus:
+		messageType = string(protocol.TypeSkillStatus)
 	default:
 		return nil
 	}

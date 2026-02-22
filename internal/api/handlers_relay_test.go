@@ -69,8 +69,8 @@ func TestProcessRelayMessage_LeaderResponse(t *testing.T) {
 	if log.ToAgent != "user" {
 		t.Errorf("to_agent: got %q, want 'user'", log.ToAgent)
 	}
-	if log.MessageType != "task_result" {
-		t.Errorf("message_type: got %q, want 'task_result'", log.MessageType)
+	if log.MessageType != "leader_response" {
+		t.Errorf("message_type: got %q, want 'leader_response'", log.MessageType)
 	}
 	if log.TeamID != team.ID {
 		t.Errorf("team_id: got %q, want %q", log.TeamID, team.ID)
@@ -253,6 +253,7 @@ func TestProcessRelayMessage_MultipleMessages(t *testing.T) {
 	}{
 		{protocol.TypeLeaderResponse, "leader", "user", protocol.LeaderResponsePayload{Status: "completed", Result: "done"}, true},
 		{protocol.TypeContainerValidation, "leader", "system", protocol.ContainerValidationPayload{AgentName: "leader", Summary: "ok"}, true},
+		{protocol.TypeSkillStatus, "leader", "system", protocol.SkillStatusPayload{AgentName: "leader", Summary: "1 installed, 0 failed"}, true},
 		// These must be skipped.
 		{protocol.TypeUserMessage, "user", "leader", protocol.UserMessagePayload{Content: "ignored"}, false},
 		{protocol.TypeSystemCommand, "system", "leader", protocol.SystemCommandPayload{Command: "shutdown"}, false},
@@ -265,10 +266,10 @@ func TestProcessRelayMessage_MultipleMessages(t *testing.T) {
 		}
 	}
 
-	// leader_response + container_validation should be saved (2 out of 4).
+	// leader_response + container_validation + skill_status should be saved (3 out of 5).
 	count := countRelayLogs(t, srv, team.ID)
-	if count != 2 {
-		t.Fatalf("task logs: got %d, want 2 (leader_response + container_validation saved)", count)
+	if count != 3 {
+		t.Fatalf("task logs: got %d, want 3 (leader_response + container_validation + skill_status saved)", count)
 	}
 }
 
@@ -325,6 +326,72 @@ func TestProcessRelayMessage_ActivityEvent(t *testing.T) {
 	}
 	if payload.Action != "Bash: ls -la /workspace" {
 		t.Errorf("action: got %q, want 'Bash: ls -la /workspace'", payload.Action)
+	}
+}
+
+func TestProcessRelayMessage_SkillStatus(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{Name: "relay-skill-team"})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+
+	data := buildRelayPayload(t, protocol.TypeSkillStatus, "leader", "system",
+		protocol.SkillStatusPayload{
+			AgentName: "leader",
+			Skills: []protocol.SkillInstallResult{
+				{Package: "@anthropic/skill-web-search", Status: "installed"},
+				{Package: "@anthropic/skill-bad", Status: "failed", Error: "not found"},
+			},
+			Summary: "1 installed, 1 failed",
+		})
+
+	if err := srv.processRelayMessage(team.ID, team.Name, data); err != nil {
+		t.Fatalf("processRelayMessage returned error: %v", err)
+	}
+
+	count := countRelayLogs(t, srv, team.ID)
+	if count != 1 {
+		t.Fatalf("task logs: got %d, want 1", count)
+	}
+
+	var log models.TaskLog
+	srv.db.Where("team_id = ?", team.ID).First(&log)
+
+	if log.MessageType != "skill_status" {
+		t.Errorf("message_type: got %q, want 'skill_status'", log.MessageType)
+	}
+	if log.FromAgent != "leader" {
+		t.Errorf("from_agent: got %q, want 'leader'", log.FromAgent)
+	}
+	if log.ToAgent != "system" {
+		t.Errorf("to_agent: got %q, want 'system'", log.ToAgent)
+	}
+
+	// Verify payload is preserved and can be deserialized.
+	var payload protocol.SkillStatusPayload
+	if err := json.Unmarshal(log.Payload, &payload); err != nil {
+		t.Fatalf("failed to unmarshal payload: %v", err)
+	}
+	if payload.AgentName != "leader" {
+		t.Errorf("agent_name: got %q, want 'leader'", payload.AgentName)
+	}
+	if len(payload.Skills) != 2 {
+		t.Fatalf("skills: got %d, want 2", len(payload.Skills))
+	}
+	if payload.Skills[0].Package != "@anthropic/skill-web-search" {
+		t.Errorf("skills[0].package: got %q, want '@anthropic/skill-web-search'", payload.Skills[0].Package)
+	}
+	if payload.Skills[0].Status != "installed" {
+		t.Errorf("skills[0].status: got %q, want 'installed'", payload.Skills[0].Status)
+	}
+	if payload.Skills[1].Status != "failed" {
+		t.Errorf("skills[1].status: got %q, want 'failed'", payload.Skills[1].Status)
+	}
+	if payload.Skills[1].Error != "not found" {
+		t.Errorf("skills[1].error: got %q, want 'not found'", payload.Skills[1].Error)
+	}
+	if payload.Summary != "1 installed, 1 failed" {
+		t.Errorf("summary: got %q, want '1 installed, 1 failed'", payload.Summary)
 	}
 }
 

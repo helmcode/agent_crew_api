@@ -161,6 +161,7 @@ func (s *Server) publishToTeamNATS(teamName, message string) error {
 var chatMessageTypes = []string{
 	string(protocol.TypeUserMessage),
 	string(protocol.TypeLeaderResponse),
+	"task_result", // backward compat: records stored before relay fix
 }
 
 // GetMessages returns chat messages for a team, filtered to conversation-relevant

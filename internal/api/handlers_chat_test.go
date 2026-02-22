@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/helmcode/agent-crew/internal/models"
+	"github.com/helmcode/agent-crew/internal/protocol"
 )
 
 func TestSendChat_SavesMessageToDB(t *testing.T) {
@@ -197,6 +198,7 @@ func TestGetMessages_FiltersOutStatusUpdates(t *testing.T) {
 		{"user_message", "user"},
 		{"system_command", "system"},
 		{"leader_response", "leader"},
+		{"task_result", "leader"}, // backward compat: old records
 		{"system_command", "system"},
 		{"user_message", "user"},
 	}
@@ -213,7 +215,7 @@ func TestGetMessages_FiltersOutStatusUpdates(t *testing.T) {
 		})
 	}
 
-	// Default GetMessages should only return user_message and leader_response.
+	// Default GetMessages should return user_message, leader_response, and task_result (backward compat).
 	rec := doRequest(srv, "GET", "/api/teams/"+team.ID+"/messages", nil)
 	if rec.Code != 200 {
 		t.Fatalf("status: got %d, want 200", rec.Code)
@@ -222,13 +224,14 @@ func TestGetMessages_FiltersOutStatusUpdates(t *testing.T) {
 	var logs []models.TaskLog
 	parseJSON(t, rec, &logs)
 
-	// Should get: 2 user_message + 1 leader_response = 3
-	if len(logs) != 3 {
-		t.Fatalf("filtered messages: got %d, want 3", len(logs))
+	// Should get: 2 user_message + 1 leader_response + 1 task_result = 4
+	if len(logs) != 4 {
+		t.Fatalf("filtered messages: got %d, want 4", len(logs))
 	}
 
+	allowed := map[string]bool{"user_message": true, "leader_response": true, "task_result": true}
 	for _, log := range logs {
-		if log.MessageType != "user_message" && log.MessageType != "leader_response" {
+		if !allowed[log.MessageType] {
 			t.Errorf("unexpected message type in filtered results: %q", log.MessageType)
 		}
 	}
@@ -359,6 +362,48 @@ func TestGetActivity_TeamNotFound(t *testing.T) {
 	rec := doRequest(srv, "GET", "/api/teams/nonexistent/activity", nil)
 	if rec.Code != 404 {
 		t.Fatalf("status: got %d, want 404", rec.Code)
+	}
+}
+
+func TestGetMessages_IncludesRelayedLeaderResponses(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{Name: "relay-chat-team"})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+	srv.db.Model(&team).Update("status", models.TeamStatusRunning)
+
+	// Simulate user sending a message via chat endpoint.
+	doRequest(srv, "POST", "/api/teams/"+team.ID+"/chat", ChatRequest{Message: "hello agent"})
+
+	// Simulate leader response arriving via the relay (as it does in production).
+	data := buildRelayPayload(t, protocol.TypeLeaderResponse, "leader", "user",
+		protocol.LeaderResponsePayload{Status: "completed", Result: "hello user"})
+	if err := srv.processRelayMessage(team.ID, team.Name, data); err != nil {
+		t.Fatalf("processRelayMessage returned error: %v", err)
+	}
+
+	// GetMessages should return both the user message and the leader response.
+	rec := doRequest(srv, "GET", "/api/teams/"+team.ID+"/messages", nil)
+	if rec.Code != 200 {
+		t.Fatalf("status: got %d, want 200", rec.Code)
+	}
+
+	var logs []models.TaskLog
+	parseJSON(t, rec, &logs)
+	if len(logs) != 2 {
+		t.Fatalf("messages: got %d, want 2 (user_message + leader_response)", len(logs))
+	}
+
+	types := map[string]bool{}
+	for _, log := range logs {
+		types[log.MessageType] = true
+	}
+	if !types["user_message"] {
+		t.Error("expected user_message in chat messages")
+	}
+	if !types["leader_response"] {
+		t.Error("expected leader_response in chat messages")
 	}
 }
 
