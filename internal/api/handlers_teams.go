@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/helmcode/agent-crew/internal/models"
+	"github.com/helmcode/agent-crew/internal/protocol"
 	"github.com/helmcode/agent-crew/internal/runtime"
 )
 
@@ -313,23 +314,25 @@ func (s *Server) deployTeamAsync(team models.Team) {
 
 	// Collect all unique skills from non-leader agents so the sidecar can
 	// install them via `skills add` before the leader process starts.
-	skillsSet := map[string]struct{}{}
+	type skillKey struct{ RepoURL, SkillName string }
+	skillsSet := map[skillKey]struct{}{}
+	var allSkills []protocol.SkillConfig
 	for _, a := range team.Agents {
 		if a.Role == models.AgentRoleLeader {
 			continue
 		}
-		var agentSkills []string
+		var agentSkills []protocol.SkillConfig
 		if err := json.Unmarshal(a.SubAgentSkills, &agentSkills); err == nil {
 			for _, s := range agentSkills {
-				if s != "" {
-					skillsSet[s] = struct{}{}
+				key := skillKey{s.RepoURL, s.SkillName}
+				if s.RepoURL != "" && s.SkillName != "" {
+					if _, exists := skillsSet[key]; !exists {
+						skillsSet[key] = struct{}{}
+						allSkills = append(allSkills, s)
+					}
 				}
 			}
 		}
-	}
-	var allSkills []string
-	for s := range skillsSet {
-		allSkills = append(allSkills, s)
 	}
 	skillsJSON, _ := json.Marshal(allSkills)
 

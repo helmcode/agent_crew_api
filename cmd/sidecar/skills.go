@@ -3,53 +3,86 @@ package main
 import (
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strings"
 
 	agentNats "github.com/helmcode/agent-crew/internal/nats"
 	"github.com/helmcode/agent-crew/internal/protocol"
 )
 
-// validSkillName matches safe skill package names (npm-style with optional scope).
+// validSkillName matches safe skill names: alphanumeric, hyphens, underscores, dots, @, forward slashes.
 var validSkillName = regexp.MustCompile(`^[a-zA-Z0-9@/_.-]+$`)
 
+// validateSkillConfig checks that a SkillConfig has a valid HTTPS URL and safe skill name.
+func validateSkillConfig(cfg protocol.SkillConfig) error {
+	if cfg.RepoURL == "" {
+		return fmt.Errorf("repo_url is required")
+	}
+	if cfg.SkillName == "" {
+		return fmt.Errorf("skill_name is required")
+	}
+
+	// Validate URL.
+	u, err := url.Parse(cfg.RepoURL)
+	if err != nil {
+		return fmt.Errorf("invalid repo_url: %w", err)
+	}
+	if u.Scheme != "https" {
+		return fmt.Errorf("repo_url must use https scheme, got %q", u.Scheme)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("repo_url must have a host")
+	}
+
+	// Block shell metacharacters in URL.
+	if strings.ContainsAny(cfg.RepoURL, ";|&$`\\\"'<>(){}!") {
+		return fmt.Errorf("repo_url contains invalid characters")
+	}
+
+	// Validate skill name.
+	if !validSkillName.MatchString(cfg.SkillName) {
+		return fmt.Errorf("skill_name contains invalid characters")
+	}
+
+	return nil
+}
+
 // installSkills installs a list of skill packages globally using the skills CLI.
-// It returns per-skill results and continues on individual failures.
-func installSkills(skills []string) []protocol.SkillInstallResult {
+func installSkills(skills []protocol.SkillConfig) []protocol.SkillInstallResult {
 	var results []protocol.SkillInstallResult
 
-	for _, skill := range skills {
-		if skill == "" {
-			continue
-		}
+	for _, cfg := range skills {
+		pkg := cfg.RepoURL + ":" + cfg.SkillName
 
-		if !validSkillName.MatchString(skill) {
-			slog.Warn("rejected skill with invalid name", "skill", skill)
+		if err := validateSkillConfig(cfg); err != nil {
+			slog.Warn("rejected skill with invalid config", "repo_url", cfg.RepoURL, "skill_name", cfg.SkillName, "error", err)
 			results = append(results, protocol.SkillInstallResult{
-				Package: skill,
+				Package: pkg,
 				Status:  "failed",
-				Error:   "invalid skill name",
+				Error:   err.Error(),
 			})
 			continue
 		}
 
-		slog.Info("installing skill globally", "skill", skill)
-		cmd := exec.Command("npx", "skills", "add", skill, "-g", "--yes")
+		slog.Info("installing skill globally", "repo_url", cfg.RepoURL, "skill_name", cfg.SkillName)
+		cmd := exec.Command("npx", "skills", "add", cfg.RepoURL, "--skill", cfg.SkillName, "-g", "--yes")
 		output, err := cmd.CombinedOutput()
 		if err != nil {
 			errMsg := fmt.Sprintf("%v: %s", err, string(output))
-			slog.Error("failed to install skill", "skill", skill, "error", errMsg)
+			slog.Error("failed to install skill", "repo_url", cfg.RepoURL, "skill_name", cfg.SkillName, "error", errMsg)
 			results = append(results, protocol.SkillInstallResult{
-				Package: skill,
+				Package: pkg,
 				Status:  "failed",
 				Error:   errMsg,
 			})
 		} else {
-			slog.Info("skill installed globally", "skill", skill)
+			slog.Info("skill installed globally", "repo_url", cfg.RepoURL, "skill_name", cfg.SkillName)
 			results = append(results, protocol.SkillInstallResult{
-				Package: skill,
+				Package: pkg,
 				Status:  "installed",
 			})
 		}

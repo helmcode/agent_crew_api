@@ -4,101 +4,125 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/helmcode/agent-crew/internal/protocol"
 )
 
-func TestValidSkillName(t *testing.T) {
-	valid := []string{
-		"my-skill",
-		"@org/my-skill",
-		"skill_v2",
-		"skill.js",
-		"simple",
-		"a1b2c3",
+func TestValidateSkillConfig(t *testing.T) {
+	valid := []protocol.SkillConfig{
+		{RepoURL: "https://github.com/jezweb/claude-skills", SkillName: "fastapi"},
+		{RepoURL: "https://github.com/vercel-labs/agent-skills", SkillName: "vercel-react-best-practices"},
+		{RepoURL: "https://github.com/owner/repo", SkillName: "skill"},
+		{RepoURL: "https://github.com/my-org/my_repo.v2", SkillName: "my-skill"},
+		{RepoURL: "https://github.com/org/repo", SkillName: "@scope/skill"},
 	}
-	for _, name := range valid {
-		if !validSkillName.MatchString(name) {
-			t.Errorf("expected %q to be a valid skill name", name)
+	for _, cfg := range valid {
+		if err := validateSkillConfig(cfg); err != nil {
+			t.Errorf("expected %+v to be valid, got error: %v", cfg, err)
 		}
 	}
 
-	invalid := []string{
-		"",
-		"skill with spaces",
-		"skill;rm -rf /",
-		"skill$(cmd)",
-		"skill`cmd`",
-		"skill|pipe",
-		"skill&bg",
-		"skill\nnewline",
+	invalid := []struct {
+		cfg    protocol.SkillConfig
+		errMsg string
+	}{
+		{protocol.SkillConfig{RepoURL: "", SkillName: "fastapi"}, "repo_url is required"},
+		{protocol.SkillConfig{RepoURL: "https://github.com/owner/repo", SkillName: ""}, "skill_name is required"},
+		{protocol.SkillConfig{RepoURL: "http://github.com/owner/repo", SkillName: "skill"}, "repo_url must use https scheme"},
+		{protocol.SkillConfig{RepoURL: "https://github.com/owner/repo;rm -rf /", SkillName: "skill"}, "repo_url contains invalid characters"},
+		{protocol.SkillConfig{RepoURL: "https://github.com/owner/repo", SkillName: "skill with spaces"}, "skill_name contains invalid characters"},
+		{protocol.SkillConfig{RepoURL: "https://github.com/owner/repo", SkillName: "skill;rm"}, "skill_name contains invalid characters"},
 	}
-	for _, name := range invalid {
-		if validSkillName.MatchString(name) {
-			t.Errorf("expected %q to be an invalid skill name", name)
+	for _, tc := range invalid {
+		if err := validateSkillConfig(tc.cfg); err == nil {
+			t.Errorf("expected %+v to be invalid (expected error containing %q), but got nil", tc.cfg, tc.errMsg)
 		}
 	}
 }
 
-func TestInstallSkills_EmptyAndInvalidNames(t *testing.T) {
-	// Empty skill names should be skipped entirely.
-	results := installSkills([]string{""})
+func TestInstallSkills_EmptySlice(t *testing.T) {
+	results := installSkills([]protocol.SkillConfig{})
 	if len(results) != 0 {
-		t.Errorf("expected 0 results for empty skill name, got %d", len(results))
+		t.Errorf("expected 0 results for empty slice, got %d", len(results))
 	}
+}
 
-	// Invalid skill names should be rejected with "failed" status.
-	results = installSkills([]string{"bad skill name!"})
-	if len(results) != 1 {
-		t.Fatalf("expected 1 result for invalid name, got %d", len(results))
+func TestInstallSkills_InvalidConfig(t *testing.T) {
+	skills := []protocol.SkillConfig{
+		{RepoURL: "", SkillName: "fastapi"},
+		{RepoURL: "http://github.com/owner/repo", SkillName: "skill"},
 	}
-	if results[0].Status != "failed" {
-		t.Errorf("expected status=failed, got %q", results[0].Status)
+	results := installSkills(skills)
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
 	}
-	if results[0].Error != "invalid skill name" {
-		t.Errorf("expected error='invalid skill name', got %q", results[0].Error)
+	for i, r := range results {
+		if r.Status != "failed" {
+			t.Errorf("result[%d]: expected status=failed, got %q", i, r.Status)
+		}
 	}
 }
 
 func TestInstallSkills_CommandNotFound(t *testing.T) {
-	// When npx/skills CLI is not available, the command should fail gracefully
-	// and report status=failed with an error message.
-
 	// Override PATH so npx cannot be found.
 	origPath := os.Getenv("PATH")
 	os.Setenv("PATH", "")
 	defer os.Setenv("PATH", origPath)
 
-	results := installSkills([]string{"valid-skill-name"})
+	skills := []protocol.SkillConfig{
+		{RepoURL: "https://github.com/jezweb/claude-skills", SkillName: "fastapi"},
+	}
+	results := installSkills(skills)
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(results))
 	}
 	if results[0].Status != "failed" {
 		t.Errorf("expected status=failed when npx not found, got %q", results[0].Status)
 	}
-	if results[0].Package != "valid-skill-name" {
-		t.Errorf("expected package='valid-skill-name', got %q", results[0].Package)
+	expectedPkg := "https://github.com/jezweb/claude-skills:fastapi"
+	if results[0].Package != expectedPkg {
+		t.Errorf("expected package=%q, got %q", expectedPkg, results[0].Package)
 	}
 }
 
 func TestInstallSkills_MixedInput(t *testing.T) {
-	// Override PATH so valid names also fail at exec time.
+	// Override PATH so valid configs also fail at exec time.
 	origPath := os.Getenv("PATH")
 	os.Setenv("PATH", "")
 	defer os.Setenv("PATH", origPath)
 
-	results := installSkills([]string{"", "bad name!", "@org/valid-pkg", ""})
-	// Empty strings are skipped, "bad name!" is rejected, "@org/valid-pkg" fails at exec.
-	if len(results) != 2 {
-		t.Fatalf("expected 2 results, got %d: %+v", len(results), results)
+	skills := []protocol.SkillConfig{
+		{RepoURL: "", SkillName: "bad"},                                                    // invalid: missing repo_url
+		{RepoURL: "https://github.com/jezweb/claude-skills", SkillName: "fastapi"},         // valid but npx missing
+		{RepoURL: "http://github.com/owner/repo", SkillName: "skill"},                      // invalid: non-https
+		{RepoURL: "https://github.com/vercel-labs/agent-skills", SkillName: "react-skills"}, // valid but npx missing
+	}
+	results := installSkills(skills)
+	if len(results) != 4 {
+		t.Fatalf("expected 4 results, got %d: %+v", len(results), results)
 	}
 
-	// First result: invalid name rejection.
-	if results[0].Package != "bad name!" || results[0].Status != "failed" {
-		t.Errorf("result[0]: expected bad name rejection, got %+v", results[0])
+	// First: invalid (missing repo_url).
+	if results[0].Status != "failed" {
+		t.Errorf("result[0]: expected failed, got %q", results[0].Status)
 	}
 
-	// Second result: exec failure.
-	if results[1].Package != "@org/valid-pkg" || results[1].Status != "failed" {
-		t.Errorf("result[1]: expected exec failure, got %+v", results[1])
+	// Second: valid config but exec fails.
+	if results[1].Status != "failed" {
+		t.Errorf("result[1]: expected failed (exec), got %q", results[1].Status)
+	}
+	if results[1].Package != "https://github.com/jezweb/claude-skills:fastapi" {
+		t.Errorf("result[1]: unexpected package %q", results[1].Package)
+	}
+
+	// Third: invalid (non-https).
+	if results[2].Status != "failed" {
+		t.Errorf("result[2]: expected failed, got %q", results[2].Status)
+	}
+
+	// Fourth: valid config but exec fails.
+	if results[3].Status != "failed" {
+		t.Errorf("result[3]: expected failed (exec), got %q", results[3].Status)
 	}
 }
 

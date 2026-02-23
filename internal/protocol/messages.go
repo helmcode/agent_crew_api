@@ -87,6 +87,12 @@ type ContainerValidationPayload struct {
 	Summary   string            `json:"summary"` // Overall summary (e.g., "3 ok, 1 warning, 0 errors")
 }
 
+// SkillConfig represents a skill to install, with the repository URL and skill name as separate fields.
+type SkillConfig struct {
+	RepoURL   string `json:"repo_url"`
+	SkillName string `json:"skill_name"`
+}
+
 // SkillInstallResult represents the installation outcome for a single skill package.
 type SkillInstallResult struct {
 	Package string `json:"package"`

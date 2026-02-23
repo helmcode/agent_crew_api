@@ -189,6 +189,12 @@ func GenerateSubAgentContent(agent SubAgentInfo) string {
 	return b.String()
 }
 
+// skillConfig mirrors protocol.SkillConfig for JSON unmarshaling in this package.
+type skillConfig struct {
+	RepoURL   string `json:"repo_url"`
+	SkillName string `json:"skill_name"`
+}
+
 // formatSkillsYAML converts the JSON skills field into a YAML list of strings
 // for inclusion in sub-agent frontmatter (each line: "  - skill-name\n").
 func formatSkillsYAML(raw json.RawMessage) string {
@@ -196,18 +202,38 @@ func formatSkillsYAML(raw json.RawMessage) string {
 		return ""
 	}
 
-	var skills []string
-	if err := json.Unmarshal(raw, &skills); err != nil || len(skills) == 0 {
-		return ""
-	}
-
-	var b strings.Builder
-	for _, s := range skills {
-		if s != "" {
-			b.WriteString("  - " + s + "\n")
+	// Try as array of SkillConfig objects first.
+	var configs []skillConfig
+	if err := json.Unmarshal(raw, &configs); err == nil && len(configs) > 0 {
+		var b strings.Builder
+		for _, cfg := range configs {
+			if cfg.RepoURL != "" && cfg.SkillName != "" {
+				// Extract owner/repo from URL for YAML display.
+				repoPath := cfg.RepoURL
+				if strings.HasPrefix(repoPath, "https://github.com/") {
+					repoPath = strings.TrimPrefix(repoPath, "https://github.com/")
+				}
+				b.WriteString("  - " + repoPath + ":" + cfg.SkillName + "\n")
+			}
+		}
+		if b.Len() > 0 {
+			return b.String()
 		}
 	}
-	return b.String()
+
+	// Fallback: try as array of strings (backward compat).
+	var skills []string
+	if err := json.Unmarshal(raw, &skills); err == nil && len(skills) > 0 {
+		var b strings.Builder
+		for _, s := range skills {
+			if s != "" {
+				b.WriteString("  - " + s + "\n")
+			}
+		}
+		return b.String()
+	}
+
+	return ""
 }
 
 // yamlQuoteIfNeeded wraps a string in double quotes if it contains characters
@@ -229,7 +255,25 @@ func formatSkills(raw json.RawMessage) string {
 		return ""
 	}
 
-	// Try as array of strings first.
+	// Try as array of SkillConfig objects first.
+	var configs []skillConfig
+	if err := json.Unmarshal(raw, &configs); err == nil && len(configs) > 0 {
+		var b strings.Builder
+		for _, cfg := range configs {
+			if cfg.RepoURL != "" && cfg.SkillName != "" {
+				repoPath := cfg.RepoURL
+				if strings.HasPrefix(repoPath, "https://github.com/") {
+					repoPath = strings.TrimPrefix(repoPath, "https://github.com/")
+				}
+				b.WriteString("- " + repoPath + ":" + cfg.SkillName + "\n")
+			}
+		}
+		if b.Len() > 0 {
+			return b.String()
+		}
+	}
+
+	// Fallback: try as array of strings.
 	var strSkills []string
 	if err := json.Unmarshal(raw, &strSkills); err == nil && len(strSkills) > 0 {
 		var b strings.Builder

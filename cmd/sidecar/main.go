@@ -127,7 +127,7 @@ func main() {
 	// 5. Install sub-agent skills globally and symlink into workspace.
 	skillsEnv := os.Getenv("AGENT_SKILLS_INSTALL")
 	if skillsEnv != "" {
-		var skills []string
+		var skills []protocol.SkillConfig
 		if err := json.Unmarshal([]byte(skillsEnv), &skills); err != nil {
 			slog.Warn("failed to parse AGENT_SKILLS_INSTALL", "error", err)
 		} else {
