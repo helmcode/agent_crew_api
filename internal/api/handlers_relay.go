@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -145,5 +146,107 @@ func (s *Server) processRelayMessage(teamID, teamName string, data []byte) error
 		return err
 	}
 	slog.Info("relay: saved agent message", "team", teamName, "type", protoMsg.Type, "from", protoMsg.From)
+
+	// Persist skill installation results on the agent record so that
+	// GET /api/teams/:id returns skill_statuses for each agent.
+	if protoMsg.Type == protocol.TypeSkillStatus {
+		s.persistSkillStatuses(teamID, protoMsg)
+	}
+
 	return nil
+}
+
+// persistSkillStatuses extracts skill installation results from a skill_status
+// NATS message and distributes them to the correct worker agents based on each
+// worker's SubAgentSkills configuration. The sidecar runs inside the leader
+// container and reports ALL skills in a flat list, so we match each result's
+// Package (format "repo_url:skill_name") against each worker's configured skills.
+func (s *Server) persistSkillStatuses(teamID string, msg protocol.Message) {
+	var payload protocol.SkillStatusPayload
+	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+		slog.Error("relay: failed to parse skill_status payload", "error", err)
+		return
+	}
+
+	// Load all worker agents for this team.
+	var agents []models.Agent
+	if err := s.db.Where("team_id = ? AND role = ?", teamID, models.AgentRoleWorker).Find(&agents).Error; err != nil {
+		slog.Error("relay: failed to load team agents for skill distribution", "error", err)
+		return
+	}
+
+	// Build a lookup: Package string → SkillInstallResult.
+	type skillStatus struct {
+		Name   string `json:"name"`
+		Status string `json:"status"`
+		Error  string `json:"error,omitempty"`
+	}
+	resultMap := make(map[string]skillStatus, len(payload.Skills))
+	for _, sk := range payload.Skills {
+		resultMap[sk.Package] = skillStatus{
+			Name:   sk.Package,
+			Status: sk.Status,
+			Error:  sk.Error,
+		}
+	}
+
+	// For each worker, find which skills belong to it and update its SkillStatuses.
+	for _, agent := range agents {
+		// Parse the worker's configured skills (try SkillConfig objects first, then legacy strings).
+		var agentSkillKeys []string
+		var cfgs []protocol.SkillConfig
+		if err := json.Unmarshal(agent.SubAgentSkills, &cfgs); err == nil {
+			for _, cfg := range cfgs {
+				if cfg.RepoURL != "" && cfg.SkillName != "" {
+					agentSkillKeys = append(agentSkillKeys, cfg.RepoURL+":"+cfg.SkillName)
+				}
+			}
+		} else {
+			// Fallback: legacy string format "owner/repo:skill-name".
+			var strSkills []string
+			if err := json.Unmarshal(agent.SubAgentSkills, &strSkills); err == nil {
+				for _, sk := range strSkills {
+					parts := strings.SplitN(sk, ":", 2)
+					if len(parts) == 2 && parts[0] != "" && parts[1] != "" {
+						repoURL := parts[0]
+						if !strings.HasPrefix(repoURL, "https://") {
+							repoURL = "https://github.com/" + repoURL
+						}
+						agentSkillKeys = append(agentSkillKeys, repoURL+":"+parts[1])
+					}
+				}
+			}
+		}
+
+		if len(agentSkillKeys) == 0 {
+			continue
+		}
+
+		// Collect matching skill results for this worker.
+		statuses := make([]skillStatus, 0, len(agentSkillKeys))
+		for _, key := range agentSkillKeys {
+			if st, ok := resultMap[key]; ok {
+				statuses = append(statuses, st)
+			}
+		}
+
+		if len(statuses) == 0 {
+			continue
+		}
+
+		data, err := json.Marshal(statuses)
+		if err != nil {
+			slog.Error("relay: failed to marshal skill statuses", "agent", agent.Name, "error", err)
+			continue
+		}
+
+		result := s.db.Model(&models.Agent{}).
+			Where("id = ?", agent.ID).
+			Update("skill_statuses", models.JSON(data))
+		if result.Error != nil {
+			slog.Error("relay: failed to persist skill_statuses", "agent", agent.Name, "error", result.Error)
+		} else if result.RowsAffected > 0 {
+			slog.Info("relay: updated agent skill_statuses", "agent", agent.Name, "skills", len(statuses))
+		}
+	}
 }

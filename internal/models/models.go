@@ -80,6 +80,9 @@ type Agent struct {
 	SubAgentModel       string `gorm:"size:50;default:inherit" json:"sub_agent_model"`
 	SubAgentSkills      JSON   `gorm:"type:text" json:"sub_agent_skills"`
 
+	// SkillStatuses stores per-skill installation results reported by the sidecar.
+	SkillStatuses JSON `gorm:"type:text" json:"skill_statuses"`
+
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }

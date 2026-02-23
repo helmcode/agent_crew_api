@@ -395,6 +395,154 @@ func TestProcessRelayMessage_SkillStatus(t *testing.T) {
 	}
 }
 
+func TestPersistSkillStatuses_DistributesToWorkers(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	// Create a team with a leader and two workers, each with different skills.
+	skillsA, _ := json.Marshal([]protocol.SkillConfig{
+		{RepoURL: "https://github.com/anthropics/claude-code", SkillName: "frontend-design"},
+	})
+	skillsB, _ := json.Marshal([]protocol.SkillConfig{
+		{RepoURL: "https://github.com/anthropics/claude-code", SkillName: "vercel-react-best-practices"},
+		{RepoURL: "https://github.com/other/repo", SkillName: "my-skill"},
+	})
+
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name: "skill-persist-team",
+		Agents: []CreateAgentInput{
+			{Name: "leader-agent", Role: "leader"},
+			{Name: "worker-a", Role: "worker", SubAgentSkills: json.RawMessage(skillsA)},
+			{Name: "worker-b", Role: "worker", SubAgentSkills: json.RawMessage(skillsB)},
+		},
+	})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+
+	// Simulate a skill_status NATS message from the sidecar (runs as the leader).
+	data := buildRelayPayload(t, protocol.TypeSkillStatus, "leader-agent", "system",
+		protocol.SkillStatusPayload{
+			AgentName: "leader-agent",
+			Skills: []protocol.SkillInstallResult{
+				{Package: "https://github.com/anthropics/claude-code:frontend-design", Status: "installed"},
+				{Package: "https://github.com/anthropics/claude-code:vercel-react-best-practices", Status: "installed"},
+				{Package: "https://github.com/other/repo:my-skill", Status: "failed", Error: "npm ERR! 404"},
+			},
+			Summary: "2 installed, 1 failed",
+		})
+
+	if err := srv.processRelayMessage(team.ID, team.Name, data); err != nil {
+		t.Fatalf("processRelayMessage returned error: %v", err)
+	}
+
+	// Verify worker-a got its 1 skill.
+	var workerA models.Agent
+	srv.db.Where("team_id = ? AND name = ?", team.ID, "worker-a").First(&workerA)
+
+	type skillStatus struct {
+		Name   string `json:"name"`
+		Status string `json:"status"`
+		Error  string `json:"error,omitempty"`
+	}
+
+	var statusesA []skillStatus
+	if err := json.Unmarshal(workerA.SkillStatuses, &statusesA); err != nil {
+		t.Fatalf("failed to unmarshal worker-a skill_statuses: %v", err)
+	}
+	if len(statusesA) != 1 {
+		t.Fatalf("worker-a skills: got %d, want 1", len(statusesA))
+	}
+	if statusesA[0].Name != "https://github.com/anthropics/claude-code:frontend-design" {
+		t.Errorf("worker-a skill name: got %q", statusesA[0].Name)
+	}
+	if statusesA[0].Status != "installed" {
+		t.Errorf("worker-a skill status: got %q, want 'installed'", statusesA[0].Status)
+	}
+
+	// Verify worker-b got its 2 skills.
+	var workerB models.Agent
+	srv.db.Where("team_id = ? AND name = ?", team.ID, "worker-b").First(&workerB)
+
+	var statusesB []skillStatus
+	if err := json.Unmarshal(workerB.SkillStatuses, &statusesB); err != nil {
+		t.Fatalf("failed to unmarshal worker-b skill_statuses: %v", err)
+	}
+	if len(statusesB) != 2 {
+		t.Fatalf("worker-b skills: got %d, want 2", len(statusesB))
+	}
+	// Check that one is installed and the other failed.
+	foundInstalled, foundFailed := false, false
+	for _, s := range statusesB {
+		if s.Status == "installed" {
+			foundInstalled = true
+		}
+		if s.Status == "failed" && s.Error == "npm ERR! 404" {
+			foundFailed = true
+		}
+	}
+	if !foundInstalled || !foundFailed {
+		t.Errorf("worker-b expected 1 installed + 1 failed, got: %+v", statusesB)
+	}
+
+	// Verify the leader does NOT get skill_statuses (it has no SubAgentSkills).
+	var leader models.Agent
+	srv.db.Where("team_id = ? AND name = ?", team.ID, "leader-agent").First(&leader)
+	if len(leader.SkillStatuses) > 0 && string(leader.SkillStatuses) != "null" {
+		t.Errorf("leader should not have skill_statuses, got: %s", string(leader.SkillStatuses))
+	}
+}
+
+func TestPersistSkillStatuses_LegacyStringFormat(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	// Worker with legacy string format skills.
+	legacySkills, _ := json.Marshal([]string{
+		"anthropics/claude-code:frontend-design",
+	})
+
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name: "skill-legacy-team",
+		Agents: []CreateAgentInput{
+			{Name: "leader", Role: "leader"},
+			{Name: "legacy-worker", Role: "worker", SubAgentSkills: json.RawMessage(legacySkills)},
+		},
+	})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+
+	data := buildRelayPayload(t, protocol.TypeSkillStatus, "leader", "system",
+		protocol.SkillStatusPayload{
+			AgentName: "leader",
+			Skills: []protocol.SkillInstallResult{
+				{Package: "https://github.com/anthropics/claude-code:frontend-design", Status: "installed"},
+			},
+			Summary: "1 installed, 0 failed",
+		})
+
+	if err := srv.processRelayMessage(team.ID, team.Name, data); err != nil {
+		t.Fatalf("processRelayMessage returned error: %v", err)
+	}
+
+	var worker models.Agent
+	srv.db.Where("team_id = ? AND name = ?", team.ID, "legacy-worker").First(&worker)
+
+	type skillStatus struct {
+		Name   string `json:"name"`
+		Status string `json:"status"`
+		Error  string `json:"error,omitempty"`
+	}
+
+	var statuses []skillStatus
+	if err := json.Unmarshal(worker.SkillStatuses, &statuses); err != nil {
+		t.Fatalf("failed to unmarshal skill_statuses: %v", err)
+	}
+	if len(statuses) != 1 {
+		t.Fatalf("skills: got %d, want 1", len(statuses))
+	}
+	if statuses[0].Status != "installed" {
+		t.Errorf("status: got %q, want 'installed'", statuses[0].Status)
+	}
+}
+
 func TestProcessRelayMessage_PayloadPreserved(t *testing.T) {
 	srv, _ := setupTestServer(t)
 	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{Name: "relay-payload-team"})
