@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
     paths: [VERSION]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -56,6 +57,8 @@ jobs:
           tags: |
             ghcr.io/helmcode/agentcrew-api:${{ steps.version.outputs.version }}
             ghcr.io/helmcode/agentcrew-api:latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -72,6 +75,8 @@ jobs:
           tags: |
             ghcr.io/helmcode/agentcrew-agent:${{ steps.version.outputs.version }}
             ghcr.io/helmcode/agentcrew-agent:latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
