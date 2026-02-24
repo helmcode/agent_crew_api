@@ -50,8 +50,8 @@ func validateSkillConfig(cfg protocol.SkillConfig) error {
 	return nil
 }
 
-// installSkills installs a list of skill packages globally to ~/.claude/skills/
-// using the skills CLI. Skills are NOT copied to /workspace/.claude/skills/.
+// installSkills installs skill packages using the skills CLI (project-level).
+// Skills are stored in /workspace/.agents/skills/ with symlinks in /workspace/.claude/skills/.
 func installSkills(skills []protocol.SkillConfig) []protocol.SkillInstallResult {
 	var results []protocol.SkillInstallResult
 
@@ -68,8 +68,8 @@ func installSkills(skills []protocol.SkillConfig) []protocol.SkillInstallResult 
 			continue
 		}
 
-		slog.Info("installing skill globally", "repo_url", cfg.RepoURL, "skill_name", cfg.SkillName)
-		cmd := exec.Command("npx", "--yes", "@anthropic-ai/claude-code-skills", "add", cfg.RepoURL, "--skill", cfg.SkillName)
+		slog.Info("installing skill", "repo_url", cfg.RepoURL, "skill_name", cfg.SkillName)
+		cmd := exec.Command("npx", "skills", "add", cfg.RepoURL, "--skill", cfg.SkillName, "-y")
 		cmd.Dir = "/workspace"
 		cmd.Env = append(os.Environ(), "HOME="+os.Getenv("HOME"))
 		output, err := cmd.CombinedOutput()
@@ -82,7 +82,7 @@ func installSkills(skills []protocol.SkillConfig) []protocol.SkillInstallResult 
 				Error:   errMsg,
 			})
 		} else {
-			slog.Info("skill installed globally", "repo_url", cfg.RepoURL, "skill_name", cfg.SkillName)
+			slog.Info("skill installed", "repo_url", cfg.RepoURL, "skill_name", cfg.SkillName)
 			results = append(results, protocol.SkillInstallResult{
 				Package: pkg,
 				Status:  "installed",

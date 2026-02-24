@@ -13,11 +13,6 @@ func TestRunContainerValidation_AllOK(t *testing.T) {
 	workDir := tmpDir
 	claudeDir := filepath.Join(tmpDir, ".claude")
 
-	// Override HOME so validation checks ~/.claude/skills/ in tmpDir.
-	origHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", origHome)
-
 	// Set up valid workspace structure.
 	if err := os.MkdirAll(filepath.Join(claudeDir, "agents"), 0755); err != nil {
 		t.Fatal(err)
@@ -29,12 +24,12 @@ func TestRunContainerValidation_AllOK(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Create global skills directory (~/.claude/skills/) with content.
-	globalSkillsDir := filepath.Join(tmpDir, ".claude", "skills")
-	if err := os.MkdirAll(globalSkillsDir, 0755); err != nil {
+	// Create skills directory (<claudeDir>/skills/) with content.
+	skillsDir := filepath.Join(claudeDir, "skills")
+	if err := os.MkdirAll(skillsDir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(globalSkillsDir, "pkg1.json"), []byte(`{}`), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(skillsDir, "pkg1.json"), []byte(`{}`), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -104,12 +99,7 @@ func TestRunContainerValidation_MissingSkillsDir(t *testing.T) {
 	os.MkdirAll(claudeDir, 0755)
 	os.WriteFile(filepath.Join(claudeDir, "CLAUDE.md"), []byte("# test"), 0644)
 
-	// Override HOME so ~/.claude/skills/ doesn't exist.
-	origHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", origHome)
-
-	// No global skills directory exists at all.
+	// No skills directory exists at <claudeDir>/skills/.
 	checks := runContainerValidation(workDir, claudeDir, true, false)
 
 	checkMap := make(map[string]protocol.ValidationCheck)
@@ -127,18 +117,13 @@ func TestRunContainerValidation_SkillsDirWithContent(t *testing.T) {
 	workDir := tmpDir
 	claudeDir := filepath.Join(tmpDir, ".claude")
 
-	// Override HOME so validation checks ~/.claude/skills/ in tmpDir.
-	origHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", origHome)
-
 	os.MkdirAll(claudeDir, 0755)
 	os.WriteFile(filepath.Join(claudeDir, "CLAUDE.md"), []byte("# test"), 0644)
 
-	// Create global skills directory (~/.claude/skills/) with content.
-	globalSkillsDir := filepath.Join(tmpDir, ".claude", "skills")
-	os.MkdirAll(globalSkillsDir, 0755)
-	os.WriteFile(filepath.Join(globalSkillsDir, "my-skill-pkg"), []byte("installed"), 0644)
+	// Create skills directory (<claudeDir>/skills/) with content.
+	skillsDir := filepath.Join(claudeDir, "skills")
+	os.MkdirAll(skillsDir, 0755)
+	os.WriteFile(filepath.Join(skillsDir, "my-skill-pkg"), []byte("installed"), 0644)
 
 	checks := runContainerValidation(workDir, claudeDir, true, false)
 
@@ -159,17 +144,12 @@ func TestRunContainerValidation_SkillsDirEmpty(t *testing.T) {
 	workDir := tmpDir
 	claudeDir := filepath.Join(tmpDir, ".claude")
 
-	// Override HOME so validation checks ~/.claude/skills/ in tmpDir.
-	origHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", origHome)
-
 	os.MkdirAll(claudeDir, 0755)
 	os.WriteFile(filepath.Join(claudeDir, "CLAUDE.md"), []byte("# test"), 0644)
 
-	// Create global skills directory (~/.claude/skills/) but leave it empty.
-	globalSkillsDir := filepath.Join(tmpDir, ".claude", "skills")
-	os.MkdirAll(globalSkillsDir, 0755)
+	// Create skills directory (<claudeDir>/skills/) but leave it empty.
+	skillsDir := filepath.Join(claudeDir, "skills")
+	os.MkdirAll(skillsDir, 0755)
 
 	checks := runContainerValidation(workDir, claudeDir, true, false)
 

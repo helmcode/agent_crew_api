@@ -231,25 +231,23 @@ func runContainerValidation(workDir, claudeDir string, skillsConfigured, subAgen
 		}
 	}
 
-	// Check 3: skills installed in ~/.claude/skills/ (only if skills were configured).
+	// Check 3: skills installed in <workspace>/.claude/skills/ (only if skills were configured).
+	// The skills CLI creates symlinks in .claude/skills/ pointing to .agents/skills/.
 	if skillsConfigured {
-		homeDir, err := os.UserHomeDir()
-		if err == nil {
-			globalSkillsDir := filepath.Join(homeDir, ".claude", "skills")
-			entries, err := os.ReadDir(globalSkillsDir)
-			if err != nil || len(entries) == 0 {
-				checks = append(checks, protocol.ValidationCheck{
-					Name:    "skills_installed",
-					Status:  protocol.ValidationWarning,
-					Message: fmt.Sprintf("no installed skill packages found in %s", globalSkillsDir),
-				})
-			} else {
-				checks = append(checks, protocol.ValidationCheck{
-					Name:    "skills_installed",
-					Status:  protocol.ValidationOK,
-					Message: fmt.Sprintf("%d skill package(s) installed in %s", len(entries), globalSkillsDir),
-				})
-			}
+		skillsDir := filepath.Join(claudeDir, "skills")
+		entries, err := os.ReadDir(skillsDir)
+		if err != nil || len(entries) == 0 {
+			checks = append(checks, protocol.ValidationCheck{
+				Name:    "skills_installed",
+				Status:  protocol.ValidationWarning,
+				Message: fmt.Sprintf("no installed skill packages found in %s", skillsDir),
+			})
+		} else {
+			checks = append(checks, protocol.ValidationCheck{
+				Name:    "skills_installed",
+				Status:  protocol.ValidationOK,
+				Message: fmt.Sprintf("%d skill package(s) installed in %s", len(entries), skillsDir),
+			})
 		}
 	}
 

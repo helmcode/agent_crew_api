@@ -235,7 +235,7 @@ func (s *Server) InstallAgentSkill(c *fiber.Ctx) error {
 	}
 
 	// Install the skill in the leader's container.
-	cmd := []string{"npx", "--yes", "@anthropic-ai/claude-code-skills", "add", req.RepoURL, "--skill", req.SkillName}
+	cmd := []string{"npx", "skills", "add", req.RepoURL, "--skill", req.SkillName, "-y"}
 	output, err := s.runtime.ExecInContainer(c.Context(), leader.ContainerID, cmd)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(InstallSkillResponse{
