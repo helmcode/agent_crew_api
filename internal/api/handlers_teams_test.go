@@ -516,6 +516,22 @@ func TestDeployTeamAsync_DeduplicatesSkills(t *testing.T) {
 	}
 }
 
+func TestCreateTeam_DuplicateAgentNames(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	rec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name: "dup-agent-team",
+		Agents: []CreateAgentInput{
+			{Name: "agent-one", Role: "leader"},
+			{Name: "Agent-One", Role: "worker"},
+		},
+	})
+
+	if rec.Code != 409 {
+		t.Fatalf("status: got %d, want 409 for duplicate agent names\nbody: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestCreateTeam_KubernetesRuntime(t *testing.T) {
 	srv, _ := setupTestServer(t)
 

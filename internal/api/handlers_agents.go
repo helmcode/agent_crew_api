@@ -63,6 +63,13 @@ func (s *Server) CreateAgent(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, err.Error())
 	}
 
+	// Check for duplicate agent name within the team.
+	var count int64
+	s.db.Model(&models.Agent{}).Where("team_id = ? AND LOWER(name) = LOWER(?)", teamID, req.Name).Count(&count)
+	if count > 0 {
+		return fiber.NewError(fiber.StatusConflict, "agent name already exists in this team: "+req.Name)
+	}
+
 	role := req.Role
 	if role == "" {
 		role = models.AgentRoleWorker
@@ -133,6 +140,12 @@ func (s *Server) UpdateAgent(c *fiber.Ctx) error {
 	if req.Name != nil {
 		if err := validateName(*req.Name); err != nil {
 			return fiber.NewError(fiber.StatusBadRequest, err.Error())
+		}
+		// Check for duplicate agent name within the team (exclude self).
+		var count int64
+		s.db.Model(&models.Agent{}).Where("team_id = ? AND LOWER(name) = LOWER(?) AND id != ?", agent.TeamID, *req.Name, agent.ID).Count(&count)
+		if count > 0 {
+			return fiber.NewError(fiber.StatusConflict, "agent name already exists in this team: "+*req.Name)
 		}
 		updates["name"] = *req.Name
 	}
@@ -273,14 +286,49 @@ func (s *Server) InstallAgentSkill(c *fiber.Ctx) error {
 		slog.Error("failed to update agent sub_agent_skills in DB", "error", err)
 	}
 
+	// Update skill_statuses so the UI reflects the newly installed skill.
+	type skillStatus struct {
+		Name   string `json:"name"`
+		Status string `json:"status"`
+		Error  string `json:"error,omitempty"`
+	}
+	var currentStatuses []skillStatus
+	if len(agent.SkillStatuses) > 0 && string(agent.SkillStatuses) != "null" {
+		_ = json.Unmarshal([]byte(agent.SkillStatuses), &currentStatuses)
+	}
+	pkg := req.RepoURL + ":" + req.SkillName
+	statusExists := false
+	for i, st := range currentStatuses {
+		if st.Name == pkg {
+			currentStatuses[i].Status = "installed"
+			currentStatuses[i].Error = ""
+			statusExists = true
+			break
+		}
+	}
+	if !statusExists {
+		currentStatuses = append(currentStatuses, skillStatus{Name: pkg, Status: "installed"})
+	}
+	statusJSON, _ := json.Marshal(currentStatuses)
+	if err := s.db.Model(&agent).Update("skill_statuses", models.JSON(statusJSON)).Error; err != nil {
+		slog.Error("failed to update agent skill_statuses in DB", "error", err)
+	}
+
 	// If the target is a worker agent, regenerate its .md file in the container.
 	if agent.Role == models.AgentRoleWorker {
+		// Include leader's global skills in the worker's .md file.
+		var workerLeaderSkills json.RawMessage
+		if len(leader.SubAgentSkills) > 0 && string(leader.SubAgentSkills) != "null" {
+			workerLeaderSkills = json.RawMessage(leader.SubAgentSkills)
+		}
+
 		subInfo := runtime.SubAgentInfo{
-			Name:        agent.Name,
-			Description: agent.SubAgentDescription,
-			Model:       agent.SubAgentModel,
-			Skills:      json.RawMessage(updatedSkillsJSON),
-			ClaudeMD:    agent.ClaudeMD,
+			Name:         agent.Name,
+			Description:  agent.SubAgentDescription,
+			Model:        agent.SubAgentModel,
+			Skills:       json.RawMessage(updatedSkillsJSON),
+			GlobalSkills: workerLeaderSkills,
+			ClaudeMD:     agent.ClaudeMD,
 		}
 		content := runtime.GenerateSubAgentContent(subInfo)
 
@@ -294,6 +342,38 @@ func (s *Server) InstallAgentSkill(c *fiber.Ctx) error {
 			slog.Error("failed to update agent .md file in container", "agent", agent.Name, "error", err)
 		} else {
 			slog.Info("updated agent .md file in container", "agent", agent.Name, "path", filePath)
+		}
+	}
+
+	// If the target is a leader agent, the skill is global — regenerate all
+	// worker sub-agent .md files in the container to include the new skill.
+	if agent.Role == models.AgentRoleLeader {
+		var workers []models.Agent
+		s.db.Where("team_id = ? AND role = ?", teamID, models.AgentRoleWorker).Find(&workers)
+
+		// The freshly updated leader skills.
+		globalSkills := json.RawMessage(updatedSkillsJSON)
+
+		for _, w := range workers {
+			subInfo := runtime.SubAgentInfo{
+				Name:         w.Name,
+				Description:  w.SubAgentDescription,
+				Model:        w.SubAgentModel,
+				Skills:       json.RawMessage(w.SubAgentSkills),
+				GlobalSkills: globalSkills,
+				ClaudeMD:     w.ClaudeMD,
+			}
+			content := runtime.GenerateSubAgentContent(subInfo)
+			encoded := base64.StdEncoding.EncodeToString([]byte(content))
+			filename := runtime.SubAgentFileName(w.Name)
+			filePath := fmt.Sprintf("/workspace/.claude/agents/%s", filename)
+			writeCmd := []string{"sh", "-c", fmt.Sprintf("printf '%%s' '%s' | base64 -d > %s", encoded, filePath)}
+
+			if _, err := s.runtime.ExecInContainer(c.Context(), leader.ContainerID, writeCmd); err != nil {
+				slog.Error("failed to update worker .md file after leader skill install", "worker", w.Name, "error", err)
+			} else {
+				slog.Info("updated worker .md file after leader skill install", "worker", w.Name, "path", filePath)
+			}
 		}
 	}
 

@@ -11,11 +11,12 @@ import (
 // SubAgentInfo holds the metadata needed to generate a sub-agent file
 // at .claude/agents/{name}.md with YAML frontmatter.
 type SubAgentInfo struct {
-	Name        string
-	Description string
-	Model       string
-	Skills      json.RawMessage
-	ClaudeMD    string // Body content written after the YAML frontmatter.
+	Name         string
+	Description  string
+	Model        string
+	Skills       json.RawMessage
+	GlobalSkills json.RawMessage // Leader skills shared across all agents.
+	ClaudeMD     string          // Body content written after the YAML frontmatter.
 }
 
 // TeamMemberInfo describes a teammate for inclusion in the leader's CLAUDE.md.
@@ -169,8 +170,10 @@ func GenerateSubAgentContent(agent SubAgentInfo) string {
 	b.WriteString("isolation: worktree\n")
 	b.WriteString("permissionMode: bypassPermissions\n")
 
-	// Emit skills list if provided.
-	if skills := formatSkillsYAML(agent.Skills); skills != "" {
+	// Emit skills list if provided, merging the agent's own skills with global
+	// leader skills so every worker has access to all shared capabilities.
+	mergedSkills := mergeSkillsRaw(agent.Skills, agent.GlobalSkills)
+	if skills := formatSkillsYAML(mergedSkills); skills != "" {
 		b.WriteString("skills:\n")
 		b.WriteString(skills)
 	}
@@ -234,6 +237,85 @@ func formatSkillsYAML(raw json.RawMessage) string {
 	}
 
 	return ""
+}
+
+// mergeSkillsRaw combines two JSON skill arrays into one, deduplicating entries.
+// It supports both []skillConfig and []string formats. If both inputs are empty/null,
+// it returns nil. The result is always a JSON array of skillConfig objects when at
+// least one input contains skillConfig entries, or a JSON array of strings otherwise.
+func mergeSkillsRaw(a, b json.RawMessage) json.RawMessage {
+	aEmpty := len(a) == 0 || string(a) == "null"
+	bEmpty := len(b) == 0 || string(b) == "null"
+
+	if aEmpty && bEmpty {
+		return nil
+	}
+	if aEmpty {
+		return b
+	}
+	if bEmpty {
+		return a
+	}
+
+	// Parse both as skillConfig arrays first.
+	type dedupeKey struct{ RepoURL, SkillName string }
+	seen := map[dedupeKey]struct{}{}
+	seenStrings := map[string]struct{}{}
+	var merged []skillConfig
+	var mergedStrings []string
+
+	parseConfigs := func(raw json.RawMessage) {
+		var configs []skillConfig
+		if err := json.Unmarshal(raw, &configs); err == nil && len(configs) > 0 {
+			hasRepo := false
+			for _, c := range configs {
+				if c.RepoURL != "" {
+					hasRepo = true
+					break
+				}
+			}
+			if hasRepo {
+				for _, c := range configs {
+					if c.RepoURL == "" || c.SkillName == "" {
+						continue
+					}
+					key := dedupeKey{c.RepoURL, c.SkillName}
+					if _, exists := seen[key]; !exists {
+						seen[key] = struct{}{}
+						merged = append(merged, c)
+					}
+				}
+				return
+			}
+		}
+		// Fallback: try as string array.
+		var strs []string
+		if err := json.Unmarshal(raw, &strs); err == nil {
+			for _, s := range strs {
+				if s == "" {
+					continue
+				}
+				if _, exists := seenStrings[s]; !exists {
+					seenStrings[s] = struct{}{}
+					mergedStrings = append(mergedStrings, s)
+				}
+			}
+		}
+	}
+
+	parseConfigs(a)
+	parseConfigs(b)
+
+	// Prefer skillConfig format if any entries were parsed that way.
+	if len(merged) > 0 {
+		result, _ := json.Marshal(merged)
+		return result
+	}
+	if len(mergedStrings) > 0 {
+		result, _ := json.Marshal(mergedStrings)
+		return result
+	}
+	return nil
 }
 
 // yamlQuoteIfNeeded wraps a string in double quotes if it contains characters

@@ -555,6 +555,52 @@ func TestUpdateAgent(t *testing.T) {
 	}
 }
 
+func TestCreateAgent_DuplicateNameInTeam(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name:   "dup-agent-create-team",
+		Agents: []CreateAgentInput{{Name: "existing-agent", Role: "leader"}},
+	})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+
+	// Try to add another agent with the same name (case-insensitive).
+	rec := doRequest(srv, "POST", "/api/teams/"+team.ID+"/agents", CreateAgentRequest{
+		Name: "Existing-Agent",
+		Role: "worker",
+	})
+
+	if rec.Code != 409 {
+		t.Fatalf("status: got %d, want 409 for duplicate agent name\nbody: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestUpdateAgent_RenameConflict(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name: "rename-conflict-team",
+		Agents: []CreateAgentInput{
+			{Name: "agent-alpha", Role: "leader"},
+			{Name: "agent-beta", Role: "worker"},
+		},
+	})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+
+	// Try to rename agent-beta to agent-alpha (case-insensitive).
+	betaID := team.Agents[1].ID
+	conflictName := "Agent-Alpha"
+	rec := doRequest(srv, "PUT", "/api/teams/"+team.ID+"/agents/"+betaID, UpdateAgentRequest{
+		Name: &conflictName,
+	})
+
+	if rec.Code != 409 {
+		t.Fatalf("status: got %d, want 409 for rename conflict\nbody: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestDeleteAgent(t *testing.T) {
 	srv, _ := setupTestServer(t)
 

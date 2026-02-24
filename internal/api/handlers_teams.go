@@ -62,6 +62,18 @@ func (s *Server) CreateTeam(c *fiber.Ctx) error {
 		WorkspacePath: req.WorkspacePath,
 	}
 
+	// Check for duplicate agent names in the request.
+	seen := map[string]struct{}{}
+	for _, a := range req.Agents {
+		if a.Name != "" {
+			lower := strings.ToLower(a.Name)
+			if _, exists := seen[lower]; exists {
+				return fiber.NewError(fiber.StatusConflict, "duplicate agent name: "+a.Name)
+			}
+			seen[lower] = struct{}{}
+		}
+	}
+
 	// Create agents if provided.
 	for _, a := range req.Agents {
 		if a.Name != "" {
@@ -238,6 +250,18 @@ func (s *Server) deployTeamAsync(team models.Team) {
 		})
 	}
 
+	// Find the leader agent and extract its skills before building sub-agent files.
+	// Leader skills are "global" — they are included in every worker's .md file.
+	var leaderSkills json.RawMessage
+	for _, a := range team.Agents {
+		if a.Role == models.AgentRoleLeader {
+			if len(a.SubAgentSkills) > 0 && string(a.SubAgentSkills) != "null" {
+				leaderSkills = json.RawMessage(a.SubAgentSkills)
+			}
+			break
+		}
+	}
+
 	// Setup workspace files for all agents and deploy only the leader container.
 	// Non-leader agents are sub-agent files only — no containers.
 	var leader *models.Agent
@@ -261,11 +285,12 @@ func (s *Server) deployTeamAsync(team models.Team) {
 
 		if agent.Role != models.AgentRoleLeader {
 			subInfo := runtime.SubAgentInfo{
-				Name:        agent.Name,
-				Description: agent.SubAgentDescription,
-				Model:       agent.SubAgentModel,
-				Skills:      json.RawMessage(agent.SubAgentSkills),
-				ClaudeMD:    agent.ClaudeMD,
+				Name:         agent.Name,
+				Description:  agent.SubAgentDescription,
+				Model:        agent.SubAgentModel,
+				Skills:       json.RawMessage(agent.SubAgentSkills),
+				GlobalSkills: leaderSkills,
+				ClaudeMD:     agent.ClaudeMD,
 			}
 			if subInfo.ClaudeMD == "" {
 				subInfo.ClaudeMD = runtime.GenerateClaudeMD(info)
@@ -322,15 +347,14 @@ func (s *Server) deployTeamAsync(team models.Team) {
 		claudeMDContent = runtime.GenerateClaudeMD(leaderInfo)
 	}
 
-	// Collect all unique skills from non-leader agents so the sidecar can
-	// install them via `skills add` before the leader process starts.
+	// Collect all unique skills from all agents (leaders and workers) so the
+	// sidecar can install them via `skills add` before the leader process starts.
+	// Leader skills are "global" — they get installed in the container and are
+	// listed in every worker sub-agent .md file.
 	type skillKey struct{ RepoURL, SkillName string }
 	skillsSet := map[skillKey]struct{}{}
 	var allSkills []protocol.SkillConfig
 	for _, a := range team.Agents {
-		if a.Role == models.AgentRoleLeader {
-			continue
-		}
 		var agentSkills []protocol.SkillConfig
 		if err := json.Unmarshal(a.SubAgentSkills, &agentSkills); err == nil {
 			for _, s := range agentSkills {
