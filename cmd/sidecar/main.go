@@ -232,7 +232,7 @@ func runContainerValidation(workDir, claudeDir string, skillsConfigured, subAgen
 	}
 
 	// Check 3: skills installed in <workspace>/.claude/skills/ (only if skills were configured).
-	// The skills CLI creates symlinks in .claude/skills/ pointing to .agents/skills/.
+	// The --agent claude-code flag creates symlinks in .claude/skills/ pointing to .agents/skills/.
 	if skillsConfigured {
 		skillsDir := filepath.Join(claudeDir, "skills")
 		entries, err := os.ReadDir(skillsDir)
