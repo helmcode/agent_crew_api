@@ -134,12 +134,6 @@ func main() {
 			results := installSkills(skills)
 			publishSkillStatus(natsClient, cfg.Agent.Name, cfg.Agent.Team, results)
 		}
-
-		// Copy installed skills from ~/.claude/skills/ to /workspace/.claude/skills/
-		// so that the Claude Code process can discover them at runtime.
-		if err := copySkillsToWorkspace(workDir); err != nil {
-			slog.Warn("failed to copy skills to workspace", "error", err)
-		}
 	}
 
 	// 6. Container file validation phase.
@@ -197,50 +191,6 @@ func main() {
 	slog.Info("agent sidecar stopped")
 }
 
-// copySkillsToWorkspace copies installed skills from ~/.claude/skills/ to
-// /workspace/.claude/skills/ so that the Claude Code process can discover them.
-func copySkillsToWorkspace(workDir string) error {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return fmt.Errorf("getting home dir: %w", err)
-	}
-
-	globalSkillsDir := filepath.Join(homeDir, ".claude", "skills")
-	workspaceSkillsDir := filepath.Join(workDir, ".claude", "skills")
-
-	entries, err := os.ReadDir(globalSkillsDir)
-	if err != nil || len(entries) == 0 {
-		slog.Info("no global skills to copy", "dir", globalSkillsDir)
-		return nil
-	}
-
-	if err := os.MkdirAll(workspaceSkillsDir, 0755); err != nil {
-		return fmt.Errorf("creating workspace skills dir %s: %w", workspaceSkillsDir, err)
-	}
-
-	err = filepath.WalkDir(globalSkillsDir, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		relPath, _ := filepath.Rel(globalSkillsDir, path)
-		destPath := filepath.Join(workspaceSkillsDir, relPath)
-		if d.IsDir() {
-			return os.MkdirAll(destPath, 0755)
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("reading %s: %w", path, err)
-		}
-		return os.WriteFile(destPath, data, 0644)
-	})
-	if err != nil {
-		return fmt.Errorf("copying skills to workspace: %w", err)
-	}
-
-	slog.Info("copied global skills to workspace", "from", globalSkillsDir, "to", workspaceSkillsDir, "entries", len(entries))
-	return nil
-}
-
 // runContainerValidation checks that all expected workspace files and
 // directories exist after the setup phase. Returns a list of validation checks.
 func runContainerValidation(workDir, claudeDir string, skillsConfigured, subAgentsConfigured bool) []protocol.ValidationCheck {
@@ -281,22 +231,25 @@ func runContainerValidation(workDir, claudeDir string, skillsConfigured, subAgen
 		}
 	}
 
-	// Check 3: workspace skills directory exists and has content (only if skills were configured).
+	// Check 3: skills installed in ~/.claude/skills/ (only if skills were configured).
 	if skillsConfigured {
-		workspaceSkillsDir := filepath.Join(workDir, ".claude", "skills")
-		entries, err := os.ReadDir(workspaceSkillsDir)
-		if err != nil || len(entries) == 0 {
-			checks = append(checks, protocol.ValidationCheck{
-				Name:    "skills_dir",
-				Status:  protocol.ValidationWarning,
-				Message: fmt.Sprintf("skills directory missing or empty at %s", workspaceSkillsDir),
-			})
-		} else {
-			checks = append(checks, protocol.ValidationCheck{
-				Name:    "skills_dir",
-				Status:  protocol.ValidationOK,
-				Message: fmt.Sprintf("skills directory has %d file(s) at %s", len(entries), workspaceSkillsDir),
-			})
+		homeDir, err := os.UserHomeDir()
+		if err == nil {
+			globalSkillsDir := filepath.Join(homeDir, ".claude", "skills")
+			entries, err := os.ReadDir(globalSkillsDir)
+			if err != nil || len(entries) == 0 {
+				checks = append(checks, protocol.ValidationCheck{
+					Name:    "skills_installed",
+					Status:  protocol.ValidationWarning,
+					Message: fmt.Sprintf("no installed skill packages found in %s", globalSkillsDir),
+				})
+			} else {
+				checks = append(checks, protocol.ValidationCheck{
+					Name:    "skills_installed",
+					Status:  protocol.ValidationOK,
+					Message: fmt.Sprintf("%d skill package(s) installed in %s", len(entries), globalSkillsDir),
+				})
+			}
 		}
 	}
 
