@@ -9,7 +9,7 @@ AgentCrew API is a Go backend that orchestrates multi-agent AI teams. It deploys
 ### Binaries
 
 - **`cmd/api`** — Orchestrator API server (Fiber HTTP + WebSocket). Manages teams, agents, deployments, and chat routing. Stores state in SQLite via GORM.
-- **`cmd/sidecar`** — Agent sidecar process. Runs inside each agent container alongside the Claude Code CLI. Bridges NATS messages to/from the Claude process.
+- **`cmd/sidecar`** — Agent sidecar process. Runs inside each agent container alongside the Claude Code CLI. Bridges NATS messages to/from the Claude process. Installs skills and validates workspace files before starting Claude.
 - **`cmd/testserver`** — Test server with a mock runtime for integration testing without Docker/Kubernetes.
 
 ### Internal Packages
@@ -55,18 +55,49 @@ Runtime selection is done via the `RUNTIME` env var in `cmd/api/main.go`.
 - **NATS pub/sub** for real-time agent communication with JetStream persistence
 - **WebSocket** endpoints for streaming logs and activity to the frontend
 - **Name validation**: team/agent names must match `^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$`
+- **Unique agent names**: agent names must be unique within a team (case-insensitive, enforced in CreateTeam, CreateAgent, and UpdateAgent)
+
+### Skills System
+
+Skills extend agent capabilities via the `skills` CLI (`npx skills add`).
+
+**Installation command:**
+```bash
+npx skills add <repo_url> --skill <skill_name> --agent claude-code -y
+```
+
+The `--agent claude-code` flag is required to create symlinks in `.claude/skills/` pointing to `.agents/skills/`, which is how Claude Code discovers installed skills.
+
+**Two installation paths:**
+
+1. **At deployment** (sidecar): Skills from all agents (leader + workers) are collected, deduplicated, passed via `AGENT_SKILLS_INSTALL` env var, and installed by the sidecar before Claude starts. Results are published via NATS as `skill_status` messages.
+
+2. **Hot-install on running team** (API endpoint): `POST /api/teams/:id/agents/:agentId/skills/install` executes `npx skills add` inside the leader container and updates the agent's `skill_statuses` in the DB.
+
+**Global (leader) skills:**
+- Skills installed on the leader are global — available to all agents in the team.
+- When a leader skill is installed, all worker sub-agent `.md` files are regenerated to include the global skill.
+- `SubAgentInfo.GlobalSkills` carries leader skills to `GenerateSubAgentContent()`, which merges them with the worker's own skills (deduplicated).
+
+**Key fields on Agent model:**
+- `SubAgentSkills` (JSON) — configured skills (`[{repo_url, skill_name}]`), used for both leaders and workers
+- `SkillStatuses` (JSON) — installation results (`[{name, status, error?}]`), updated by both the NATS relay and the hot-install endpoint
 
 ## Build Commands
 
 ```bash
-make build-all        # Build api and sidecar binaries to bin/
-make build-api        # Build only the API server
-make build-sidecar    # Build only the sidecar
-make build-images     # Build Docker images for both
-make test             # Run all tests with race detector
-make lint             # Run golangci-lint
-make clean            # Remove build artifacts
+make build-all          # Build api and sidecar binaries to bin/
+make build-api          # Build only the API server
+make build-sidecar      # Build only the sidecar (native, for local testing)
+make build-sidecar-linux # Cross-compile sidecar for Linux (for Docker)
+make build-agent-image  # Build agent Docker image (cross-compiles sidecar for Linux)
+make build-images       # Build Docker images for both API and agent
+make test               # Run all tests with race detector
+make lint               # Run golangci-lint
+make clean              # Remove build artifacts
 ```
+
+**Important:** When building the agent image, always use `make build-agent-image` (not `make build-sidecar`). The agent image requires a Linux binary, and `build-agent-image` handles cross-compilation via `build-sidecar-linux`.
 
 ## Test Commands
 
@@ -91,14 +122,19 @@ go test -v -race -cover ./...
 | `internal/runtime/runtime.go` | `AgentRuntime` interface, shared types and constants |
 | `internal/runtime/docker.go` | Docker runtime implementation |
 | `internal/runtime/kubernetes.go` | Kubernetes runtime implementation |
+| `internal/runtime/workspace.go` | Agent workspace setup, sub-agent `.md` generation, global skills merging |
 | `internal/api/routes.go` | All HTTP and WebSocket route definitions |
-| `internal/api/handlers_teams.go` | Team CRUD and deploy/stop handlers |
+| `internal/api/handlers_teams.go` | Team CRUD, deploy/stop, skill collection from all agents |
+| `internal/api/handlers_agents.go` | Agent CRUD, hot skill installation, skill_statuses update |
+| `internal/api/handlers_relay.go` | NATS relay, persists skill_statuses from sidecar reports |
 | `internal/api/dto.go` | Request/response DTOs and name validation |
 | `internal/api/server.go` | Server struct, middleware setup |
 | `internal/models/models.go` | GORM model definitions |
-| `internal/protocol/messages.go` | NATS message types |
+| `internal/protocol/messages.go` | NATS message types (SkillConfig, SkillInstallResult, etc.) |
 | `cmd/api/main.go` | API server entrypoint with runtime selection |
-| `cmd/sidecar/main.go` | Sidecar entrypoint |
+| `cmd/sidecar/main.go` | Sidecar entrypoint, workspace validation |
+| `cmd/sidecar/skills.go` | Skill installation logic (`installSkills`, `publishSkillStatus`) |
+| `build/agent/Dockerfile` | Agent container image (Node.js + Claude Code CLI + skills CLI + sidecar) |
 | `docker-compose.yml` | Local dev stack (API + NATS) |
 | `Makefile` | Build, test, lint targets |
 
