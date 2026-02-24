@@ -29,6 +29,7 @@ func (s *Server) registerRoutes() {
 	teams.Get("/:id/agents/:agentId", s.GetAgent)
 	teams.Put("/:id/agents/:agentId", s.UpdateAgent)
 	teams.Delete("/:id/agents/:agentId", s.DeleteAgent)
+	teams.Post("/:id/agents/:agentId/skills/install", s.InstallAgentSkill)
 
 	// Chat.
 	teams.Post("/:id/chat", s.SendChat)

@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -18,13 +19,16 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
+	k8sscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/tools/remotecommand"
 )
 
 // K8sRuntime implements AgentRuntime using the Kubernetes API.
 type K8sRuntime struct {
 	clientset  kubernetes.Interface
+	restConfig *rest.Config
 	agentImage string
 }
 
@@ -55,7 +59,7 @@ func NewK8sRuntime() (*K8sRuntime, error) {
 		agentImage = DefaultAgentImage
 	}
 
-	return &K8sRuntime{clientset: clientset, agentImage: agentImage}, nil
+	return &K8sRuntime{clientset: clientset, restConfig: config, agentImage: agentImage}, nil
 }
 
 // Naming conventions for Kubernetes resources.
@@ -561,6 +565,42 @@ func (k *K8sRuntime) ensureAPIKeySecret(ctx context.Context, namespace string, e
 		return fmt.Errorf("creating api key secret: %w", err)
 	}
 	return nil
+}
+
+// ExecInContainer runs a command inside a running agent pod and returns
+// the combined stdout+stderr output.
+func (k *K8sRuntime) ExecInContainer(ctx context.Context, id string, cmd []string) (string, error) {
+	namespace, podName, err := parseAgentID(id)
+	if err != nil {
+		return "", err
+	}
+
+	req := k.clientset.CoreV1().RESTClient().Post().
+		Resource("pods").
+		Name(podName).
+		Namespace(namespace).
+		SubResource("exec").
+		VersionedParams(&corev1.PodExecOptions{
+			Container: "agent",
+			Command:   cmd,
+			Stdout:    true,
+			Stderr:    true,
+		}, k8sscheme.ParameterCodec)
+
+	exec, err := remotecommand.NewSPDYExecutor(k.restConfig, "POST", req.URL())
+	if err != nil {
+		return "", fmt.Errorf("creating SPDY executor for pod %s/%s: %w", namespace, podName, err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := exec.StreamWithContext(ctx, remotecommand.StreamOptions{
+		Stdout: &stdout,
+		Stderr: &stderr,
+	}); err != nil {
+		return stdout.String() + stderr.String(), fmt.Errorf("executing command in pod %s/%s: %w", namespace, podName, err)
+	}
+
+	return stdout.String() + stderr.String(), nil
 }
 
 // podPhaseToStatus converts a Kubernetes PodPhase to the internal status string.

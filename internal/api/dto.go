@@ -91,6 +91,18 @@ type ErrorResponse struct {
 	Details string `json:"details,omitempty"`
 }
 
+// InstallSkillRequest is the payload for POST /api/teams/:id/agents/:agentId/skills/install.
+type InstallSkillRequest struct {
+	RepoURL   string `json:"repo_url"`
+	SkillName string `json:"skill_name"`
+}
+
+// InstallSkillResponse is the response for a skill installation request.
+type InstallSkillResponse struct {
+	Output string `json:"output"`
+	Error  string `json:"error,omitempty"`
+}
+
 // invalidSlugChars matches any character that is not lowercase alphanumeric, hyphen, or underscore.
 var invalidSlugChars = regexp.MustCompile(`[^a-z0-9_-]`)
 

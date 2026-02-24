@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -18,6 +19,7 @@ import (
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/api/types/volume"
 	"github.com/docker/docker/client"
+	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/docker/go-connections/nat"
 )
 
@@ -565,6 +567,42 @@ func (d *DockerRuntime) TeardownInfra(ctx context.Context, teamName string) erro
 
 	slog.Info("team infrastructure torn down", "team", teamName)
 	return nil
+}
+
+// ExecInContainer runs a command inside a running Docker container and returns
+// the combined stdout+stderr output.
+func (d *DockerRuntime) ExecInContainer(ctx context.Context, id string, cmd []string) (string, error) {
+	execResp, err := d.client.ContainerExecCreate(ctx, id, container.ExecOptions{
+		Cmd:          cmd,
+		AttachStdout: true,
+		AttachStderr: true,
+	})
+	if err != nil {
+		return "", fmt.Errorf("creating exec in container %s: %w", id, err)
+	}
+
+	resp, err := d.client.ContainerExecAttach(ctx, execResp.ID, container.ExecAttachOptions{})
+	if err != nil {
+		return "", fmt.Errorf("attaching to exec %s: %w", execResp.ID, err)
+	}
+	defer resp.Close()
+
+	var stdout, stderr bytes.Buffer
+	if _, err := stdcopy.StdCopy(&stdout, &stderr, resp.Reader); err != nil {
+		return "", fmt.Errorf("reading exec output: %w", err)
+	}
+
+	inspect, err := d.client.ContainerExecInspect(ctx, execResp.ID)
+	if err != nil {
+		return stdout.String() + stderr.String(), fmt.Errorf("inspecting exec result: %w", err)
+	}
+
+	combined := stdout.String() + stderr.String()
+	if inspect.ExitCode != 0 {
+		return combined, fmt.Errorf("command exited with code %d", inspect.ExitCode)
+	}
+
+	return combined, nil
 }
 
 // parseMemoryLimit converts a human-readable memory string (e.g. "512m", "1g")

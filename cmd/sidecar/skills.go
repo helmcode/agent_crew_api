@@ -69,7 +69,9 @@ func installSkills(skills []protocol.SkillConfig) []protocol.SkillInstallResult 
 		}
 
 		slog.Info("installing skill globally", "repo_url", cfg.RepoURL, "skill_name", cfg.SkillName)
-		cmd := exec.Command("npx", "--yes", "skills", "add", cfg.RepoURL, "--skill", cfg.SkillName)
+		cmd := exec.Command("npx", "--yes", "@anthropic-ai/claude-code-skills", "add", cfg.RepoURL, "--skill", cfg.SkillName)
+		cmd.Dir = "/workspace"
+		cmd.Env = append(os.Environ(), "HOME="+os.Getenv("HOME"))
 		output, err := cmd.CombinedOutput()
 		if err != nil {
 			errMsg := fmt.Sprintf("%v: %s", err, string(output))

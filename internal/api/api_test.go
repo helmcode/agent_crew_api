@@ -71,6 +71,10 @@ func (m *mockRuntime) GetNATSConnectURL(_ context.Context, teamName string) (str
 	return "nats://127.0.0.1:14222", nil
 }
 
+func (m *mockRuntime) ExecInContainer(_ context.Context, _ string, _ []string) (string, error) {
+	return "mock exec output", nil
+}
+
 // setupTestServer creates a Server with in-memory SQLite and mock runtime.
 func setupTestServer(t *testing.T) (*Server, *mockRuntime) {
 	t.Helper()

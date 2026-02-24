@@ -77,4 +77,7 @@ type AgentRuntime interface {
 	// GetNATSConnectURL returns a NATS URL reachable from the API server process
 	// (e.g. nats://127.0.0.1:<host-port> for Docker, in-cluster DNS for K8s).
 	GetNATSConnectURL(ctx context.Context, teamName string) (string, error)
+	// ExecInContainer runs a command inside a running agent container and returns
+	// the combined stdout+stderr output.
+	ExecInContainer(ctx context.Context, id string, cmd []string) (string, error)
 }

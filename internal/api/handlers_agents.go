@@ -192,6 +192,55 @@ func isValidSubAgentModel(v string) bool {
 	return false
 }
 
+// InstallAgentSkill installs a skill into a running agent's container via exec.
+func (s *Server) InstallAgentSkill(c *fiber.Ctx) error {
+	teamID := c.Params("id")
+	agentID := c.Params("agentId")
+
+	// Find team and verify it's running.
+	var team models.Team
+	if err := s.db.First(&team, "id = ?", teamID).Error; err != nil {
+		return fiber.NewError(fiber.StatusNotFound, "team not found")
+	}
+	if team.Status != models.TeamStatusRunning {
+		return fiber.NewError(fiber.StatusConflict, "team is not running")
+	}
+
+	// Find the agent and verify it has a container.
+	var agent models.Agent
+	if err := s.db.Where("id = ? AND team_id = ?", agentID, teamID).First(&agent).Error; err != nil {
+		return fiber.NewError(fiber.StatusNotFound, "agent not found")
+	}
+	if agent.Role != models.AgentRoleLeader {
+		return fiber.NewError(fiber.StatusBadRequest, "skill installation is only supported on leader agents")
+	}
+	if agent.ContainerID == "" || agent.ContainerStatus != models.ContainerStatusRunning {
+		return fiber.NewError(fiber.StatusConflict, "agent container is not running")
+	}
+
+	var req InstallSkillRequest
+	if err := c.BodyParser(&req); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+	}
+
+	if err := validateSingleSkillConfig(req.RepoURL, req.SkillName); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, err.Error())
+	}
+
+	cmd := []string{"npx", "--yes", "@anthropic-ai/claude-code-skills", "add", req.RepoURL, "--skill", req.SkillName}
+	output, err := s.runtime.ExecInContainer(c.Context(), agent.ContainerID, cmd)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(InstallSkillResponse{
+			Output: output,
+			Error:  err.Error(),
+		})
+	}
+
+	return c.JSON(InstallSkillResponse{
+		Output: output,
+	})
+}
+
 // DeleteAgent removes an agent from a team.
 func (s *Server) DeleteAgent(c *fiber.Ctx) error {
 	teamID := c.Params("id")
