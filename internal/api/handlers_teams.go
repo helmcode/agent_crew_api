@@ -69,6 +69,15 @@ func (s *Server) CreateTeam(c *fiber.Ctx) error {
 				return fiber.NewError(fiber.StatusBadRequest, "agent "+a.Name+": "+err.Error())
 			}
 		}
+		if a.SubAgentSkills != nil {
+			if err := validateSubAgentSkills(a.SubAgentSkills); err != nil {
+				agentLabel := a.Name
+				if agentLabel == "" {
+					agentLabel = "(unnamed)"
+				}
+				return fiber.NewError(fiber.StatusBadRequest, "agent "+agentLabel+": "+err.Error())
+			}
+		}
 		role := a.Role
 		if role == "" {
 			role = models.AgentRoleWorker
@@ -338,18 +347,26 @@ func (s *Server) deployTeamAsync(team models.Team) {
 			var strSkills []string
 			if err := json.Unmarshal(a.SubAgentSkills, &strSkills); err == nil {
 				for _, s := range strSkills {
-					parts := strings.SplitN(s, ":", 2)
-					if len(parts) == 2 && parts[0] != "" && parts[1] != "" {
-						repoURL := parts[0]
-						if !strings.HasPrefix(repoURL, "https://") {
-							repoURL = "https://github.com/" + repoURL
-						}
-						cfg := protocol.SkillConfig{RepoURL: repoURL, SkillName: parts[1]}
-						key := skillKey{cfg.RepoURL, cfg.SkillName}
-						if _, exists := skillsSet[key]; !exists {
-							skillsSet[key] = struct{}{}
-							allSkills = append(allSkills, cfg)
-						}
+					// Use LastIndex to find the colon separating repo from skill name,
+					// since full URLs like "https://github.com/owner/repo:skill" contain
+					// earlier colons in the scheme (https:).
+					idx := strings.LastIndex(s, ":")
+					if idx <= 0 || idx == len(s)-1 {
+						continue
+					}
+					repoURL := s[:idx]
+					skillName := s[idx+1:]
+					if repoURL == "" || skillName == "" {
+						continue
+					}
+					if !strings.HasPrefix(repoURL, "https://") {
+						repoURL = "https://github.com/" + repoURL
+					}
+					cfg := protocol.SkillConfig{RepoURL: repoURL, SkillName: skillName}
+					key := skillKey{cfg.RepoURL, cfg.SkillName}
+					if _, exists := skillsSet[key]; !exists {
+						skillsSet[key] = struct{}{}
+						allSkills = append(allSkills, cfg)
 					}
 				}
 			}

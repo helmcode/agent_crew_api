@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/helmcode/agent-crew/internal/models"
@@ -361,6 +362,157 @@ func TestUpdateAgent_ClaudeMD(t *testing.T) {
 	parseJSON(t, rec, &agent)
 	if agent.ClaudeMD != newMD {
 		t.Errorf("claude_md: got %q, want %q", agent.ClaudeMD, newMD)
+	}
+}
+
+func TestDeployTeamAsync_LegacySkillsWithFullURL(t *testing.T) {
+	srv, mock := setupTestServer(t)
+
+	// Create team with worker agent using legacy string-format skills that include full URLs.
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name: "legacy-skills-team",
+		Agents: []CreateAgentInput{
+			{Name: "the-leader", Role: "leader"},
+			{
+				Name: "worker-1", Role: "worker",
+				SubAgentSkills: []string{
+					"https://github.com/jezweb/claude-skills:fastapi",
+					"vercel-labs/agent-skills:vercel-react-best-practices",
+				},
+			},
+		},
+	})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+
+	srv.deployTeamAsync(team)
+
+	// Verify skills were correctly parsed and passed to the agent config.
+	if mock.lastAgentConfig == nil {
+		t.Fatal("expected lastAgentConfig to be set")
+	}
+	skillsJSON := mock.lastAgentConfig.Env["AGENT_SKILLS_INSTALL"]
+	if skillsJSON == "" {
+		t.Fatal("expected AGENT_SKILLS_INSTALL to be set in agent env")
+	}
+
+	var skills []struct {
+		RepoURL   string `json:"repo_url"`
+		SkillName string `json:"skill_name"`
+	}
+	if err := json.Unmarshal([]byte(skillsJSON), &skills); err != nil {
+		t.Fatalf("failed to parse skills JSON: %v", err)
+	}
+	if len(skills) != 2 {
+		t.Fatalf("expected 2 skills, got %d: %s", len(skills), skillsJSON)
+	}
+
+	// First skill: full URL should be preserved as-is.
+	if skills[0].RepoURL != "https://github.com/jezweb/claude-skills" {
+		t.Errorf("skill[0] repo_url: got %q, want 'https://github.com/jezweb/claude-skills'", skills[0].RepoURL)
+	}
+	if skills[0].SkillName != "fastapi" {
+		t.Errorf("skill[0] skill_name: got %q, want 'fastapi'", skills[0].SkillName)
+	}
+
+	// Second skill: short format should get https://github.com/ prefix.
+	if skills[1].RepoURL != "https://github.com/vercel-labs/agent-skills" {
+		t.Errorf("skill[1] repo_url: got %q, want 'https://github.com/vercel-labs/agent-skills'", skills[1].RepoURL)
+	}
+	if skills[1].SkillName != "vercel-react-best-practices" {
+		t.Errorf("skill[1] skill_name: got %q, want 'vercel-react-best-practices'", skills[1].SkillName)
+	}
+}
+
+func TestDeployTeamAsync_SkillConfigFormat(t *testing.T) {
+	srv, mock := setupTestServer(t)
+
+	// Create team with worker agent using SkillConfig object format.
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name: "skillconfig-team",
+		Agents: []CreateAgentInput{
+			{Name: "the-leader", Role: "leader"},
+			{
+				Name: "worker-1", Role: "worker",
+				SubAgentSkills: []map[string]string{
+					{"repo_url": "https://github.com/jezweb/claude-skills", "skill_name": "fastapi"},
+					{"repo_url": "https://github.com/vercel-labs/agent-skills", "skill_name": "vercel-react-best-practices"},
+				},
+			},
+		},
+	})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+
+	srv.deployTeamAsync(team)
+
+	if mock.lastAgentConfig == nil {
+		t.Fatal("expected lastAgentConfig to be set")
+	}
+	skillsJSON := mock.lastAgentConfig.Env["AGENT_SKILLS_INSTALL"]
+	if skillsJSON == "" {
+		t.Fatal("expected AGENT_SKILLS_INSTALL to be set")
+	}
+
+	var skills []struct {
+		RepoURL   string `json:"repo_url"`
+		SkillName string `json:"skill_name"`
+	}
+	if err := json.Unmarshal([]byte(skillsJSON), &skills); err != nil {
+		t.Fatalf("failed to parse skills JSON: %v", err)
+	}
+	if len(skills) != 2 {
+		t.Fatalf("expected 2 skills, got %d", len(skills))
+	}
+	if skills[0].RepoURL != "https://github.com/jezweb/claude-skills" {
+		t.Errorf("skill[0] repo_url: got %q", skills[0].RepoURL)
+	}
+	if skills[0].SkillName != "fastapi" {
+		t.Errorf("skill[0] skill_name: got %q", skills[0].SkillName)
+	}
+}
+
+func TestDeployTeamAsync_DeduplicatesSkills(t *testing.T) {
+	srv, mock := setupTestServer(t)
+
+	// Two workers with the same skill should be deduplicated.
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name: "dedup-skills-team",
+		Agents: []CreateAgentInput{
+			{Name: "the-leader", Role: "leader"},
+			{
+				Name: "worker-1", Role: "worker",
+				SubAgentSkills: []map[string]string{
+					{"repo_url": "https://github.com/jezweb/claude-skills", "skill_name": "fastapi"},
+				},
+			},
+			{
+				Name: "worker-2", Role: "worker",
+				SubAgentSkills: []map[string]string{
+					{"repo_url": "https://github.com/jezweb/claude-skills", "skill_name": "fastapi"},
+				},
+			},
+		},
+	})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+
+	srv.deployTeamAsync(team)
+
+	if mock.lastAgentConfig == nil {
+		t.Fatal("expected lastAgentConfig to be set")
+	}
+	skillsJSON := mock.lastAgentConfig.Env["AGENT_SKILLS_INSTALL"]
+
+	var skills []struct {
+		RepoURL   string `json:"repo_url"`
+		SkillName string `json:"skill_name"`
+	}
+	if err := json.Unmarshal([]byte(skillsJSON), &skills); err != nil {
+		t.Fatalf("failed to parse skills JSON: %v", err)
+	}
+	if len(skills) != 1 {
+		t.Errorf("expected 1 deduplicated skill, got %d: %s", len(skills), skillsJSON)
 	}
 }
 

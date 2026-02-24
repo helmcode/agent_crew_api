@@ -22,6 +22,7 @@ type mockRuntime struct {
 	teardownErr     error
 	deployedAgents  []string
 	teardownCalled  bool
+	lastAgentConfig *runtime.AgentConfig
 }
 
 func (m *mockRuntime) DeployInfra(_ context.Context, _ runtime.InfraConfig) error {
@@ -33,6 +34,7 @@ func (m *mockRuntime) DeployAgent(_ context.Context, cfg runtime.AgentConfig) (*
 		return nil, m.deployAgentErr
 	}
 	m.deployedAgents = append(m.deployedAgents, cfg.Name)
+	m.lastAgentConfig = &cfg
 	return &runtime.AgentInstance{
 		ID:     "container-" + cfg.Name,
 		Name:   cfg.Name,
@@ -831,5 +833,207 @@ func TestDeleteTeam_WhileRunning(t *testing.T) {
 	rec := doRequest(srv, "DELETE", "/api/teams/"+team.ID, nil)
 	if rec.Code != 409 {
 		t.Fatalf("status: got %d, want 409 (must stop before delete)", rec.Code)
+	}
+}
+
+// --- SkillConfig Validation ---
+
+func TestValidateSubAgentSkills_ValidConfigs(t *testing.T) {
+	valid := []interface{}{
+		nil,
+		[]map[string]string{
+			{"repo_url": "https://github.com/jezweb/claude-skills", "skill_name": "fastapi"},
+			{"repo_url": "https://github.com/vercel-labs/agent-skills", "skill_name": "vercel-react-best-practices"},
+		},
+		[]string{
+			"vercel-labs/agent-skills:vercel-react-best-practices",
+			"https://github.com/jezweb/claude-skills:fastapi",
+		},
+		[]map[string]string{
+			{"repo_url": "https://github.com/org/repo", "skill_name": "@scope/skill"},
+		},
+		// Plain tool names (no colon) — valid as sub-agent skill/tool names.
+		[]string{"Read", "Grep", "Glob", "Bash", "Edit", "Write"},
+	}
+	for i, v := range valid {
+		if err := validateSubAgentSkills(v); err != nil {
+			t.Errorf("case %d: expected valid, got error: %v", i, err)
+		}
+	}
+}
+
+func TestValidateSubAgentSkills_InvalidConfigs(t *testing.T) {
+	tests := []struct {
+		name  string
+		input interface{}
+	}{
+		{
+			"non-https repo_url",
+			[]map[string]string{
+				{"repo_url": "http://github.com/owner/repo", "skill_name": "skill"},
+			},
+		},
+		{
+			"missing repo_url",
+			[]map[string]string{
+				{"repo_url": "", "skill_name": "skill"},
+			},
+		},
+		{
+			"missing skill_name",
+			[]map[string]string{
+				{"repo_url": "https://github.com/owner/repo", "skill_name": ""},
+			},
+		},
+		{
+			"skill_name with newline (YAML injection)",
+			[]map[string]string{
+				{"repo_url": "https://github.com/owner/repo", "skill_name": "skill\ninjected: true"},
+			},
+		},
+		{
+			"skill_name with spaces",
+			[]map[string]string{
+				{"repo_url": "https://github.com/owner/repo", "skill_name": "skill with spaces"},
+			},
+		},
+		{
+			"skill_name with semicolon",
+			[]map[string]string{
+				{"repo_url": "https://github.com/owner/repo", "skill_name": "skill;rm -rf /"},
+			},
+		},
+		{
+			"repo_url with shell metacharacters",
+			[]map[string]string{
+				{"repo_url": "https://github.com/owner/repo;rm -rf /", "skill_name": "skill"},
+			},
+		},
+		{
+			"legacy string with invalid skill name",
+			[]string{"owner/repo:skill with spaces"},
+		},
+		{
+			"plain skill name with spaces",
+			[]string{"Read Write"},
+		},
+		{
+			"plain skill name with semicolon injection",
+			[]string{"Read;rm -rf /"},
+		},
+		{
+			"invalid type (not array)",
+			"not-an-array",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := validateSubAgentSkills(tc.input); err == nil {
+				t.Errorf("expected error for %q, got nil", tc.name)
+			}
+		})
+	}
+}
+
+func TestCreateTeam_RejectsInvalidSkills(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	rec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name: "bad-skills-team",
+		Agents: []CreateAgentInput{
+			{
+				Name: "worker-1",
+				SubAgentSkills: []map[string]string{
+					{"repo_url": "https://github.com/owner/repo", "skill_name": "skill\ninjected: true"},
+				},
+			},
+		},
+	})
+
+	if rec.Code != 400 {
+		t.Fatalf("status: got %d, want 400\nbody: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCreateTeam_AcceptsValidSkills(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	rec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name: "good-skills-team",
+		Agents: []CreateAgentInput{
+			{
+				Name: "worker-1",
+				SubAgentSkills: []map[string]string{
+					{"repo_url": "https://github.com/jezweb/claude-skills", "skill_name": "fastapi"},
+				},
+			},
+		},
+	})
+
+	if rec.Code != 201 {
+		t.Fatalf("status: got %d, want 201\nbody: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCreateAgent_RejectsInvalidSkills(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{Name: "skill-val-team"})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+
+	rec := doRequest(srv, "POST", "/api/teams/"+team.ID+"/agents", CreateAgentRequest{
+		Name: "bad-agent",
+		SubAgentSkills: []map[string]string{
+			{"repo_url": "http://evil.com/repo", "skill_name": "bad"},
+		},
+	})
+
+	if rec.Code != 400 {
+		t.Fatalf("status: got %d, want 400\nbody: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestUpdateAgent_RejectsInvalidSkills(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name:   "upd-skill-team",
+		Agents: []CreateAgentInput{{Name: "agent-1"}},
+	})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+
+	agentID := team.Agents[0].ID
+	rec := doRequest(srv, "PUT", "/api/teams/"+team.ID+"/agents/"+agentID, UpdateAgentRequest{
+		SubAgentSkills: []map[string]string{
+			{"repo_url": "https://github.com/owner/repo", "skill_name": "bad;name"},
+		},
+	})
+
+	if rec.Code != 400 {
+		t.Fatalf("status: got %d, want 400\nbody: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestUpdateAgent_AcceptsValidSkills(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name:   "upd-valid-skill-team",
+		Agents: []CreateAgentInput{{Name: "agent-1"}},
+	})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+
+	agentID := team.Agents[0].ID
+	rec := doRequest(srv, "PUT", "/api/teams/"+team.ID+"/agents/"+agentID, UpdateAgentRequest{
+		SubAgentSkills: []map[string]string{
+			{"repo_url": "https://github.com/owner/repo", "skill_name": "valid-skill"},
+		},
+	})
+
+	if rec.Code != 200 {
+		t.Fatalf("status: got %d, want 200\nbody: %s", rec.Code, rec.Body.String())
 	}
 }

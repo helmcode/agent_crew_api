@@ -6,7 +6,9 @@
 package api
 
 import (
+	"encoding/json"
 	"fmt"
+	"net/url"
 	"regexp"
 	"strings"
 )
@@ -124,4 +126,112 @@ func SanitizeName(name string) string {
 		s = "team"
 	}
 	return s
+}
+
+// validSkillNameRe matches safe skill names: alphanumeric, hyphens, underscores, dots, @, forward slashes.
+var validSkillNameRe = regexp.MustCompile(`^[a-zA-Z0-9@/_.-]+$`)
+
+// validateSubAgentSkills validates the SubAgentSkills field. It accepts:
+//   - []SkillConfig objects ({repo_url, skill_name}) — validated as installable repo skills
+//   - []string — can be plain tool names ("Read", "Bash") or legacy "repo:skill" format
+//
+// Returns an error if any entry contains injection-unsafe characters.
+func validateSubAgentSkills(raw interface{}) error {
+	if raw == nil {
+		return nil
+	}
+
+	// Marshal to JSON for uniform parsing.
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return fmt.Errorf("invalid sub_agent_skills: %w", err)
+	}
+
+	// Ignore null or empty array.
+	s := strings.TrimSpace(string(data))
+	if s == "null" || s == "[]" {
+		return nil
+	}
+
+	// Try as array of SkillConfig objects (has repo_url and skill_name fields).
+	var configs []struct {
+		RepoURL   string `json:"repo_url"`
+		SkillName string `json:"skill_name"`
+	}
+	if err := json.Unmarshal(data, &configs); err == nil && len(configs) > 0 {
+		// Check if these are actual SkillConfig objects (have non-empty repo_url).
+		hasRepoURL := false
+		for _, cfg := range configs {
+			if cfg.RepoURL != "" {
+				hasRepoURL = true
+				break
+			}
+		}
+		if hasRepoURL {
+			for i, cfg := range configs {
+				if err := validateSingleSkillConfig(cfg.RepoURL, cfg.SkillName); err != nil {
+					return fmt.Errorf("sub_agent_skills[%d]: %w", i, err)
+				}
+			}
+			return nil
+		}
+	}
+
+	// Try as array of strings.
+	var strSkills []string
+	if err := json.Unmarshal(data, &strSkills); err == nil && len(strSkills) > 0 {
+		for i, sk := range strSkills {
+			idx := strings.LastIndex(sk, ":")
+			if idx > 0 && idx < len(sk)-1 {
+				// Has a colon — treat as "repo:skill" format.
+				repoURL := sk[:idx]
+				skillName := sk[idx+1:]
+				if !strings.HasPrefix(repoURL, "https://") {
+					repoURL = "https://github.com/" + repoURL
+				}
+				if err := validateSingleSkillConfig(repoURL, skillName); err != nil {
+					return fmt.Errorf("sub_agent_skills[%d]: %w", i, err)
+				}
+			} else {
+				// No colon — plain tool/skill name. Validate it's safe.
+				if !validSkillNameRe.MatchString(sk) {
+					return fmt.Errorf("sub_agent_skills[%d]: skill name contains invalid characters", i)
+				}
+			}
+		}
+		return nil
+	}
+
+	return fmt.Errorf("sub_agent_skills must be an array of {repo_url, skill_name} objects or strings")
+}
+
+// validateSingleSkillConfig checks that a repo URL is valid HTTPS and skill name is safe.
+func validateSingleSkillConfig(repoURL, skillName string) error {
+	if repoURL == "" {
+		return fmt.Errorf("repo_url is required")
+	}
+	if skillName == "" {
+		return fmt.Errorf("skill_name is required")
+	}
+
+	u, err := url.Parse(repoURL)
+	if err != nil {
+		return fmt.Errorf("invalid repo_url: %w", err)
+	}
+	if u.Scheme != "https" {
+		return fmt.Errorf("repo_url must use https scheme, got %q", u.Scheme)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("repo_url must have a host")
+	}
+
+	if strings.ContainsAny(repoURL, ";|&$`\\\"'<>(){}!") {
+		return fmt.Errorf("repo_url contains invalid characters")
+	}
+
+	if !validSkillNameRe.MatchString(skillName) {
+		return fmt.Errorf("skill_name contains invalid characters")
+	}
+
+	return nil
 }

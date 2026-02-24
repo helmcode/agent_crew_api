@@ -71,6 +71,12 @@ func (s *Server) CreateAgent(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "sub_agent_model must be one of: inherit, sonnet, opus, haiku")
 	}
 
+	if req.SubAgentSkills != nil {
+		if err := validateSubAgentSkills(req.SubAgentSkills); err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, err.Error())
+		}
+	}
+
 	skills, _ := json.Marshal(req.Skills)
 	perms, _ := json.Marshal(req.Permissions)
 	resources, _ := json.Marshal(req.Resources)
@@ -160,6 +166,9 @@ func (s *Server) UpdateAgent(c *fiber.Ctx) error {
 		updates["sub_agent_model"] = *req.SubAgentModel
 	}
 	if req.SubAgentSkills != nil {
+		if err := validateSubAgentSkills(req.SubAgentSkills); err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, err.Error())
+		}
 		raw, _ := json.Marshal(req.SubAgentSkills)
 		updates["sub_agent_skills"] = models.JSON(raw)
 	}
