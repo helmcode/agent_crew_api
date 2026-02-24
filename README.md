@@ -173,4 +173,4 @@ Each team gets a Kubernetes namespace with a workspace PVC, NATS Deployment + Se
 
 ## License
 
-See [LICENSE](LICENSE) for details.
+This project is licensed under the [GNU Affero General Public License v3.0](LICENSE).
