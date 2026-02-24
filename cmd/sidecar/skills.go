@@ -6,7 +6,6 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -51,7 +50,8 @@ func validateSkillConfig(cfg protocol.SkillConfig) error {
 	return nil
 }
 
-// installSkills installs a list of skill packages globally using the skills CLI.
+// installSkills installs a list of skill packages globally to ~/.claude/skills/
+// using the skills CLI. Skills are NOT copied to /workspace/.claude/skills/.
 func installSkills(skills []protocol.SkillConfig) []protocol.SkillInstallResult {
 	var results []protocol.SkillInstallResult
 
@@ -91,43 +91,6 @@ func installSkills(skills []protocol.SkillConfig) []protocol.SkillInstallResult 
 	}
 
 	return results
-}
-
-// symlinkSkillsDir creates a symlink from the global skills directory ($HOME/.claude/skills)
-// to the workspace skills directory so Claude Code discovers installed skills.
-func symlinkSkillsDir(workDir string) error {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return fmt.Errorf("getting home dir: %w", err)
-	}
-
-	globalSkillsDir := filepath.Join(homeDir, ".claude", "skills")
-	workspaceSkillsDir := filepath.Join(workDir, ".claude", "skills")
-
-	// Ensure the global skills directory exists.
-	if err := os.MkdirAll(globalSkillsDir, 0755); err != nil {
-		return fmt.Errorf("creating global skills dir %s: %w", globalSkillsDir, err)
-	}
-
-	// Remove existing workspace skills path if it exists so the symlink
-	// can be created cleanly.
-	if _, err := os.Lstat(workspaceSkillsDir); err == nil {
-		if err := os.RemoveAll(workspaceSkillsDir); err != nil {
-			return fmt.Errorf("removing existing workspace skills path %s: %w", workspaceSkillsDir, err)
-		}
-	}
-
-	// Ensure parent directory exists.
-	if err := os.MkdirAll(filepath.Dir(workspaceSkillsDir), 0755); err != nil {
-		return fmt.Errorf("creating workspace .claude dir: %w", err)
-	}
-
-	if err := os.Symlink(globalSkillsDir, workspaceSkillsDir); err != nil {
-		return fmt.Errorf("creating symlink from %s to %s: %w", globalSkillsDir, workspaceSkillsDir, err)
-	}
-
-	slog.Info("created skills symlink", "from", globalSkillsDir, "to", workspaceSkillsDir)
-	return nil
 }
 
 // publishSkillStatus sends per-skill installation results to the team activity

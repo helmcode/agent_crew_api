@@ -2,7 +2,6 @@ package main
 
 import (
 	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/helmcode/agent-crew/internal/protocol"
@@ -126,101 +125,3 @@ func TestInstallSkills_MixedInput(t *testing.T) {
 	}
 }
 
-func TestSymlinkSkillsDir_CreatesSymlink(t *testing.T) {
-	tmpDir := t.TempDir()
-	workDir := filepath.Join(tmpDir, "workspace")
-
-	// Override HOME to use temp dir.
-	origHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", origHome)
-
-	if err := symlinkSkillsDir(workDir); err != nil {
-		t.Fatalf("symlinkSkillsDir failed: %v", err)
-	}
-
-	// Verify the symlink was created.
-	workspaceSkillsDir := filepath.Join(workDir, ".claude", "skills")
-	info, err := os.Lstat(workspaceSkillsDir)
-	if err != nil {
-		t.Fatalf("expected symlink at %s, got error: %v", workspaceSkillsDir, err)
-	}
-	if info.Mode()&os.ModeSymlink == 0 {
-		t.Errorf("expected symlink, got mode %v", info.Mode())
-	}
-
-	// Verify it points to the global skills dir.
-	target, err := os.Readlink(workspaceSkillsDir)
-	if err != nil {
-		t.Fatalf("readlink failed: %v", err)
-	}
-	expectedTarget := filepath.Join(tmpDir, ".claude", "skills")
-	if target != expectedTarget {
-		t.Errorf("symlink target = %q, want %q", target, expectedTarget)
-	}
-
-	// Verify the global skills directory was created.
-	if _, err := os.Stat(expectedTarget); err != nil {
-		t.Errorf("expected global skills dir to exist at %s: %v", expectedTarget, err)
-	}
-}
-
-func TestSymlinkSkillsDir_ReplacesExisting(t *testing.T) {
-	tmpDir := t.TempDir()
-	workDir := filepath.Join(tmpDir, "workspace")
-
-	// Override HOME.
-	origHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", origHome)
-
-	// Pre-create a regular directory where the symlink should go.
-	existingDir := filepath.Join(workDir, ".claude", "skills")
-	if err := os.MkdirAll(existingDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(existingDir, "stale-file"), []byte("old"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	// symlinkSkillsDir should replace the existing directory with a symlink.
-	if err := symlinkSkillsDir(workDir); err != nil {
-		t.Fatalf("symlinkSkillsDir failed: %v", err)
-	}
-
-	info, err := os.Lstat(existingDir)
-	if err != nil {
-		t.Fatalf("expected symlink at %s: %v", existingDir, err)
-	}
-	if info.Mode()&os.ModeSymlink == 0 {
-		t.Errorf("expected symlink after replacement, got mode %v", info.Mode())
-	}
-}
-
-func TestSymlinkSkillsDir_Idempotent(t *testing.T) {
-	tmpDir := t.TempDir()
-	workDir := filepath.Join(tmpDir, "workspace")
-
-	origHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", origHome)
-
-	// Call twice — second call should succeed without error.
-	if err := symlinkSkillsDir(workDir); err != nil {
-		t.Fatalf("first call failed: %v", err)
-	}
-	if err := symlinkSkillsDir(workDir); err != nil {
-		t.Fatalf("second call failed: %v", err)
-	}
-
-	// Verify symlink still resolves correctly.
-	workspaceSkillsDir := filepath.Join(workDir, ".claude", "skills")
-	target, err := os.Readlink(workspaceSkillsDir)
-	if err != nil {
-		t.Fatalf("readlink failed: %v", err)
-	}
-	expectedTarget := filepath.Join(tmpDir, ".claude", "skills")
-	if target != expectedTarget {
-		t.Errorf("symlink target = %q, want %q", target, expectedTarget)
-	}
-}

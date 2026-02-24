@@ -99,8 +99,9 @@ type InstallSkillRequest struct {
 
 // InstallSkillResponse is the response for a skill installation request.
 type InstallSkillResponse struct {
-	Output string `json:"output"`
-	Error  string `json:"error,omitempty"`
+	Output        string              `json:"output"`
+	Error         string              `json:"error,omitempty"`
+	UpdatedSkills []map[string]string `json:"updated_skills,omitempty"`
 }
 
 // invalidSlugChars matches any character that is not lowercase alphanumeric, hyphen, or underscore.

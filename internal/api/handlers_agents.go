@@ -1,12 +1,16 @@
 package api
 
 import (
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"log/slog"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
 
 	"github.com/helmcode/agent-crew/internal/models"
+	"github.com/helmcode/agent-crew/internal/runtime"
 )
 
 // ListAgents returns all agents for a team.
@@ -192,7 +196,9 @@ func isValidSubAgentModel(v string) bool {
 	return false
 }
 
-// InstallAgentSkill installs a skill into a running agent's container via exec.
+// InstallAgentSkill installs a skill into a running agent's container via exec,
+// updates the agent's sub_agent_skills in the database, regenerates the worker's
+// .md file in the container, and returns the updated skill list.
 func (s *Server) InstallAgentSkill(c *fiber.Ctx) error {
 	teamID := c.Params("id")
 	agentID := c.Params("agentId")
@@ -206,16 +212,17 @@ func (s *Server) InstallAgentSkill(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusConflict, "team is not running")
 	}
 
-	// Find the agent and verify it has a container.
+	// Find the target agent.
 	var agent models.Agent
 	if err := s.db.Where("id = ? AND team_id = ?", agentID, teamID).First(&agent).Error; err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "agent not found")
 	}
-	if agent.Role != models.AgentRoleLeader {
-		return fiber.NewError(fiber.StatusBadRequest, "skill installation is only supported on leader agents")
-	}
-	if agent.ContainerID == "" || agent.ContainerStatus != models.ContainerStatusRunning {
-		return fiber.NewError(fiber.StatusConflict, "agent container is not running")
+
+	// Find the leader agent (the one with a running container) to exec into.
+	var leader models.Agent
+	if err := s.db.Where("team_id = ? AND role = ? AND container_status = ?",
+		teamID, models.AgentRoleLeader, models.ContainerStatusRunning).First(&leader).Error; err != nil {
+		return fiber.NewError(fiber.StatusConflict, "no running leader agent found for this team")
 	}
 
 	var req InstallSkillRequest
@@ -227,8 +234,9 @@ func (s *Server) InstallAgentSkill(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, err.Error())
 	}
 
+	// Install the skill in the leader's container.
 	cmd := []string{"npx", "--yes", "@anthropic-ai/claude-code-skills", "add", req.RepoURL, "--skill", req.SkillName}
-	output, err := s.runtime.ExecInContainer(c.Context(), agent.ContainerID, cmd)
+	output, err := s.runtime.ExecInContainer(c.Context(), leader.ContainerID, cmd)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(InstallSkillResponse{
 			Output: output,
@@ -236,8 +244,62 @@ func (s *Server) InstallAgentSkill(c *fiber.Ctx) error {
 		})
 	}
 
+	// Build the new skill config entry.
+	newSkill := map[string]string{
+		"repo_url":   req.RepoURL,
+		"skill_name": req.SkillName,
+	}
+
+	// Append the new skill to the agent's sub_agent_skills in the DB.
+	var existingSkills []map[string]string
+	if len(agent.SubAgentSkills) > 0 && string(agent.SubAgentSkills) != "null" {
+		_ = json.Unmarshal([]byte(agent.SubAgentSkills), &existingSkills)
+	}
+
+	// Avoid duplicates.
+	alreadyExists := false
+	for _, sk := range existingSkills {
+		if sk["repo_url"] == req.RepoURL && sk["skill_name"] == req.SkillName {
+			alreadyExists = true
+			break
+		}
+	}
+	if !alreadyExists {
+		existingSkills = append(existingSkills, newSkill)
+	}
+
+	updatedSkillsJSON, _ := json.Marshal(existingSkills)
+	if err := s.db.Model(&agent).Update("sub_agent_skills", models.JSON(updatedSkillsJSON)).Error; err != nil {
+		slog.Error("failed to update agent sub_agent_skills in DB", "error", err)
+	}
+
+	// If the target is a worker agent, regenerate its .md file in the container.
+	if agent.Role == models.AgentRoleWorker {
+		subInfo := runtime.SubAgentInfo{
+			Name:        agent.Name,
+			Description: agent.SubAgentDescription,
+			Model:       agent.SubAgentModel,
+			Skills:      json.RawMessage(updatedSkillsJSON),
+			ClaudeMD:    agent.ClaudeMD,
+		}
+		content := runtime.GenerateSubAgentContent(subInfo)
+
+		// Write via exec using base64 to avoid shell escaping issues.
+		encoded := base64.StdEncoding.EncodeToString([]byte(content))
+		filename := runtime.SubAgentFileName(agent.Name)
+		filePath := fmt.Sprintf("/workspace/.claude/agents/%s", filename)
+		writeCmd := []string{"sh", "-c", fmt.Sprintf("printf '%%s' '%s' | base64 -d > %s", encoded, filePath)}
+
+		if _, err := s.runtime.ExecInContainer(c.Context(), leader.ContainerID, writeCmd); err != nil {
+			slog.Error("failed to update agent .md file in container", "agent", agent.Name, "error", err)
+		} else {
+			slog.Info("updated agent .md file in container", "agent", agent.Name, "path", filePath)
+		}
+	}
+
 	return c.JSON(InstallSkillResponse{
-		Output: output,
+		Output:        output,
+		UpdatedSkills: existingSkills,
 	})
 }
 
