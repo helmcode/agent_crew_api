@@ -355,27 +355,18 @@ func (d *DockerRuntime) DeployAgent(ctx context.Context, config AgentConfig) (*A
 	// Serialize permissions for env var.
 	permJSON, _ := json.Marshal(config.Permissions)
 
-	// Read API key: prefer config.Env (from Settings DB), fall back to process env.
+	// Read API key from Settings DB.
 	apiKey := config.Env["ANTHROPIC_API_KEY"]
-	if apiKey == "" {
-		apiKey = os.Getenv("ANTHROPIC_API_KEY")
-	}
 
-	// Read OAuth token: CLAUDE_CODE_OAUTH_TOKEN or its alias ANTHROPIC_AUTH_TOKEN.
+	// Read OAuth token from Settings DB (including alias).
 	oauthToken := config.Env["CLAUDE_CODE_OAUTH_TOKEN"]
 	if oauthToken == "" {
-		oauthToken = os.Getenv("CLAUDE_CODE_OAUTH_TOKEN")
-	}
-	if oauthToken == "" {
 		oauthToken = config.Env["ANTHROPIC_AUTH_TOKEN"]
-	}
-	if oauthToken == "" {
-		oauthToken = os.Getenv("ANTHROPIC_AUTH_TOKEN")
 	}
 
 	// Require at least one authentication method.
 	if apiKey == "" && oauthToken == "" {
-		return nil, fmt.Errorf("no auth configured: set ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN in Settings")
+		return nil, fmt.Errorf("no auth configured: set ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN in the Settings page")
 	}
 
 	// Read NATS auth token: same token used to start the NATS container.

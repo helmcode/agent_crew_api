@@ -333,9 +333,6 @@ func (k *K8sRuntime) DeployAgent(ctx context.Context, config AgentConfig) (*Agen
 
 	// Pass OAuth token if available (for Claude Code OAuth authentication).
 	oauthToken := config.Env["CLAUDE_CODE_OAUTH_TOKEN"]
-	if oauthToken == "" {
-		oauthToken = os.Getenv("CLAUDE_CODE_OAUTH_TOKEN")
-	}
 	if oauthToken != "" {
 		env = append(env, corev1.EnvVar{Name: "CLAUDE_CODE_OAUTH_TOKEN", Value: oauthToken})
 	}
@@ -542,13 +539,10 @@ func (k *K8sRuntime) TeardownInfra(ctx context.Context, teamName string) error {
 // ensureAPIKeySecret creates the Kubernetes Secret holding the Anthropic API key
 // if it doesn't already exist in the given namespace.
 func (k *K8sRuntime) ensureAPIKeySecret(ctx context.Context, namespace string, extraEnv map[string]string) error {
-	// Prefer extraEnv (from Settings DB), fall back to process env.
+	// Read from Settings DB only.
 	apiKey := extraEnv["ANTHROPIC_API_KEY"]
 	if apiKey == "" {
-		apiKey = os.Getenv("ANTHROPIC_API_KEY")
-	}
-	if apiKey == "" {
-		return fmt.Errorf("ANTHROPIC_API_KEY not configured (set it in Settings or as environment variable)")
+		return fmt.Errorf("ANTHROPIC_API_KEY not configured (set it in the Settings page)")
 	}
 
 	secret := &corev1.Secret{

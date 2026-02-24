@@ -140,7 +140,7 @@ go test -v -race -cover ./...
 
 ## Docker Compose
 
-The `docker-compose.yml` runs the API server and NATS for local development. The API server gets Docker socket access to manage agent containers. Set `ANTHROPIC_API_KEY` and optionally `NATS_AUTH_TOKEN` before starting.
+The `docker-compose.yml` runs the API server and NATS for local development. The API server gets Docker socket access to manage agent containers. Optionally set `NATS_AUTH_TOKEN` before starting. Authentication credentials (Anthropic API key or OAuth token) are configured through the Settings page in the UI, not via environment variables.
 
 ## Kubernetes Runtime
 

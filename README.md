@@ -46,9 +46,6 @@ cd agent_crew_api
 # Copy environment template
 cp .env.example .env
 
-# Set your Anthropic API key
-export ANTHROPIC_API_KEY=your-api-key-here
-
 # Start all services (API + NATS)
 docker compose up -d
 
@@ -130,7 +127,6 @@ make clean
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ANTHROPIC_API_KEY` | *(required)* | API key for Claude Code agents |
 | `NATS_AUTH_TOKEN` | *(optional)* | NATS authentication token |
 | `NATS_URL` | `nats://nats:4222` | NATS server URL (sidecar) |
 | `DATABASE_PATH` | `agentcrew.db` | SQLite database file path |
