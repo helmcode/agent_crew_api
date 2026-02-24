@@ -54,9 +54,10 @@ jobs:
           context: .
           file: build/api/Dockerfile
           push: true
+          provenance: false
           tags: |
-            ghcr.io/helmcode/agentcrew-api:${{ steps.version.outputs.version }}
-            ghcr.io/helmcode/agentcrew-api:latest
+            ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}
+            ghcr.io/${{ github.repository }}:latest
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
           cache-from: type=gha
@@ -72,9 +73,10 @@ jobs:
           context: build/agent
           file: build/agent/Dockerfile
           push: true
+          provenance: false
           tags: |
-            ghcr.io/helmcode/agentcrew-agent:${{ steps.version.outputs.version }}
-            ghcr.io/helmcode/agentcrew-agent:latest
+            ghcr.io/helmcode/agent_crew_agent:${{ steps.version.outputs.version }}
+            ghcr.io/helmcode/agent_crew_agent:latest
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
           cache-from: type=gha
