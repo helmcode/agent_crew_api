@@ -81,8 +81,9 @@ type ChatRequest struct {
 
 // UpdateSettingsRequest is the payload for PUT /api/settings.
 type UpdateSettingsRequest struct {
-	Key   string `json:"key" validate:"required"`
-	Value string `json:"value"`
+	Key      string `json:"key" validate:"required"`
+	Value    string `json:"value"`
+	IsSecret *bool  `json:"is_secret"`
 }
 
 // ErrorResponse is a standard error response.

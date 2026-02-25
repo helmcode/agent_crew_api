@@ -104,6 +104,7 @@ type Settings struct {
 	ID        uint      `gorm:"primaryKey;autoIncrement" json:"id"`
 	Key       string    `gorm:"uniqueIndex;not null;size:255" json:"key"`
 	Value     string    `gorm:"type:text" json:"value"`
+	IsSecret  bool      `gorm:"default:false" json:"is_secret"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
 

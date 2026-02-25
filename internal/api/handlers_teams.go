@@ -10,6 +10,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
 
+	"github.com/helmcode/agent-crew/internal/crypto"
 	"github.com/helmcode/agent-crew/internal/models"
 	"github.com/helmcode/agent-crew/internal/protocol"
 	"github.com/helmcode/agent-crew/internal/runtime"
@@ -440,18 +441,32 @@ func (s *Server) deployTeamAsync(team models.Team) {
 	s.startTeamRelay(team.ID, team.Name)
 }
 
-// loadSettingsEnv reads known settings from the database and returns them as a
-// string map suitable for passing to AgentConfig.Env.
+// loadSettingsEnv reads all settings from the database and returns them as a
+// string map suitable for passing to AgentConfig.Env. Secret values are
+// decrypted so agent containers receive the real values.
 func (s *Server) loadSettingsEnv() map[string]string {
 	env := make(map[string]string)
 
-	// Primary keys forwarded directly to agent containers.
-	keys := []string{"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"}
-	for _, key := range keys {
-		var setting models.Settings
-		if err := s.db.Where("key = ?", key).First(&setting).Error; err == nil && setting.Value != "" {
-			env[key] = setting.Value
+	var settings []models.Settings
+	if err := s.db.Find(&settings).Error; err != nil {
+		slog.Error("failed to load settings for env", "error", err)
+		return env
+	}
+
+	for _, setting := range settings {
+		if setting.Value == "" {
+			continue
 		}
+		value := setting.Value
+		if setting.IsSecret {
+			decrypted, err := crypto.Decrypt(value)
+			if err != nil {
+				slog.Error("failed to decrypt setting", "key", setting.Key, "error", err)
+				continue
+			}
+			value = decrypted
+		}
+		env[setting.Key] = value
 	}
 
 	// Aliases: map alternative key names users may have used in Settings.
@@ -462,9 +477,8 @@ func (s *Server) loadSettingsEnv() map[string]string {
 		if env[target] != "" {
 			continue // already set from primary key
 		}
-		var setting models.Settings
-		if err := s.db.Where("key = ?", alias).First(&setting).Error; err == nil && setting.Value != "" {
-			env[target] = setting.Value
+		if v, ok := env[alias]; ok && v != "" {
+			env[target] = v
 		}
 	}
 
