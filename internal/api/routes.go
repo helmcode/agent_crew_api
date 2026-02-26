@@ -36,6 +36,17 @@ func (s *Server) registerRoutes() {
 	teams.Get("/:id/messages", s.GetMessages)
 	teams.Get("/:id/activity", s.GetActivity)
 
+	// Schedules.
+	schedules := api.Group("/schedules")
+	schedules.Get("/", s.ListSchedules)
+	schedules.Post("/", s.CreateSchedule)
+	schedules.Get("/:id", s.GetSchedule)
+	schedules.Put("/:id", s.UpdateSchedule)
+	schedules.Delete("/:id", s.DeleteSchedule)
+	schedules.Patch("/:id/toggle", s.ToggleSchedule)
+	schedules.Get("/:id/runs", s.ListScheduleRuns)
+	schedules.Get("/:id/runs/:runId", s.GetScheduleRun)
+
 	// Settings.
 	api.Get("/settings", s.GetSettings)
 	api.Put("/settings", s.UpdateSettings)

@@ -92,6 +92,26 @@ type ErrorResponse struct {
 	Details string `json:"details,omitempty"`
 }
 
+// CreateScheduleRequest is the payload for POST /api/schedules.
+type CreateScheduleRequest struct {
+	Name           string `json:"name" validate:"required"`
+	TeamID         string `json:"team_id" validate:"required"`
+	Prompt         string `json:"prompt" validate:"required"`
+	CronExpression string `json:"cron_expression" validate:"required"`
+	Timezone       string `json:"timezone"`
+	Enabled        *bool  `json:"enabled"`
+}
+
+// UpdateScheduleRequest is the payload for PUT /api/schedules/:id.
+type UpdateScheduleRequest struct {
+	Name           *string `json:"name"`
+	TeamID         *string `json:"team_id"`
+	Prompt         *string `json:"prompt"`
+	CronExpression *string `json:"cron_expression"`
+	Timezone       *string `json:"timezone"`
+	Enabled        *bool   `json:"enabled"`
+}
+
 // InstallSkillRequest is the payload for POST /api/teams/:id/agents/:agentId/skills/install.
 type InstallSkillRequest struct {
 	RepoURL   string `json:"repo_url"`
