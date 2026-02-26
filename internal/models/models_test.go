@@ -3,6 +3,7 @@ package models
 import (
 	"encoding/json"
 	"testing"
+	"time"
 )
 
 func TestInitDB_InMemory(t *testing.T) {
@@ -196,6 +197,267 @@ func TestJSON_NilHandling(t *testing.T) {
 	}
 	if string(data) != "null" {
 		t.Errorf("expected 'null', got %q", string(data))
+	}
+}
+
+func TestSchedule_CRUD(t *testing.T) {
+	db, err := InitDB(":memory:")
+	if err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+
+	team := Team{ID: "team-sched-001", Name: "schedule-team", Status: TeamStatusStopped, Runtime: "docker"}
+	db.Create(&team)
+
+	schedule := Schedule{
+		ID:             "sched-001",
+		Name:           "daily-report",
+		TeamID:         "team-sched-001",
+		Prompt:         "Generate daily report",
+		CronExpression: "0 9 * * *",
+		Timezone:       "UTC",
+		Enabled:        true,
+		Status:         ScheduleStatusIdle,
+	}
+
+	// Create.
+	if err := db.Create(&schedule).Error; err != nil {
+		t.Fatalf("creating schedule: %v", err)
+	}
+
+	// Read.
+	var found Schedule
+	if err := db.First(&found, "id = ?", "sched-001").Error; err != nil {
+		t.Fatalf("finding schedule: %v", err)
+	}
+	if found.Name != "daily-report" {
+		t.Errorf("expected name 'daily-report', got %q", found.Name)
+	}
+	if found.TeamID != "team-sched-001" {
+		t.Errorf("expected team_id 'team-sched-001', got %q", found.TeamID)
+	}
+	if found.CronExpression != "0 9 * * *" {
+		t.Errorf("expected cron '0 9 * * *', got %q", found.CronExpression)
+	}
+	if !found.Enabled {
+		t.Error("expected enabled to be true")
+	}
+	if found.Status != ScheduleStatusIdle {
+		t.Errorf("expected status 'idle', got %q", found.Status)
+	}
+
+	// Update.
+	if err := db.Model(&found).Update("enabled", false).Error; err != nil {
+		t.Fatalf("updating schedule: %v", err)
+	}
+	db.First(&found, "id = ?", "sched-001")
+	if found.Enabled {
+		t.Error("expected enabled to be false after update")
+	}
+
+	// Delete.
+	if err := db.Delete(&found).Error; err != nil {
+		t.Fatalf("deleting schedule: %v", err)
+	}
+	result := db.First(&Schedule{}, "id = ?", "sched-001")
+	if result.Error == nil {
+		t.Error("expected schedule to be deleted")
+	}
+}
+
+func TestScheduleRun_CRUD(t *testing.T) {
+	db, err := InitDB(":memory:")
+	if err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+
+	team := Team{ID: "team-run-001", Name: "run-team", Status: TeamStatusStopped, Runtime: "docker"}
+	db.Create(&team)
+
+	schedule := Schedule{
+		ID:             "sched-run-001",
+		Name:           "test-schedule",
+		TeamID:         "team-run-001",
+		Prompt:         "Run tests",
+		CronExpression: "*/5 * * * *",
+		Timezone:       "UTC",
+		Status:         ScheduleStatusIdle,
+	}
+	db.Create(&schedule)
+
+	now := time.Now()
+	run := ScheduleRun{
+		ID:               "run-001",
+		ScheduleID:       "sched-run-001",
+		TeamDeploymentID: "deploy-001",
+		StartedAt:        now,
+		Status:           ScheduleRunStatusRunning,
+	}
+
+	// Create.
+	if err := db.Create(&run).Error; err != nil {
+		t.Fatalf("creating schedule run: %v", err)
+	}
+
+	// Read.
+	var found ScheduleRun
+	if err := db.First(&found, "id = ?", "run-001").Error; err != nil {
+		t.Fatalf("finding schedule run: %v", err)
+	}
+	if found.ScheduleID != "sched-run-001" {
+		t.Errorf("expected schedule_id 'sched-run-001', got %q", found.ScheduleID)
+	}
+	if found.Status != ScheduleRunStatusRunning {
+		t.Errorf("expected status 'running', got %q", found.Status)
+	}
+
+	// Update — mark as success.
+	finished := time.Now()
+	if err := db.Model(&found).Updates(map[string]interface{}{
+		"status":      ScheduleRunStatusSuccess,
+		"finished_at": finished,
+	}).Error; err != nil {
+		t.Fatalf("updating schedule run: %v", err)
+	}
+	db.First(&found, "id = ?", "run-001")
+	if found.Status != ScheduleRunStatusSuccess {
+		t.Errorf("expected status 'success', got %q", found.Status)
+	}
+	if found.FinishedAt == nil {
+		t.Error("expected finished_at to be set")
+	}
+}
+
+func TestSchedule_TeamForeignKey(t *testing.T) {
+	db, err := InitDB(":memory:")
+	if err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+
+	team := Team{ID: "team-fk-001", Name: "fk-team", Status: TeamStatusStopped, Runtime: "docker"}
+	db.Create(&team)
+
+	schedule := Schedule{
+		ID:             "sched-fk-001",
+		Name:           "fk-schedule",
+		TeamID:         "team-fk-001",
+		Prompt:         "test",
+		CronExpression: "0 * * * *",
+		Timezone:       "UTC",
+		Status:         ScheduleStatusIdle,
+	}
+	db.Create(&schedule)
+
+	// Load schedule with team preloaded.
+	var found Schedule
+	if err := db.Preload("Team").First(&found, "id = ?", "sched-fk-001").Error; err != nil {
+		t.Fatalf("finding schedule with team: %v", err)
+	}
+	if found.Team.Name != "fk-team" {
+		t.Errorf("expected preloaded team name 'fk-team', got %q", found.Team.Name)
+	}
+}
+
+func TestScheduleRun_ScheduleForeignKey(t *testing.T) {
+	db, err := InitDB(":memory:")
+	if err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+
+	team := Team{ID: "team-rfk-001", Name: "rfk-team", Status: TeamStatusStopped, Runtime: "docker"}
+	db.Create(&team)
+
+	schedule := Schedule{
+		ID:             "sched-rfk-001",
+		Name:           "rfk-schedule",
+		TeamID:         "team-rfk-001",
+		Prompt:         "test",
+		CronExpression: "0 * * * *",
+		Timezone:       "UTC",
+		Status:         ScheduleStatusIdle,
+	}
+	db.Create(&schedule)
+
+	run := ScheduleRun{
+		ID:         "run-rfk-001",
+		ScheduleID: "sched-rfk-001",
+		StartedAt:  time.Now(),
+		Status:     ScheduleRunStatusRunning,
+	}
+	db.Create(&run)
+
+	// Load runs via schedule preload.
+	var found Schedule
+	if err := db.Preload("Runs").First(&found, "id = ?", "sched-rfk-001").Error; err != nil {
+		t.Fatalf("finding schedule with runs: %v", err)
+	}
+	if len(found.Runs) != 1 {
+		t.Fatalf("expected 1 run, got %d", len(found.Runs))
+	}
+	if found.Runs[0].ID != "run-rfk-001" {
+		t.Errorf("expected run ID 'run-rfk-001', got %q", found.Runs[0].ID)
+	}
+}
+
+func TestSchedule_CascadeDeleteRuns(t *testing.T) {
+	db, err := InitDB(":memory:")
+	if err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+
+	team := Team{ID: "team-cd-001", Name: "cascade-del-team", Status: TeamStatusStopped, Runtime: "docker"}
+	db.Create(&team)
+
+	schedule := Schedule{
+		ID:             "sched-cd-001",
+		Name:           "cascade-schedule",
+		TeamID:         "team-cd-001",
+		Prompt:         "test",
+		CronExpression: "0 * * * *",
+		Timezone:       "UTC",
+		Status:         ScheduleStatusIdle,
+	}
+	db.Create(&schedule)
+
+	run1 := ScheduleRun{ID: "run-cd-001", ScheduleID: "sched-cd-001", StartedAt: time.Now(), Status: ScheduleRunStatusSuccess}
+	run2 := ScheduleRun{ID: "run-cd-002", ScheduleID: "sched-cd-001", StartedAt: time.Now(), Status: ScheduleRunStatusFailed}
+	db.Create(&run1)
+	db.Create(&run2)
+
+	// Delete schedule should cascade to runs.
+	db.Select("Runs").Delete(&schedule)
+
+	var count int64
+	db.Model(&ScheduleRun{}).Where("schedule_id = ?", "sched-cd-001").Count(&count)
+	if count != 0 {
+		t.Errorf("expected 0 runs after cascade delete, got %d", count)
+	}
+}
+
+func TestSchedule_StatusConstants(t *testing.T) {
+	if ScheduleStatusIdle != "idle" {
+		t.Errorf("expected ScheduleStatusIdle to be 'idle', got %q", ScheduleStatusIdle)
+	}
+	if ScheduleStatusRunning != "running" {
+		t.Errorf("expected ScheduleStatusRunning to be 'running', got %q", ScheduleStatusRunning)
+	}
+	if ScheduleStatusError != "error" {
+		t.Errorf("expected ScheduleStatusError to be 'error', got %q", ScheduleStatusError)
+	}
+}
+
+func TestScheduleRun_StatusConstants(t *testing.T) {
+	if ScheduleRunStatusRunning != "running" {
+		t.Errorf("expected ScheduleRunStatusRunning to be 'running', got %q", ScheduleRunStatusRunning)
+	}
+	if ScheduleRunStatusSuccess != "success" {
+		t.Errorf("expected ScheduleRunStatusSuccess to be 'success', got %q", ScheduleRunStatusSuccess)
+	}
+	if ScheduleRunStatusFailed != "failed" {
+		t.Errorf("expected ScheduleRunStatusFailed to be 'failed', got %q", ScheduleRunStatusFailed)
+	}
+	if ScheduleRunStatusTimeout != "timeout" {
+		t.Errorf("expected ScheduleRunStatusTimeout to be 'timeout', got %q", ScheduleRunStatusTimeout)
 	}
 }
 

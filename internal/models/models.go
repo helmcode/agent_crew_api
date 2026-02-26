@@ -108,6 +108,38 @@ type Settings struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// Schedule represents a recurring task that deploys a team and sends a prompt on a cron schedule.
+type Schedule struct {
+	ID             string     `gorm:"primaryKey;size:36" json:"id"`
+	Name           string     `gorm:"not null;size:255" json:"name"`
+	TeamID         string     `gorm:"not null;size:36" json:"team_id"`
+	Prompt         string     `gorm:"type:text;not null" json:"prompt"`
+	CronExpression string     `gorm:"not null;size:100" json:"cron_expression"`
+	Timezone       string     `gorm:"not null;size:50;default:'UTC'" json:"timezone"`
+	Enabled        bool       `gorm:"default:true" json:"enabled"`
+	LastRunAt      *time.Time `json:"last_run_at"`
+	NextRunAt      *time.Time `json:"next_run_at"`
+	// Status: idle | running | error
+	Status    string    `gorm:"size:20;default:'idle'" json:"status"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Team      Team      `gorm:"foreignKey:TeamID;constraint:OnDelete:CASCADE" json:"team,omitempty"`
+	Runs      []ScheduleRun `gorm:"foreignKey:ScheduleID;constraint:OnDelete:CASCADE" json:"runs,omitempty"`
+}
+
+// ScheduleRun records a single execution of a schedule.
+type ScheduleRun struct {
+	ID               string     `gorm:"primaryKey;size:36" json:"id"`
+	ScheduleID       string     `gorm:"not null;size:36;index" json:"schedule_id"`
+	TeamDeploymentID string     `gorm:"size:36" json:"team_deployment_id"`
+	StartedAt        time.Time  `json:"started_at"`
+	FinishedAt       *time.Time `json:"finished_at"`
+	// Status: running | success | failed | timeout
+	Status   string `gorm:"size:20;default:'running'" json:"status"`
+	Error    string `gorm:"type:text" json:"error"`
+	Schedule Schedule `gorm:"foreignKey:ScheduleID" json:"-"`
+}
+
 // Valid team statuses.
 const (
 	TeamStatusStopped   = "stopped"
@@ -127,4 +159,19 @@ const (
 	ContainerStatusStopped = "stopped"
 	ContainerStatusRunning = "running"
 	ContainerStatusError   = "error"
+)
+
+// Valid schedule statuses.
+const (
+	ScheduleStatusIdle    = "idle"
+	ScheduleStatusRunning = "running"
+	ScheduleStatusError   = "error"
+)
+
+// Valid schedule run statuses.
+const (
+	ScheduleRunStatusRunning = "running"
+	ScheduleRunStatusSuccess = "success"
+	ScheduleRunStatusFailed  = "failed"
+	ScheduleRunStatusTimeout = "timeout"
 )

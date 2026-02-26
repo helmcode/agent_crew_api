@@ -31,7 +31,7 @@ func InitDB(dbPath string) (*gorm.DB, error) {
 		slog.Warn("failed to enable foreign keys", "error", err)
 	}
 
-	if err := db.AutoMigrate(&Team{}, &Agent{}, &TaskLog{}, &Settings{}); err != nil {
+	if err := db.AutoMigrate(&Team{}, &Agent{}, &TaskLog{}, &Settings{}, &Schedule{}, &ScheduleRun{}); err != nil {
 		return nil, fmt.Errorf("auto-migrating models: %w", err)
 	}
 
