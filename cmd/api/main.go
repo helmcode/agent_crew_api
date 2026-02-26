@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -9,6 +10,7 @@ import (
 	"github.com/helmcode/agent-crew/internal/api"
 	"github.com/helmcode/agent-crew/internal/models"
 	"github.com/helmcode/agent-crew/internal/runtime"
+	"github.com/helmcode/agent-crew/internal/scheduler"
 )
 
 func main() {
@@ -63,6 +65,13 @@ func main() {
 	// Reconnect NATS relays for teams that were running before this restart.
 	srv.ReconnectRelays()
 
+	// Start scheduler for cron-based schedule execution.
+	sched := scheduler.New(db, func(ctx context.Context, schedule models.Schedule) {
+		slog.Info("schedule execution triggered", "id", schedule.ID, "name", schedule.Name)
+		// TODO: implement executeSchedule in Task 4 (deploy team, send prompt, monitor, teardown).
+	}, 0)
+	sched.Start()
+
 	// Start server in background.
 	go func() {
 		if err := srv.Listen(listenAddr); err != nil {
@@ -76,6 +85,7 @@ func main() {
 	<-quit
 
 	slog.Info("shutting down orchestrator API")
+	sched.Stop()
 	if err := srv.Shutdown(); err != nil {
 		slog.Error("shutdown error", "error", err)
 	}
