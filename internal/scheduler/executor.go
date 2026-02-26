@@ -43,6 +43,11 @@ type Executor struct {
 	// If nil, the executor uses its own implementation.
 	SendPromptFunc func(ctx context.Context, teamName, message string) error
 
+	// WaitForResponseFunc waits for a leader_response after sending a prompt.
+	// If nil, the executor subscribes directly to NATS (default) instead of
+	// polling the database.
+	WaitForResponseFunc func(ctx context.Context, teamName string) error
+
 	// LoadSettingsEnvFunc loads settings from DB as env vars for agent containers.
 	// Required for deployment.
 	LoadSettingsEnvFunc func() map[string]string
@@ -183,17 +188,12 @@ func (e *Executor) executeWithCleanup(ctx context.Context, schedule models.Sched
 		}
 	}()
 
-	// Send the prompt.
+	// Send the prompt and wait for the leader's response via direct NATS
+	// subscription. This avoids depending on a relay to persist messages
+	// to TaskLog and ensures we only capture the response to our own prompt.
 	slog.Info("executor: sending prompt", "team_id", team.ID, "prompt_length", len(schedule.Prompt))
-	if err := e.sendPrompt(ctx, team.Name, schedule.Prompt); err != nil {
-		return fmt.Errorf("sending prompt: %w", err)
-	}
-
-	// Wait for the agent to respond. We poll for a leader_response message
-	// in the task logs that was created after the prompt was sent.
-	promptSentAt := time.Now()
-	if err := e.waitForResponse(ctx, team.ID, promptSentAt); err != nil {
-		return fmt.Errorf("waiting for response: %w", err)
+	if err := e.sendPromptAndWait(ctx, team.Name, schedule.Prompt); err != nil {
+		return fmt.Errorf("prompt/response: %w", err)
 	}
 
 	return nil
@@ -290,10 +290,20 @@ func (e *Executor) stopTeam(ctx context.Context, team models.Team) error {
 	return nil
 }
 
-// sendPrompt sends a prompt to the team via NATS.
-func (e *Executor) sendPrompt(ctx context.Context, teamName, message string) error {
-	if e.SendPromptFunc != nil {
-		return e.SendPromptFunc(ctx, teamName, message)
+// sendPromptAndWait connects to the team's NATS, subscribes to the leader
+// channel for a response, sends the prompt, and blocks until a
+// TypeLeaderResponse is received or the context expires.
+// This approach avoids needing a relay to persist messages in TaskLog.
+func (e *Executor) sendPromptAndWait(ctx context.Context, teamName, message string) error {
+	// If both injectable functions are provided, use them (for testing).
+	if e.SendPromptFunc != nil && e.WaitForResponseFunc != nil {
+		if err := e.SendPromptFunc(ctx, teamName, message); err != nil {
+			return fmt.Errorf("sending prompt: %w", err)
+		}
+		if err := e.WaitForResponseFunc(ctx, teamName); err != nil {
+			return fmt.Errorf("waiting for response: %w", err)
+		}
+		return nil
 	}
 
 	natsURL, err := e.Runtime.GetNATSConnectURL(ctx, teamName)
@@ -316,27 +326,61 @@ func (e *Executor) sendPrompt(ctx context.Context, teamName, message string) err
 	}
 	defer nc.Close()
 
-	msg, err := protocol.NewMessage("scheduler", "leader", protocol.TypeUserMessage, protocol.UserMessagePayload{
+	// Subscribe to the leader channel BEFORE sending the prompt to avoid
+	// missing the response in a race.
+	subject, err := protocol.TeamLeaderChannel(teamName)
+	if err != nil {
+		return fmt.Errorf("building leader channel: %w", err)
+	}
+
+	responseCh := make(chan struct{}, 1)
+	sub, err := nc.Subscribe(subject, func(msg *nats.Msg) {
+		var protoMsg protocol.Message
+		if err := json.Unmarshal(msg.Data, &protoMsg); err != nil {
+			return
+		}
+		if protoMsg.Type == protocol.TypeLeaderResponse {
+			select {
+			case responseCh <- struct{}{}:
+			default:
+			}
+		}
+	})
+	if err != nil {
+		return fmt.Errorf("subscribing to leader channel: %w", err)
+	}
+	defer sub.Unsubscribe()
+
+	// Build and send the prompt.
+	protoMsg, err := protocol.NewMessage("scheduler", "leader", protocol.TypeUserMessage, protocol.UserMessagePayload{
 		Content: message,
 	})
 	if err != nil {
 		return fmt.Errorf("building protocol message: %w", err)
 	}
 
-	data, err := json.Marshal(msg)
+	data, err := json.Marshal(protoMsg)
 	if err != nil {
 		return fmt.Errorf("marshaling message: %w", err)
 	}
 
-	subject, err := protocol.TeamLeaderChannel(teamName)
-	if err != nil {
-		return fmt.Errorf("building leader channel: %w", err)
+	if err := nc.Publish(subject, data); err != nil {
+		return fmt.Errorf("publishing prompt: %w", err)
+	}
+	if err := nc.Flush(); err != nil {
+		return fmt.Errorf("flushing prompt: %w", err)
 	}
 
-	if err := nc.Publish(subject, data); err != nil {
-		return fmt.Errorf("publishing: %w", err)
+	slog.Info("executor: prompt sent, waiting for leader response via NATS",
+		"team", teamName, "subject", subject)
+
+	// Wait for the response or context cancellation.
+	select {
+	case <-responseCh:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
-	return nc.Flush()
 }
 
 // pollInterval returns the configured poll interval or the default (10s).
@@ -369,33 +413,6 @@ func (e *Executor) waitForTeamRunning(ctx context.Context, teamID string, timeou
 			return nil
 		case models.TeamStatusError:
 			return fmt.Errorf("team entered error state")
-		}
-
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(pollInt):
-		}
-	}
-}
-
-// waitForResponse polls for a leader_response message in the task logs.
-// It waits up to the context deadline for the agent to reply.
-func (e *Executor) waitForResponse(ctx context.Context, teamID string, after time.Time) error {
-	pollInt := e.pollInterval()
-	for {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-
-		var count int64
-		e.DB.Model(&models.TaskLog{}).
-			Where("team_id = ? AND message_type = ? AND created_at > ?",
-				teamID, string(protocol.TypeLeaderResponse), after).
-			Count(&count)
-
-		if count > 0 {
-			return nil
 		}
 
 		select {

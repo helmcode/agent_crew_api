@@ -2,13 +2,11 @@ package scheduler
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
 
 	"github.com/helmcode/agent-crew/internal/models"
-	"github.com/helmcode/agent-crew/internal/protocol"
 )
 
 func TestExecutor_Execute_Success(t *testing.T) {
@@ -44,11 +42,9 @@ func TestExecutor_Execute_Success(t *testing.T) {
 	db.Create(&schedule)
 
 	executor := &Executor{
-		DB:           db,
-		Timeout:      30 * time.Second,
-		PollInterval: 200 * time.Millisecond,
+		DB:      db,
+		Timeout: 30 * time.Second,
 		DeployTeamFunc: func(ctx context.Context, team models.Team) error {
-			// Simulate successful deploy.
 			db.Model(&team).Update("status", models.TeamStatusRunning)
 			return nil
 		},
@@ -57,19 +53,11 @@ func TestExecutor_Execute_Success(t *testing.T) {
 			return nil
 		},
 		SendPromptFunc: func(ctx context.Context, teamName, message string) error {
-			// Simulate sending prompt and receiving a response after a short delay.
-			go func() {
-				time.Sleep(100 * time.Millisecond)
-				content, _ := json.Marshal(map[string]string{"content": "response"})
-				db.Create(&models.TaskLog{
-					ID:          "log-ex1",
-					TeamID:      "team-ex1",
-					FromAgent:   "leader",
-					ToAgent:     "user",
-					MessageType: string(protocol.TypeLeaderResponse),
-					Payload:     models.JSON(content),
-				})
-			}()
+			return nil
+		},
+		WaitForResponseFunc: func(ctx context.Context, teamName string) error {
+			// Simulate a short delay then success.
+			time.Sleep(50 * time.Millisecond)
 			return nil
 		},
 	}
@@ -202,8 +190,12 @@ func TestExecutor_Execute_Timeout(t *testing.T) {
 			return nil
 		},
 		SendPromptFunc: func(ctx context.Context, teamName, message string) error {
-			// Don't create a response — let it time out waiting.
 			return nil
+		},
+		WaitForResponseFunc: func(ctx context.Context, teamName string) error {
+			// Never respond — wait for context to expire.
+			<-ctx.Done()
+			return ctx.Err()
 		},
 	}
 
@@ -253,9 +245,8 @@ func TestExecutor_Execute_TeamAlreadyRunning(t *testing.T) {
 
 	deployCalled := false
 	executor := &Executor{
-		DB:           db,
-		Timeout:      30 * time.Second,
-		PollInterval: 200 * time.Millisecond,
+		DB:      db,
+		Timeout: 30 * time.Second,
 		DeployTeamFunc: func(ctx context.Context, team models.Team) error {
 			deployCalled = true
 			return nil
@@ -264,18 +255,10 @@ func TestExecutor_Execute_TeamAlreadyRunning(t *testing.T) {
 			return nil
 		},
 		SendPromptFunc: func(ctx context.Context, teamName, message string) error {
-			go func() {
-				time.Sleep(100 * time.Millisecond)
-				content, _ := json.Marshal(map[string]string{"content": "done"})
-				db.Create(&models.TaskLog{
-					ID:          "log-ex4",
-					TeamID:      "team-ex4",
-					FromAgent:   "leader",
-					ToAgent:     "user",
-					MessageType: string(protocol.TypeLeaderResponse),
-					Payload:     models.JSON(content),
-				})
-			}()
+			return nil
+		},
+		WaitForResponseFunc: func(ctx context.Context, teamName string) error {
+			time.Sleep(50 * time.Millisecond)
 			return nil
 		},
 	}
@@ -342,6 +325,9 @@ func TestExecutor_Execute_PromptFailure(t *testing.T) {
 		SendPromptFunc: func(ctx context.Context, teamName, message string) error {
 			return fmt.Errorf("NATS connection refused")
 		},
+		WaitForResponseFunc: func(ctx context.Context, teamName string) error {
+			return nil
+		},
 	}
 
 	executor.Execute(context.Background(), schedule)
@@ -398,14 +384,11 @@ func TestExecutor_Execute_NoLeaderAgent(t *testing.T) {
 		DB:           db,
 		Timeout:      10 * time.Second,
 		PollInterval: 200 * time.Millisecond,
-		// Use default deploy which will fail because no leader.
 		StopTeamFunc: func(ctx context.Context, team models.Team) error {
 			return nil
 		},
 	}
 
-	// DeployTeamFunc will use default which creates infra then looks for leader.
-	// Since there's no runtime, we mock the deploy to simulate the no-leader error.
 	executor.DeployTeamFunc = func(ctx context.Context, team models.Team) error {
 		return fmt.Errorf("no leader agent found in team")
 	}
