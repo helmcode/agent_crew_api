@@ -45,6 +45,9 @@ func (s *Server) CreateSchedule(c *fiber.Ctx) error {
 	if req.Prompt == "" {
 		return fiber.NewError(fiber.StatusBadRequest, "prompt is required")
 	}
+	if len(req.Prompt) > 50000 {
+		return fiber.NewError(fiber.StatusBadRequest, "prompt exceeds maximum length of 50000 characters")
+	}
 	if req.CronExpression == "" {
 		return fiber.NewError(fiber.StatusBadRequest, "cron_expression is required")
 	}
@@ -129,6 +132,9 @@ func (s *Server) UpdateSchedule(c *fiber.Ctx) error {
 	if req.Prompt != nil {
 		if *req.Prompt == "" {
 			return fiber.NewError(fiber.StatusBadRequest, "prompt cannot be empty")
+		}
+		if len(*req.Prompt) > 50000 {
+			return fiber.NewError(fiber.StatusBadRequest, "prompt exceeds maximum length of 50000 characters")
 		}
 		updates["prompt"] = *req.Prompt
 	}

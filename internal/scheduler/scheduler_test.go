@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -263,5 +264,234 @@ func TestScheduler_UpdatesNextRunAt(t *testing.T) {
 	}
 	if updated.NextRunAt != nil && updated.NextRunAt.Before(time.Now()) {
 		t.Error("expected next_run_at to be in the future")
+	}
+}
+
+func TestScheduler_PanicRecovery(t *testing.T) {
+	db, err := models.InitDB(":memory:")
+	if err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+
+	team := models.Team{ID: "team-panic", Name: "panic-team", Status: models.TeamStatusStopped, Runtime: "docker"}
+	db.Create(&team)
+
+	schedule := models.Schedule{
+		ID:             "sched-panic",
+		Name:           "panic-sched",
+		TeamID:         "team-panic",
+		Prompt:         "test",
+		CronExpression: "* * * * *",
+		Timezone:       "UTC",
+		Enabled:        true,
+		Status:         models.ScheduleStatusIdle,
+	}
+	db.Create(&schedule)
+
+	executeFn := func(ctx context.Context, sched models.Schedule) {
+		panic("simulated panic in execution")
+	}
+
+	sched := New(db, executeFn, 100*time.Millisecond)
+	sched.Start()
+	time.Sleep(300 * time.Millisecond)
+	sched.Stop()
+
+	// Verify the schedule was reset to idle (not stuck in running).
+	var updated models.Schedule
+	db.First(&updated, "id = ?", "sched-panic")
+	if updated.Status != models.ScheduleStatusIdle {
+		t.Errorf("expected status 'idle' after panic recovery, got %q", updated.Status)
+	}
+}
+
+func TestScheduler_AtomicClaim(t *testing.T) {
+	db, err := models.InitDB(":memory:")
+	if err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+
+	team := models.Team{ID: "team-atomic", Name: "atomic-team", Status: models.TeamStatusStopped, Runtime: "docker"}
+	db.Create(&team)
+
+	// Create a schedule that's in "error" status (not idle).
+	schedule := models.Schedule{
+		ID:             "sched-atomic",
+		Name:           "atomic-sched",
+		TeamID:         "team-atomic",
+		Prompt:         "test",
+		CronExpression: "* * * * *",
+		Timezone:       "UTC",
+		Enabled:        true,
+		Status:         models.ScheduleStatusError,
+	}
+	db.Create(&schedule)
+
+	var mu sync.Mutex
+	var executed []string
+
+	executeFn := func(ctx context.Context, sched models.Schedule) {
+		mu.Lock()
+		defer mu.Unlock()
+		executed = append(executed, sched.ID)
+	}
+
+	sched := New(db, executeFn, 100*time.Millisecond)
+	sched.Start()
+	time.Sleep(250 * time.Millisecond)
+	sched.Stop()
+
+	mu.Lock()
+	defer mu.Unlock()
+	// The schedule has status "error" (not "idle"), so the atomic claim should skip it.
+	if len(executed) != 0 {
+		t.Errorf("expected no executions for non-idle schedule, got %d", len(executed))
+	}
+}
+
+func TestScheduler_ConcurrencyLimit(t *testing.T) {
+	db, err := models.InitDB(":memory:")
+	if err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+
+	team := models.Team{ID: "team-conc", Name: "conc-team", Status: models.TeamStatusStopped, Runtime: "docker"}
+	db.Create(&team)
+
+	// Create 5 schedules.
+	for i := 0; i < 5; i++ {
+		id := "sched-conc-" + string(rune('a'+i))
+		db.Create(&models.Schedule{
+			ID:             id,
+			Name:           id,
+			TeamID:         "team-conc",
+			Prompt:         "test",
+			CronExpression: "* * * * *",
+			Timezone:       "UTC",
+			Enabled:        true,
+			Status:         models.ScheduleStatusIdle,
+		})
+	}
+
+	var mu sync.Mutex
+	var maxConcurrent int
+	var currentConcurrent int
+
+	executeFn := func(ctx context.Context, sched models.Schedule) {
+		mu.Lock()
+		currentConcurrent++
+		if currentConcurrent > maxConcurrent {
+			maxConcurrent = currentConcurrent
+		}
+		mu.Unlock()
+
+		time.Sleep(200 * time.Millisecond)
+
+		mu.Lock()
+		currentConcurrent--
+		mu.Unlock()
+	}
+
+	// Create scheduler with a concurrency limit of 2 (override default).
+	sched := New(db, executeFn, 100*time.Millisecond)
+	sched.maxConcurrent = make(chan struct{}, 2)
+	sched.Start()
+	time.Sleep(500 * time.Millisecond)
+	sched.Stop()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if maxConcurrent > 2 {
+		t.Errorf("expected max 2 concurrent executions, got %d", maxConcurrent)
+	}
+}
+
+func TestSanitizeError(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		envToken string
+		want     string
+	}{
+		{
+			name:     "no sensitive data",
+			input:    "connection refused",
+			envToken: "",
+			want:     "connection refused",
+		},
+		{
+			name:     "redacts NATS token",
+			input:    "connecting to NATS: auth error with token secrettoken123",
+			envToken: "secrettoken123",
+			want:     "connecting to NATS: auth error with token [REDACTED]",
+		},
+		{
+			name:     "redacts nats URL credentials",
+			input:    "connecting to nats://mytoken@localhost:4222 failed",
+			envToken: "",
+			want:     "connecting to nats://[REDACTED]@localhost:4222 failed",
+		},
+		{
+			name:     "redacts both token and URL",
+			input:    "connecting to nats://secret@host:4222 with token secret",
+			envToken: "secret",
+			want:     "connecting to nats://[REDACTED]@host:4222 with token [REDACTED]",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.envToken != "" {
+				t.Setenv("NATS_AUTH_TOKEN", tt.envToken)
+			}
+			got := sanitizeError(tt.input)
+			if got != tt.want {
+				t.Errorf("sanitizeError() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExecutor_Execute_PromptTooLarge(t *testing.T) {
+	db, err := models.InitDB(":memory:")
+	if err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+
+	team := models.Team{ID: "team-big", Name: "big-prompt", Status: models.TeamStatusStopped, Runtime: "docker"}
+	db.Create(&team)
+
+	largePrompt := strings.Repeat("x", MaxPromptSize+1)
+	schedule := models.Schedule{
+		ID:             "sched-big",
+		Name:           "big-prompt",
+		TeamID:         "team-big",
+		Prompt:         largePrompt,
+		CronExpression: "* * * * *",
+		Timezone:       "UTC",
+		Enabled:        true,
+		Status:         models.ScheduleStatusRunning,
+	}
+	db.Create(&schedule)
+
+	executor := &Executor{
+		DB:      db,
+		Timeout: 10 * time.Second,
+	}
+
+	executor.Execute(context.Background(), schedule)
+
+	// No ScheduleRun should be created — the executor rejects early.
+	var runs []models.ScheduleRun
+	db.Where("schedule_id = ?", "sched-big").Find(&runs)
+	if len(runs) != 0 {
+		t.Errorf("expected 0 runs for oversized prompt, got %d", len(runs))
+	}
+
+	// The schedule should be in error status.
+	var updated models.Schedule
+	db.First(&updated, "id = ?", "sched-big")
+	if updated.Status != models.ScheduleStatusError {
+		t.Errorf("expected schedule status 'error', got %q", updated.Status)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -19,6 +20,9 @@ import (
 
 // DefaultTimeout is the default schedule execution timeout (1 hour).
 const DefaultTimeout = time.Hour
+
+// MaxPromptSize is the maximum allowed prompt length in characters.
+const MaxPromptSize = 50000
 
 // Executor handles the lifecycle of a scheduled execution:
 // create run → deploy team → send prompt → monitor → record result → stop team.
@@ -66,6 +70,15 @@ func NewExecutor(db *gorm.DB, rt runtime.AgentRuntime) *Executor {
 // Execute runs a scheduled task: deploy team, send prompt, wait for completion,
 // and tear down. It creates a ScheduleRun record and always cleans up.
 func (e *Executor) Execute(ctx context.Context, schedule models.Schedule) {
+	// H2 FIX: Validate prompt size before starting execution.
+	if len(schedule.Prompt) > MaxPromptSize {
+		slog.Error("executor: prompt exceeds maximum size",
+			"schedule_id", schedule.ID, "prompt_length", len(schedule.Prompt),
+			"max_size", MaxPromptSize)
+		e.markScheduleError(schedule.ID, fmt.Sprintf("prompt size %d exceeds maximum %d", len(schedule.Prompt), MaxPromptSize))
+		return
+	}
+
 	runID := uuid.New().String()
 	now := time.Now()
 
@@ -109,7 +122,8 @@ func (e *Executor) Execute(ctx context.Context, schedule models.Schedule) {
 				"schedule_id", schedule.ID, "run_id", runID)
 		} else {
 			runUpdates["status"] = models.ScheduleRunStatusFailed
-			runUpdates["error"] = err.Error()
+			// H3+H4 FIX: Sanitize error before storing in DB.
+			runUpdates["error"] = sanitizeError(err.Error())
 			slog.Error("executor: schedule execution failed",
 				"schedule_id", schedule.ID, "run_id", runID, "error", err)
 		}
@@ -397,4 +411,25 @@ func (e *Executor) markScheduleError(scheduleID, errMsg string) {
 	e.DB.Model(&models.Schedule{}).Where("id = ?", scheduleID).
 		Update("status", models.ScheduleStatusError)
 	slog.Error("executor: schedule error", "schedule_id", scheduleID, "error", errMsg)
+}
+
+// sanitizeError removes sensitive information from error messages before
+// storing them in the database. It redacts tokens, URLs with credentials,
+// and internal paths.
+func sanitizeError(errMsg string) string {
+	// Redact NATS auth tokens.
+	if token := os.Getenv("NATS_AUTH_TOKEN"); token != "" && len(token) > 4 {
+		errMsg = strings.ReplaceAll(errMsg, token, "[REDACTED]")
+	}
+
+	// Redact nats:// URLs that may contain credentials.
+	// Pattern: nats://token@host:port → nats://[REDACTED]@host:port
+	if idx := strings.Index(errMsg, "nats://"); idx >= 0 {
+		rest := errMsg[idx+7:]
+		if atIdx := strings.Index(rest, "@"); atIdx >= 0 {
+			errMsg = errMsg[:idx+7] + "[REDACTED]" + rest[atIdx:]
+		}
+	}
+
+	return errMsg
 }

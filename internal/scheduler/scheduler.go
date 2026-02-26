@@ -2,7 +2,10 @@ package scheduler
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -11,15 +14,19 @@ import (
 	"github.com/helmcode/agent-crew/internal/models"
 )
 
+// DefaultMaxConcurrent is the default maximum number of concurrent schedule executions.
+const DefaultMaxConcurrent = 10
+
 // ExecuteFunc is the callback invoked when a schedule is due.
 // It receives the schedule that should be executed.
 type ExecuteFunc func(ctx context.Context, schedule models.Schedule)
 
 // Scheduler checks for due schedules every tick interval and triggers execution.
 type Scheduler struct {
-	db       *gorm.DB
-	execute  ExecuteFunc
-	interval time.Duration
+	db             *gorm.DB
+	execute        ExecuteFunc
+	interval       time.Duration
+	maxConcurrent  chan struct{} // Semaphore to limit concurrent executions.
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -28,14 +35,25 @@ type Scheduler struct {
 
 // New creates a new Scheduler. The execute function is called for each schedule
 // that is due. The scheduler ticks every interval (default 60s if zero).
+// The maximum number of concurrent executions can be set via the
+// SCHEDULER_MAX_CONCURRENT environment variable (default 10).
 func New(db *gorm.DB, execute ExecuteFunc, interval time.Duration) *Scheduler {
 	if interval <= 0 {
 		interval = 60 * time.Second
 	}
+
+	maxConcurrent := DefaultMaxConcurrent
+	if envMax := os.Getenv("SCHEDULER_MAX_CONCURRENT"); envMax != "" {
+		if n, err := strconv.Atoi(envMax); err == nil && n > 0 {
+			maxConcurrent = n
+		}
+	}
+
 	return &Scheduler{
-		db:       db,
-		execute:  execute,
-		interval: interval,
+		db:            db,
+		execute:       execute,
+		interval:      interval,
+		maxConcurrent: make(chan struct{}, maxConcurrent),
 	}
 }
 
@@ -95,12 +113,34 @@ func (s *Scheduler) tick() {
 
 		slog.Info("scheduler: schedule is due", "id", sched.ID, "name", sched.Name)
 
-		// Update status to running and set last_run_at.
-		if err := s.db.Model(&sched).Updates(map[string]interface{}{
-			"status":      models.ScheduleStatusRunning,
-			"last_run_at": now,
-		}).Error; err != nil {
-			slog.Error("scheduler: failed to update schedule status", "id", sched.ID, "error", err)
+		// C2 FIX: Atomic claim — only update if status is still idle.
+		// This prevents double-fire when two ticks overlap.
+		result := s.db.Model(&models.Schedule{}).
+			Where("id = ? AND status = ?", sched.ID, models.ScheduleStatusIdle).
+			Updates(map[string]interface{}{
+				"status":      models.ScheduleStatusRunning,
+				"last_run_at": now,
+			})
+		if result.Error != nil {
+			slog.Error("scheduler: failed to claim schedule", "id", sched.ID, "error", result.Error)
+			continue
+		}
+		if result.RowsAffected == 0 {
+			// Another tick already claimed this schedule.
+			slog.Info("scheduler: schedule already claimed by another tick", "id", sched.ID)
+			continue
+		}
+
+		// C3 FIX: Concurrency limiter — try to acquire a slot.
+		select {
+		case s.maxConcurrent <- struct{}{}:
+			// Slot acquired.
+		default:
+			// All slots busy — revert schedule to idle so it can be picked up next tick.
+			slog.Warn("scheduler: max concurrent executions reached, skipping",
+				"id", sched.ID, "name", sched.Name)
+			s.db.Model(&models.Schedule{}).Where("id = ?", sched.ID).
+				Update("status", models.ScheduleStatusIdle)
 			continue
 		}
 
@@ -109,6 +149,19 @@ func (s *Scheduler) tick() {
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
+			defer func() { <-s.maxConcurrent }() // Release semaphore slot.
+
+			// C1 FIX: Panic recovery — reset schedule status on panic.
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("scheduler: panic during execution",
+						"id", schedCopy.ID, "name", schedCopy.Name,
+						"panic", fmt.Sprintf("%v", r))
+					s.db.Model(&models.Schedule{}).Where("id = ?", schedCopy.ID).
+						Update("status", models.ScheduleStatusIdle)
+				}
+			}()
+
 			s.execute(s.ctx, schedCopy)
 
 			// After execution, update next_run_at.
