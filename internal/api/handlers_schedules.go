@@ -1,6 +1,7 @@
 package api
 
 import (
+	"os"
 	"strconv"
 	"time"
 
@@ -9,6 +10,17 @@ import (
 
 	"github.com/helmcode/agent-crew/internal/models"
 )
+
+// GetScheduleConfig returns the schedule configuration visible to the frontend.
+func (s *Server) GetScheduleConfig(c *fiber.Ctx) error {
+	timeout := "1h"
+	if v := os.Getenv("SCHEDULE_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			timeout = d.String()
+		}
+	}
+	return c.JSON(fiber.Map{"timeout": timeout})
+}
 
 // ListSchedules returns all schedules with their associated team name.
 func (s *Server) ListSchedules(c *fiber.Ctx) error {

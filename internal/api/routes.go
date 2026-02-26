@@ -38,6 +38,7 @@ func (s *Server) registerRoutes() {
 
 	// Schedules.
 	schedules := api.Group("/schedules")
+	schedules.Get("/config", s.GetScheduleConfig)
 	schedules.Get("/", s.ListSchedules)
 	schedules.Post("/", s.CreateSchedule)
 	schedules.Get("/:id", s.GetSchedule)
