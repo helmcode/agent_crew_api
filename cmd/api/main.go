@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -66,10 +65,9 @@ func main() {
 	srv.ReconnectRelays()
 
 	// Start scheduler for cron-based schedule execution.
-	sched := scheduler.New(db, func(ctx context.Context, schedule models.Schedule) {
-		slog.Info("schedule execution triggered", "id", schedule.ID, "name", schedule.Name)
-		// TODO: implement executeSchedule in Task 4 (deploy team, send prompt, monitor, teardown).
-	}, 0)
+	executor := scheduler.NewExecutor(db, rt)
+	executor.LoadSettingsEnvFunc = srv.LoadSettingsEnv
+	sched := scheduler.New(db, executor.Execute, 0)
 	sched.Start()
 
 	// Start server in background.

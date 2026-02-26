@@ -199,7 +199,7 @@ func TestLoadSettingsEnv_PrimaryKeys(t *testing.T) {
 	// Set API key in settings.
 	srv.db.Create(&models.Settings{Key: "ANTHROPIC_API_KEY", Value: "sk-test-123"})
 
-	env := srv.loadSettingsEnv()
+	env := srv.LoadSettingsEnv()
 
 	if env["ANTHROPIC_API_KEY"] != "sk-test-123" {
 		t.Errorf("ANTHROPIC_API_KEY: got %q, want 'sk-test-123'", env["ANTHROPIC_API_KEY"])
@@ -211,7 +211,7 @@ func TestLoadSettingsEnv_OAuthToken(t *testing.T) {
 
 	srv.db.Create(&models.Settings{Key: "CLAUDE_CODE_OAUTH_TOKEN", Value: "oauth-abc"})
 
-	env := srv.loadSettingsEnv()
+	env := srv.LoadSettingsEnv()
 
 	if env["CLAUDE_CODE_OAUTH_TOKEN"] != "oauth-abc" {
 		t.Errorf("CLAUDE_CODE_OAUTH_TOKEN: got %q, want 'oauth-abc'", env["CLAUDE_CODE_OAUTH_TOKEN"])
@@ -224,7 +224,7 @@ func TestLoadSettingsEnv_AliasMapping(t *testing.T) {
 	// Set the alias key (ANTHROPIC_AUTH_TOKEN maps to CLAUDE_CODE_OAUTH_TOKEN).
 	srv.db.Create(&models.Settings{Key: "ANTHROPIC_AUTH_TOKEN", Value: "alias-token"})
 
-	env := srv.loadSettingsEnv()
+	env := srv.LoadSettingsEnv()
 
 	// Should be mapped to the target key.
 	if env["CLAUDE_CODE_OAUTH_TOKEN"] != "alias-token" {
@@ -239,7 +239,7 @@ func TestLoadSettingsEnv_PrimaryOverridesAlias(t *testing.T) {
 	srv.db.Create(&models.Settings{Key: "CLAUDE_CODE_OAUTH_TOKEN", Value: "primary-token"})
 	srv.db.Create(&models.Settings{Key: "ANTHROPIC_AUTH_TOKEN", Value: "alias-token"})
 
-	env := srv.loadSettingsEnv()
+	env := srv.LoadSettingsEnv()
 
 	// Primary key should take precedence.
 	if env["CLAUDE_CODE_OAUTH_TOKEN"] != "primary-token" {
@@ -250,7 +250,7 @@ func TestLoadSettingsEnv_PrimaryOverridesAlias(t *testing.T) {
 func TestLoadSettingsEnv_Empty(t *testing.T) {
 	srv, _ := setupTestServer(t)
 
-	env := srv.loadSettingsEnv()
+	env := srv.LoadSettingsEnv()
 
 	if len(env) != 0 {
 		t.Errorf("expected empty map, got %v", env)

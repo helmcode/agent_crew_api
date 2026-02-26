@@ -224,7 +224,7 @@ func (s *Server) deployTeamAsync(team models.Team) {
 	defer cancel()
 
 	// Load settings from DB to pass as environment variables to agent containers.
-	envFromSettings := s.loadSettingsEnv()
+	envFromSettings := s.LoadSettingsEnv()
 
 	// Deploy infrastructure.
 	infraCfg := runtime.InfraConfig{
@@ -441,10 +441,10 @@ func (s *Server) deployTeamAsync(team models.Team) {
 	s.startTeamRelay(team.ID, team.Name)
 }
 
-// loadSettingsEnv reads all settings from the database and returns them as a
+// LoadSettingsEnv reads all settings from the database and returns them as a
 // string map suitable for passing to AgentConfig.Env. Secret values are
 // decrypted so agent containers receive the real values.
-func (s *Server) loadSettingsEnv() map[string]string {
+func (s *Server) LoadSettingsEnv() map[string]string {
 	env := make(map[string]string)
 
 	var settings []models.Settings
