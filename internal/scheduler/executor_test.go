@@ -419,3 +419,146 @@ func TestNewExecutor_DefaultTimeout(t *testing.T) {
 		t.Errorf("expected default timeout %v, got %v", DefaultTimeout, executor.Timeout)
 	}
 }
+
+func TestExecutor_Execute_StoresPromptAndResponse(t *testing.T) {
+	db, err := models.InitDB(":memory:")
+	if err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+
+	team := models.Team{
+		ID:      "team-ex7",
+		Name:    "store-team",
+		Status:  models.TeamStatusStopped,
+		Runtime: "docker",
+	}
+	db.Create(&team)
+	db.Create(&models.Agent{
+		ID:     "agent-ex7",
+		TeamID: "team-ex7",
+		Name:   "leader",
+		Role:   models.AgentRoleLeader,
+	})
+
+	schedule := models.Schedule{
+		ID:             "sched-ex7",
+		Name:           "store-test",
+		TeamID:         "team-ex7",
+		Prompt:         "What is 2+2?",
+		CronExpression: "* * * * *",
+		Timezone:       "UTC",
+		Enabled:        true,
+		Status:         models.ScheduleStatusRunning,
+	}
+	db.Create(&schedule)
+
+	executor := &Executor{
+		DB:      db,
+		Timeout: 30 * time.Second,
+		DeployTeamFunc: func(ctx context.Context, team models.Team) error {
+			db.Model(&team).Update("status", models.TeamStatusRunning)
+			return nil
+		},
+		StopTeamFunc: func(ctx context.Context, team models.Team) error {
+			db.Model(&team).Update("status", models.TeamStatusStopped)
+			return nil
+		},
+		SendPromptFunc: func(ctx context.Context, teamName, message string) error {
+			return nil
+		},
+		WaitForResponseFunc: func(ctx context.Context, teamName string) error {
+			return nil
+		},
+	}
+
+	executor.Execute(context.Background(), schedule)
+
+	var runs []models.ScheduleRun
+	db.Where("schedule_id = ?", "sched-ex7").Find(&runs)
+	if len(runs) != 1 {
+		t.Fatalf("expected 1 run, got %d", len(runs))
+	}
+	if runs[0].PromptSent != "What is 2+2?" {
+		t.Errorf("expected prompt_sent 'What is 2+2?', got %q", runs[0].PromptSent)
+	}
+}
+
+func TestExecutor_Execute_SanitizesTeamName(t *testing.T) {
+	db, err := models.InitDB(":memory:")
+	if err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+
+	// Use a display name with spaces to verify sanitization.
+	team := models.Team{
+		ID:      "team-ex8",
+		Name:    "My Test Team",
+		Status:  models.TeamStatusRunning,
+		Runtime: "docker",
+	}
+	db.Create(&team)
+	db.Create(&models.Agent{
+		ID:     "agent-ex8",
+		TeamID: "team-ex8",
+		Name:   "leader",
+		Role:   models.AgentRoleLeader,
+	})
+
+	schedule := models.Schedule{
+		ID:             "sched-ex8",
+		Name:           "sanitize-test",
+		TeamID:         "team-ex8",
+		Prompt:         "test prompt",
+		CronExpression: "* * * * *",
+		Timezone:       "UTC",
+		Enabled:        true,
+		Status:         models.ScheduleStatusRunning,
+	}
+	db.Create(&schedule)
+
+	var capturedTeamName string
+	executor := &Executor{
+		DB:      db,
+		Timeout: 30 * time.Second,
+		StopTeamFunc: func(ctx context.Context, team models.Team) error {
+			return nil
+		},
+		SendPromptFunc: func(ctx context.Context, teamName, message string) error {
+			capturedTeamName = teamName
+			return nil
+		},
+		WaitForResponseFunc: func(ctx context.Context, teamName string) error {
+			return nil
+		},
+	}
+
+	executor.Execute(context.Background(), schedule)
+
+	// The team name passed to SendPromptFunc should be sanitized.
+	expected := "my-test-team"
+	if capturedTeamName != expected {
+		t.Errorf("expected sanitized team name %q, got %q", expected, capturedTeamName)
+	}
+}
+
+func TestSanitizeTeamName(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"My Team", "my-team"},
+		{"simple", "simple"},
+		{"Hello  World", "hello-world"},
+		{"test@team!", "testteam"},
+		{"", "team"},
+		{"  spaces  ", "spaces"},
+		{"UPPER-case", "upper-case"},
+	}
+
+	for _, tt := range tests {
+		got := sanitizeTeamName(tt.input)
+		if got != tt.expected {
+			t.Errorf("sanitizeTeamName(%q) = %q, want %q", tt.input, got, tt.expected)
+		}
+	}
+}

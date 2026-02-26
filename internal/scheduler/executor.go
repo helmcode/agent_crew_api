@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -188,12 +189,29 @@ func (e *Executor) executeWithCleanup(ctx context.Context, schedule models.Sched
 		}
 	}()
 
-	// Send the prompt and wait for the leader's response via direct NATS
-	// subscription. This avoids depending on a relay to persist messages
-	// to TaskLog and ensures we only capture the response to our own prompt.
-	slog.Info("executor: sending prompt", "team_id", team.ID, "prompt_length", len(schedule.Prompt))
-	if err := e.sendPromptAndWait(ctx, team.Name, schedule.Prompt); err != nil {
+	// FIX #1: Sanitize team name for NATS subjects (must match sidecar/bridge naming).
+	sanitizedName := sanitizeTeamName(team.Name)
+	slog.Info("executor: sending prompt",
+		"team_id", team.ID,
+		"team_name", team.Name,
+		"sanitized_name", sanitizedName,
+		"prompt_length", len(schedule.Prompt),
+	)
+
+	// Store prompt in the run record.
+	e.DB.Model(&models.ScheduleRun{}).Where("id = ?", runID).
+		Update("prompt_sent", schedule.Prompt)
+
+	// Send prompt and wait for response, capturing the response text.
+	responseText, err := e.sendPromptAndWait(ctx, sanitizedName, schedule.Prompt, runID)
+	if err != nil {
 		return fmt.Errorf("prompt/response: %w", err)
+	}
+
+	// Store the response in the run record.
+	if responseText != "" {
+		e.DB.Model(&models.ScheduleRun{}).Where("id = ?", runID).
+			Update("response_received", responseText)
 	}
 
 	return nil
@@ -293,22 +311,23 @@ func (e *Executor) stopTeam(ctx context.Context, team models.Team) error {
 // sendPromptAndWait connects to the team's NATS, subscribes to the leader
 // channel for a response, sends the prompt, and blocks until a
 // TypeLeaderResponse is received or the context expires.
-// This approach avoids needing a relay to persist messages in TaskLog.
-func (e *Executor) sendPromptAndWait(ctx context.Context, teamName, message string) error {
+// Returns the response text (result or error) from the leader.
+// teamName must already be sanitized for NATS subject compatibility.
+func (e *Executor) sendPromptAndWait(ctx context.Context, teamName, message, runID string) (string, error) {
 	// If both injectable functions are provided, use them (for testing).
 	if e.SendPromptFunc != nil && e.WaitForResponseFunc != nil {
 		if err := e.SendPromptFunc(ctx, teamName, message); err != nil {
-			return fmt.Errorf("sending prompt: %w", err)
+			return "", fmt.Errorf("sending prompt: %w", err)
 		}
 		if err := e.WaitForResponseFunc(ctx, teamName); err != nil {
-			return fmt.Errorf("waiting for response: %w", err)
+			return "", fmt.Errorf("waiting for response: %w", err)
 		}
-		return nil
+		return "", nil
 	}
 
 	natsURL, err := e.Runtime.GetNATSConnectURL(ctx, teamName)
 	if err != nil {
-		return fmt.Errorf("resolving NATS URL: %w", err)
+		return "", fmt.Errorf("resolving NATS URL: %w", err)
 	}
 
 	token := os.Getenv("NATS_AUTH_TOKEN")
@@ -322,7 +341,7 @@ func (e *Executor) sendPromptAndWait(ctx context.Context, teamName, message stri
 
 	nc, err := nats.Connect(natsURL, opts...)
 	if err != nil {
-		return fmt.Errorf("connecting to NATS: %w", err)
+		return "", fmt.Errorf("connecting to NATS: %w", err)
 	}
 	defer nc.Close()
 
@@ -330,56 +349,86 @@ func (e *Executor) sendPromptAndWait(ctx context.Context, teamName, message stri
 	// missing the response in a race.
 	subject, err := protocol.TeamLeaderChannel(teamName)
 	if err != nil {
-		return fmt.Errorf("building leader channel: %w", err)
+		return "", fmt.Errorf("building leader channel: %w", err)
 	}
 
-	responseCh := make(chan struct{}, 1)
+	slog.Info("executor: subscribing to NATS subject",
+		"subject", subject, "team_name", teamName, "run_id", runID)
+
+	type leaderResult struct {
+		text string
+	}
+	responseCh := make(chan leaderResult, 1)
 	sub, err := nc.Subscribe(subject, func(msg *nats.Msg) {
 		var protoMsg protocol.Message
 		if err := json.Unmarshal(msg.Data, &protoMsg); err != nil {
+			slog.Warn("executor: failed to unmarshal NATS message",
+				"subject", subject, "error", err)
 			return
 		}
+
+		slog.Debug("executor: received NATS message",
+			"subject", subject, "type", protoMsg.Type,
+			"from", protoMsg.From, "to", protoMsg.To)
+
 		if protoMsg.Type == protocol.TypeLeaderResponse {
+			// Extract the response text from the payload.
+			var payload protocol.LeaderResponsePayload
+			responseText := ""
+			if err := json.Unmarshal(protoMsg.Payload, &payload); err == nil {
+				if payload.Error != "" {
+					responseText = "Error: " + payload.Error
+				} else {
+					responseText = payload.Result
+				}
+			}
+
+			slog.Info("executor: received leader response",
+				"subject", subject, "status", payload.Status,
+				"response_length", len(responseText))
+
 			select {
-			case responseCh <- struct{}{}:
+			case responseCh <- leaderResult{text: responseText}:
 			default:
 			}
 		}
 	})
 	if err != nil {
-		return fmt.Errorf("subscribing to leader channel: %w", err)
+		return "", fmt.Errorf("subscribing to leader channel: %w", err)
 	}
 	defer sub.Unsubscribe()
 
-	// Build and send the prompt.
+	// Build and send the prompt with scheduler metadata.
 	protoMsg, err := protocol.NewMessage("scheduler", "leader", protocol.TypeUserMessage, protocol.UserMessagePayload{
-		Content: message,
+		Content:        message,
+		Source:         "scheduler",
+		ScheduledRunID: runID,
 	})
 	if err != nil {
-		return fmt.Errorf("building protocol message: %w", err)
+		return "", fmt.Errorf("building protocol message: %w", err)
 	}
 
 	data, err := json.Marshal(protoMsg)
 	if err != nil {
-		return fmt.Errorf("marshaling message: %w", err)
+		return "", fmt.Errorf("marshaling message: %w", err)
 	}
 
 	if err := nc.Publish(subject, data); err != nil {
-		return fmt.Errorf("publishing prompt: %w", err)
+		return "", fmt.Errorf("publishing prompt: %w", err)
 	}
 	if err := nc.Flush(); err != nil {
-		return fmt.Errorf("flushing prompt: %w", err)
+		return "", fmt.Errorf("flushing prompt: %w", err)
 	}
 
 	slog.Info("executor: prompt sent, waiting for leader response via NATS",
-		"team", teamName, "subject", subject)
+		"team", teamName, "subject", subject, "run_id", runID)
 
 	// Wait for the response or context cancellation.
 	select {
-	case <-responseCh:
-		return nil
+	case result := <-responseCh:
+		return result.text, nil
 	case <-ctx.Done():
-		return ctx.Err()
+		return "", ctx.Err()
 	}
 }
 
@@ -428,6 +477,29 @@ func (e *Executor) markScheduleError(scheduleID, errMsg string) {
 	e.DB.Model(&models.Schedule{}).Where("id = ?", scheduleID).
 		Update("status", models.ScheduleStatusError)
 	slog.Error("executor: schedule error", "schedule_id", scheduleID, "error", errMsg)
+}
+
+// invalidSlugChars matches any character that is not lowercase alphanumeric, hyphen, or underscore.
+var invalidSlugChars = regexp.MustCompile(`[^a-z0-9_-]`)
+
+// sanitizeTeamName converts a display name into a Docker/K8s/NATS-safe slug.
+// This must produce the same output as api.SanitizeName to match the sidecar's naming.
+func sanitizeTeamName(name string) string {
+	s := strings.ToLower(strings.TrimSpace(name))
+	s = strings.ReplaceAll(s, " ", "-")
+	s = invalidSlugChars.ReplaceAllString(s, "")
+	for strings.Contains(s, "--") {
+		s = strings.ReplaceAll(s, "--", "-")
+	}
+	s = strings.Trim(s, "-")
+	if len(s) > 62 {
+		s = s[:62]
+		s = strings.TrimRight(s, "-")
+	}
+	if s == "" {
+		s = "team"
+	}
+	return s
 }
 
 // sanitizeError removes sensitive information from error messages before

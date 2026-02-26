@@ -38,7 +38,9 @@ type Message struct {
 
 // UserMessagePayload carries a free-form user message.
 type UserMessagePayload struct {
-	Content string `json:"content"`
+	Content        string `json:"content"`
+	Source         string `json:"source,omitempty"`          // "chat" or "scheduler"
+	ScheduledRunID string `json:"scheduled_run_id,omitempty"` // Set when source is "scheduler"
 }
 
 // LeaderResponsePayload carries the leader's response back to the user.

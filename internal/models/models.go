@@ -135,9 +135,11 @@ type ScheduleRun struct {
 	StartedAt        time.Time  `json:"started_at"`
 	FinishedAt       *time.Time `json:"finished_at"`
 	// Status: running | success | failed | timeout
-	Status   string `gorm:"size:20;default:'running'" json:"status"`
-	Error    string `gorm:"type:text" json:"error"`
-	Schedule Schedule `gorm:"foreignKey:ScheduleID" json:"-"`
+	Status           string `gorm:"size:20;default:'running'" json:"status"`
+	Error            string `gorm:"type:text" json:"error"`
+	PromptSent       string `gorm:"type:text" json:"prompt_sent"`
+	ResponseReceived string `gorm:"type:text" json:"response_received"`
+	Schedule         Schedule `gorm:"foreignKey:ScheduleID" json:"-"`
 }
 
 // Valid team statuses.
