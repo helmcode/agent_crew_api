@@ -19,7 +19,7 @@ RUN CGO_ENABLED=1 GOOS=linux go build \
 # Runtime stage
 FROM alpine:3.21
 
-RUN apk add --no-cache ca-certificates sqlite-libs curl \
+RUN apk add --no-cache ca-certificates sqlite-libs curl tzdata \
     && addgroup -S agentcrew \
     && adduser -S -G agentcrew agentcrew
 
