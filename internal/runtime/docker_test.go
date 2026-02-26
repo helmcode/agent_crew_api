@@ -74,6 +74,28 @@ func TestTeamNamingConventions(t *testing.T) {
 	}
 }
 
+func TestExtractNATSAuthToken(t *testing.T) {
+	tests := []struct {
+		name     string
+		cmd      []string
+		expected string
+	}{
+		{"with auth token", []string{"--jetstream", "--auth", "mytoken"}, "mytoken"},
+		{"no auth token", []string{"--jetstream"}, ""},
+		{"empty cmd", nil, ""},
+		{"auth flag at end without value", []string{"--jetstream", "--auth"}, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractNATSAuthToken(tt.cmd)
+			if got != tt.expected {
+				t.Errorf("extractNATSAuthToken(%v) = %q, want %q", tt.cmd, got, tt.expected)
+			}
+		})
+	}
+}
+
 func TestAgentContainerName(t *testing.T) {
 	tests := []struct {
 		teamName  string

@@ -168,9 +168,9 @@ func (s *Server) persistSkillStatuses(teamID string, msg protocol.Message) {
 		return
 	}
 
-	// Load all worker agents for this team.
+	// Load all agents (leader + workers) for this team.
 	var agents []models.Agent
-	if err := s.db.Where("team_id = ? AND role = ?", teamID, models.AgentRoleWorker).Find(&agents).Error; err != nil {
+	if err := s.db.Where("team_id = ?", teamID).Find(&agents).Error; err != nil {
 		slog.Error("relay: failed to load team agents for skill distribution", "error", err)
 		return
 	}

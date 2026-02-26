@@ -249,12 +249,19 @@ func (d *DockerRuntime) startNATS(ctx context.Context, teamName, netName string)
 		hasPortBinding := len(bindings) > 0 && bindings[0].HostPort != ""
 
 		if info.State.Running && hasPortBinding {
-			slog.Info("nats container already running with port binding", "name", containerName)
-			return nil
-		}
-
-		// Container exists but either not running or missing port binding — recreate.
-		if info.State.Running && !hasPortBinding {
+			// Verify the auth token matches the current NATS_AUTH_TOKEN.
+			// If it doesn't match, recreate the container to avoid stale auth.
+			expectedToken := os.Getenv("NATS_AUTH_TOKEN")
+			containerToken := extractNATSAuthToken(info.Config.Cmd)
+			if expectedToken != containerToken {
+				slog.Info("nats container auth token mismatch, recreating",
+					"name", containerName)
+			} else {
+				slog.Info("nats container already running with port binding", "name", containerName)
+				return nil
+			}
+		} else if info.State.Running && !hasPortBinding {
+			// Container exists but missing port binding — recreate.
 			slog.Info("nats container missing port binding, recreating", "name", containerName)
 		} else {
 			slog.Info("removing stale nats container", "name", containerName)
@@ -316,6 +323,18 @@ func (d *DockerRuntime) startNATS(ctx context.Context, teamName, netName string)
 
 	slog.Info("nats container started", "id", resp.ID, "name", containerName)
 	return nil
+}
+
+// extractNATSAuthToken extracts the auth token from a NATS container's Cmd args.
+// The token is passed as ["--jetstream", "--auth", "<token>"].
+// Returns empty string if no --auth flag is found.
+func extractNATSAuthToken(cmd []string) string {
+	for i, arg := range cmd {
+		if arg == "--auth" && i+1 < len(cmd) {
+			return cmd[i+1]
+		}
+	}
+	return ""
 }
 
 // DeployAgent creates and starts an agent container.
