@@ -164,8 +164,17 @@ func (s *Scheduler) tick() {
 
 			s.execute(s.ctx, schedCopy)
 
-			// After execution, update next_run_at.
-			nextRun := NextRun(schedCopy.CronExpression, schedCopy.Timezone)
+			// After execution, re-read the schedule from DB to get the latest
+			// cron expression and timezone (user may have edited them during execution).
+			var freshSchedule models.Schedule
+			cronExpr := schedCopy.CronExpression
+			tz := schedCopy.Timezone
+			if err := s.db.First(&freshSchedule, "id = ?", schedCopy.ID).Error; err == nil {
+				cronExpr = freshSchedule.CronExpression
+				tz = freshSchedule.Timezone
+			}
+
+			nextRun := NextRun(cronExpr, tz)
 			updates := map[string]interface{}{
 				"status": models.ScheduleStatusIdle,
 			}

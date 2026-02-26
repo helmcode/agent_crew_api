@@ -406,6 +406,59 @@ func TestScheduler_ConcurrencyLimit(t *testing.T) {
 	}
 }
 
+func TestScheduler_ReReadsCronAfterExecution(t *testing.T) {
+	db, err := models.InitDB(":memory:")
+	if err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+
+	team := models.Team{ID: "team-reread", Name: "reread-team", Status: models.TeamStatusStopped, Runtime: "docker"}
+	db.Create(&team)
+
+	// Start with "* * * * *" (every minute).
+	schedule := models.Schedule{
+		ID:             "sched-reread",
+		Name:           "reread-sched",
+		TeamID:         "team-reread",
+		Prompt:         "test",
+		CronExpression: "* * * * *",
+		Timezone:       "UTC",
+		Enabled:        true,
+		Status:         models.ScheduleStatusIdle,
+	}
+	db.Create(&schedule)
+
+	executeFn := func(ctx context.Context, sched models.Schedule) {
+		// Simulate the user editing the cron DURING execution.
+		db.Model(&models.Schedule{}).Where("id = ?", sched.ID).
+			Update("cron_expression", "0 1 * * *")
+	}
+
+	sched := New(db, executeFn, 100*time.Millisecond)
+	sched.Start()
+	time.Sleep(250 * time.Millisecond)
+	sched.Stop()
+
+	var updated models.Schedule
+	db.First(&updated, "id = ?", "sched-reread")
+
+	// The cron should be the NEW one set during execution.
+	if updated.CronExpression != "0 1 * * *" {
+		t.Errorf("expected cron '0 1 * * *', got %q", updated.CronExpression)
+	}
+
+	// next_run_at should reflect "0 1 * * *" (daily at 01:00), NOT "* * * * *" (next minute).
+	if updated.NextRunAt == nil {
+		t.Fatal("expected next_run_at to be set")
+	}
+	// With "0 1 * * *" the next run should be at minute=0, hour=1.
+	// It must be at least 30 minutes from now (since it won't be within the next minute).
+	if time.Until(*updated.NextRunAt) < 30*time.Minute {
+		t.Errorf("expected next_run_at to be at least 30 min in the future for '0 1 * * *', got %v (in %v)",
+			updated.NextRunAt, time.Until(*updated.NextRunAt))
+	}
+}
+
 func TestSanitizeError(t *testing.T) {
 	tests := []struct {
 		name     string

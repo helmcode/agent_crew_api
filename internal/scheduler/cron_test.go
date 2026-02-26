@@ -191,3 +191,23 @@ func TestNextRun_InvalidTimezone(t *testing.T) {
 		t.Errorf("expected zero time for invalid timezone, got %v", result)
 	}
 }
+
+func TestNextRun_DailyAtOneAM_AtlanticCanary(t *testing.T) {
+	// "0 1 * * *" = daily at 01:00 in Atlantic/Canary.
+	result := NextRun("0 1 * * *", "Atlantic/Canary")
+	if result.IsZero() {
+		t.Fatal("NextRun returned zero time for '0 1 * * *' with Atlantic/Canary")
+	}
+
+	// Convert to local tz and verify hour=1, minute=0.
+	loc, _ := time.LoadLocation("Atlantic/Canary")
+	local := result.In(loc)
+	if local.Hour() != 1 || local.Minute() != 0 {
+		t.Errorf("expected 01:00 in Atlantic/Canary, got %02d:%02d", local.Hour(), local.Minute())
+	}
+
+	// Should be within the next 25 hours.
+	if result.After(time.Now().Add(25 * time.Hour)) {
+		t.Errorf("result too far in the future: %v", result)
+	}
+}
