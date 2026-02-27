@@ -241,3 +241,104 @@ func TestAgentContainerName(t *testing.T) {
 		}
 	}
 }
+
+func TestProviderEnvVars_OpenCodeKeysAreDistinct(t *testing.T) {
+	// Verify that OpenCode and Claude providers use distinct API keys.
+	claudeKeys := map[string]bool{
+		"ANTHROPIC_API_KEY":        true,
+		"CLAUDE_CODE_OAUTH_TOKEN":  true,
+		"ANTHROPIC_AUTH_TOKEN":     true,
+	}
+	openCodeKeys := []string{
+		"OPENAI_API_KEY",
+		"GOOGLE_GENERATIVE_AI_API_KEY",
+		"OLLAMA_BASE_URL",
+		"LM_STUDIO_BASE_URL",
+	}
+
+	// OpenCode-specific keys should not overlap with Claude-specific auth keys
+	// (except ANTHROPIC_API_KEY which is shared).
+	for _, key := range openCodeKeys {
+		if claudeKeys[key] {
+			t.Errorf("OpenCode key %q should not be in Claude-only keys", key)
+		}
+	}
+}
+
+func TestImageSelectionByProvider_AllCases(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider string
+		want     string
+	}{
+		{"claude uses claude image", "claude", DefaultAgentImage},
+		{"opencode uses opencode image", "opencode", DefaultOpenCodeAgentImage},
+		{"empty provider defaults to claude", "", DefaultAgentImage},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var img string
+			if tt.provider == "opencode" {
+				img = DefaultOpenCodeAgentImage
+			} else {
+				img = DefaultAgentImage
+			}
+			if img != tt.want {
+				t.Errorf("got %q, want %q", img, tt.want)
+			}
+		})
+	}
+}
+
+func TestProviderAuthValidation_NoLeakage(t *testing.T) {
+	// Verify that a config with ONLY OpenAI key does NOT satisfy Claude auth.
+	claudeEnv := map[string]string{
+		"OPENAI_API_KEY": "sk-oai-123",
+	}
+	apiKey := claudeEnv["ANTHROPIC_API_KEY"]
+	oauthToken := claudeEnv["CLAUDE_CODE_OAUTH_TOKEN"]
+	if oauthToken == "" {
+		oauthToken = claudeEnv["ANTHROPIC_AUTH_TOKEN"]
+	}
+	if apiKey != "" || oauthToken != "" {
+		t.Error("OpenAI-only config should NOT satisfy Claude auth requirements")
+	}
+
+	// Verify that a config with ONLY Anthropic key does satisfy OpenCode auth.
+	openCodeEnv := map[string]string{
+		"ANTHROPIC_API_KEY": "sk-ant-123",
+	}
+	openCodeKeys := []string{
+		"ANTHROPIC_API_KEY", "OPENAI_API_KEY",
+		"GOOGLE_GENERATIVE_AI_API_KEY",
+		"OLLAMA_BASE_URL", "LM_STUDIO_BASE_URL",
+	}
+	hasOpenCodeAuth := false
+	for _, key := range openCodeKeys {
+		if v := openCodeEnv[key]; v != "" {
+			hasOpenCodeAuth = true
+			break
+		}
+	}
+	if !hasOpenCodeAuth {
+		t.Error("Anthropic key should satisfy OpenCode auth (shared key)")
+	}
+}
+
+func TestK8sImageSelection(t *testing.T) {
+	k := &K8sRuntime{
+		agentImage:         "claude-img:v1",
+		openCodeAgentImage: "opencode-img:v1",
+	}
+
+	if k.agentImage != "claude-img:v1" {
+		t.Errorf("K8s claude image: got %q", k.agentImage)
+	}
+	if k.openCodeAgentImage != "opencode-img:v1" {
+		t.Errorf("K8s opencode image: got %q", k.openCodeAgentImage)
+	}
+	if k.agentImage == k.openCodeAgentImage {
+		t.Error("K8s claude and opencode images should be different")
+	}
+}

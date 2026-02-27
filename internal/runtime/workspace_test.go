@@ -696,6 +696,130 @@ func TestSetupOpenCodeWorkspace_NoWorkers(t *testing.T) {
 	}
 }
 
+// --- OpenCode global skills merge tests ---
+
+func TestGenerateOpenCodeSubAgentContent_GlobalSkillsMerge(t *testing.T) {
+	agent := SubAgentInfo{
+		Name:   "worker",
+		Skills: json.RawMessage(`["read-files"]`),
+	}
+	globalSkills := []protocol.SkillConfig{
+		{RepoURL: "https://github.com/org/skills", SkillName: "web-search"},
+		{RepoURL: "https://github.com/org/skills", SkillName: "code-review"},
+	}
+
+	content := GenerateOpenCodeSubAgentContent(agent, globalSkills)
+
+	// Agent's own skill should be present.
+	if !contains(content, "read-files") {
+		t.Error("missing agent's own skill 'read-files'")
+	}
+	// Global skills should be merged into the body.
+	if !contains(content, "web-search") {
+		t.Error("missing global skill 'web-search'")
+	}
+	if !contains(content, "code-review") {
+		t.Error("missing global skill 'code-review'")
+	}
+}
+
+func TestGenerateOpenCodeSubAgentContent_GlobalSkillsDeduplication(t *testing.T) {
+	// Agent and global have the same skill — should not be duplicated.
+	agent := SubAgentInfo{
+		Name: "worker",
+		Skills: json.RawMessage(`[{"repo_url":"https://github.com/org/skills","skill_name":"web-search"}]`),
+	}
+	globalSkills := []protocol.SkillConfig{
+		{RepoURL: "https://github.com/org/skills", SkillName: "web-search"},
+	}
+
+	content := GenerateOpenCodeSubAgentContent(agent, globalSkills)
+
+	// Count occurrences of "web-search" in the Skills section.
+	skillsIdx := 0
+	for i := 0; i <= len(content)-len("## Skills"); i++ {
+		if content[i:i+len("## Skills")] == "## Skills" {
+			skillsIdx = i
+			break
+		}
+	}
+	if skillsIdx == 0 {
+		t.Fatal("missing ## Skills section")
+	}
+	skillsSection := content[skillsIdx:]
+	count := 0
+	for i := 0; i <= len(skillsSection)-len("web-search"); i++ {
+		if skillsSection[i:i+len("web-search")] == "web-search" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected 'web-search' to appear once in skills section, got %d", count)
+	}
+}
+
+func TestSetupOpenCodeWorkspace_WithGlobalSkills(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	leader := SubAgentInfo{
+		Name:     "lead",
+		ClaudeMD: "Lead the team.",
+	}
+	workers := []SubAgentInfo{
+		{Name: "worker-1", Description: "Backend developer"},
+	}
+	globalSkills := []protocol.SkillConfig{
+		{RepoURL: "https://github.com/org/skills", SkillName: "shared-skill"},
+	}
+
+	err := SetupOpenCodeWorkspace(tmpDir, "skill-team", leader, workers, globalSkills)
+	if err != nil {
+		t.Fatalf("SetupOpenCodeWorkspace: %v", err)
+	}
+
+	// Verify worker file includes global skill.
+	w1, err := os.ReadFile(filepath.Join(tmpDir, ".opencode", "agents", "worker-1.md"))
+	if err != nil {
+		t.Fatalf("reading worker-1.md: %v", err)
+	}
+	if !contains(string(w1), "shared-skill") {
+		t.Error("worker-1.md should contain global skill 'shared-skill'")
+	}
+}
+
+func TestGenerateOpenCodeSubAgentContent_NoGlobalSkills(t *testing.T) {
+	agent := SubAgentInfo{
+		Name:   "worker",
+		Skills: json.RawMessage(`["read-files"]`),
+	}
+
+	// No global skills — only agent's own skills should appear.
+	content := GenerateOpenCodeSubAgentContent(agent, nil)
+
+	if !contains(content, "read-files") {
+		t.Error("missing agent skill 'read-files'")
+	}
+	if !contains(content, "## Skills") {
+		t.Error("should have skills section for agent's own skills")
+	}
+}
+
+func TestGenerateOpenCodeAgentsMD_LeaderWithSkills(t *testing.T) {
+	leader := SubAgentInfo{
+		Name:   "lead",
+		Skills: json.RawMessage(`[{"repo_url":"https://github.com/org/skills","skill_name":"web-search"}]`),
+	}
+
+	md := GenerateOpenCodeAgentsMD("test-team", leader, nil)
+
+	if !contains(md, "## Skills") {
+		t.Error("missing Skills section")
+	}
+	if !contains(md, "web-search") {
+		t.Error("missing leader skill")
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && containsStr(s, substr)
 }

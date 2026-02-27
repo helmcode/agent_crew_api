@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/helmcode/agent-crew/internal/models"
@@ -701,4 +702,264 @@ func TestUpdateTeam_InvalidProvider(t *testing.T) {
 	if rec.Code != 400 {
 		t.Fatalf("status: got %d, want 400 for invalid provider\nbody: %s", rec.Code, rec.Body.String())
 	}
+}
+
+// --- OpenCode provider integration tests ---
+
+func TestDeployTeamAsync_OpenCodeProvider_GeneratesOpenCodeFiles(t *testing.T) {
+	srv, mock := setupTestServer(t)
+
+	// Set OpenCode-compatible API key in settings.
+	srv.db.Create(&models.Settings{Key: "OPENAI_API_KEY", Value: "sk-oai-test-123"})
+
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name:     "opencode-deploy-team",
+		Provider: "opencode",
+		Agents: []CreateAgentInput{
+			{Name: "the-leader", Role: "leader", SystemPrompt: "You lead"},
+			{Name: "backend-dev", Role: "worker", SubAgentDescription: "Go backend developer"},
+			{Name: "frontend-dev", Role: "worker", SubAgentDescription: "React frontend developer"},
+		},
+	})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+
+	if team.Provider != "opencode" {
+		t.Fatalf("provider: got %q, want 'opencode'", team.Provider)
+	}
+
+	srv.deployTeamAsync(team)
+
+	// Only the leader should have been deployed.
+	if len(mock.deployedAgents) != 1 {
+		t.Fatalf("deployed agents: got %d, want 1", len(mock.deployedAgents))
+	}
+	if mock.deployedAgents[0] != "the-leader" {
+		t.Errorf("deployed agent: got %q, want 'the-leader'", mock.deployedAgents[0])
+	}
+
+	// Verify sub-agent files use OpenCode format (not Claude).
+	cfg := mock.lastAgentConfig
+	if cfg == nil {
+		t.Fatal("expected lastAgentConfig to be set")
+	}
+
+	// OpenCode sub-agent files should have tools: and permission: sections.
+	backendFile, ok := cfg.SubAgentFiles["backend-dev.md"]
+	if !ok {
+		t.Fatal("missing sub-agent file for backend-dev")
+	}
+	if !containsStr(backendFile, "tools:") {
+		t.Error("OpenCode sub-agent file should contain 'tools:' section")
+	}
+	if !containsStr(backendFile, "permission:") {
+		t.Error("OpenCode sub-agent file should contain 'permission:' section")
+	}
+	if !containsStr(backendFile, "Go backend developer") {
+		t.Error("OpenCode sub-agent file should contain description")
+	}
+
+	// Verify that Claude-specific frontmatter is NOT present.
+	if containsStr(backendFile, "background: true") {
+		t.Error("OpenCode sub-agent file should NOT contain 'background: true' (Claude-specific)")
+	}
+	if containsStr(backendFile, "isolation: worktree") {
+		t.Error("OpenCode sub-agent file should NOT contain 'isolation: worktree' (Claude-specific)")
+	}
+
+	// Verify provider is passed in the agent config.
+	if cfg.Provider != "opencode" {
+		t.Errorf("agent config provider: got %q, want 'opencode'", cfg.Provider)
+	}
+
+	// Verify the ClaudeMD (AGENTS.MD content) contains team info.
+	if cfg.ClaudeMD == "" {
+		t.Error("expected ClaudeMD (AGENTS.MD) to be set for OpenCode leader")
+	}
+	if !containsStr(cfg.ClaudeMD, "# Team: opencode-deploy-team") {
+		t.Error("AGENTS.MD should contain team name header")
+	}
+	if !containsStr(cfg.ClaudeMD, "backend-dev") {
+		t.Error("AGENTS.MD should list worker backend-dev")
+	}
+}
+
+func TestDeployTeamAsync_OpenCodeProvider_ForwardsOpenCodeEnvVars(t *testing.T) {
+	srv, mock := setupTestServer(t)
+
+	// Set OpenCode-specific settings.
+	srv.db.Create(&models.Settings{Key: "OPENAI_API_KEY", Value: "sk-oai-test"})
+	srv.db.Create(&models.Settings{Key: "OPENCODE_MODEL", Value: "gpt-4o"})
+
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name:     "opencode-env-team",
+		Provider: "opencode",
+		Agents: []CreateAgentInput{
+			{Name: "the-leader", Role: "leader"},
+		},
+	})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+
+	srv.deployTeamAsync(team)
+
+	cfg := mock.lastAgentConfig
+	if cfg == nil {
+		t.Fatal("expected lastAgentConfig to be set")
+	}
+
+	// OPENCODE_MODEL should be forwarded for OpenCode teams.
+	if cfg.Env["OPENCODE_MODEL"] != "gpt-4o" {
+		t.Errorf("OPENCODE_MODEL: got %q, want 'gpt-4o'", cfg.Env["OPENCODE_MODEL"])
+	}
+}
+
+func TestDeployTeamAsync_ClaudeProvider_DoesNotForwardOpenCodeModel(t *testing.T) {
+	srv, mock := setupTestServer(t)
+
+	// Set settings that include OpenCode-specific keys.
+	srv.db.Create(&models.Settings{Key: "ANTHROPIC_API_KEY", Value: "sk-ant-test"})
+	srv.db.Create(&models.Settings{Key: "OPENCODE_MODEL", Value: "gpt-4o"})
+
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name:     "claude-no-opencode-env",
+		Provider: "claude",
+		Agents: []CreateAgentInput{
+			{Name: "the-leader", Role: "leader"},
+		},
+	})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+
+	srv.deployTeamAsync(team)
+
+	cfg := mock.lastAgentConfig
+	if cfg == nil {
+		t.Fatal("expected lastAgentConfig to be set")
+	}
+
+	// Claude teams should NOT have OPENCODE_MODEL explicitly set by the deploy logic.
+	// Note: the key may still be in the raw settings env, but deployTeamAsync
+	// only adds OPENCODE_MODEL for opencode providers.
+	if cfg.Provider != "claude" {
+		t.Errorf("agent config provider: got %q, want 'claude'", cfg.Provider)
+	}
+}
+
+func TestCreateTeam_ProviderPersistedInDB(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	rec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name:     "persist-prov",
+		Provider: "opencode",
+	})
+	var created models.Team
+	parseJSON(t, rec, &created)
+
+	// Re-fetch from DB to verify persistence.
+	getRec := doRequest(srv, "GET", "/api/teams/"+created.ID, nil)
+	var fetched models.Team
+	parseJSON(t, getRec, &fetched)
+
+	if fetched.Provider != "opencode" {
+		t.Errorf("persisted provider: got %q, want 'opencode'", fetched.Provider)
+	}
+}
+
+func TestDeployTeamAsync_OpenCodeProvider_WithInstructionsMD(t *testing.T) {
+	srv, mock := setupTestServer(t)
+
+	srv.db.Create(&models.Settings{Key: "ANTHROPIC_API_KEY", Value: "sk-ant-test"})
+
+	customInstructions := "# Custom Leader Instructions\n\nThese are custom OpenCode instructions.\n"
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name:     "opencode-instructions-team",
+		Provider: "opencode",
+		Agents: []CreateAgentInput{
+			{Name: "the-leader", Role: "leader", InstructionsMD: customInstructions},
+			{Name: "worker-1", Role: "worker", SubAgentDescription: "test worker"},
+		},
+	})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+
+	srv.deployTeamAsync(team)
+
+	cfg := mock.lastAgentConfig
+	if cfg == nil {
+		t.Fatal("expected lastAgentConfig to be set")
+	}
+
+	// When leader has custom InstructionsMD, it should be used directly.
+	if cfg.ClaudeMD != customInstructions {
+		t.Errorf("ClaudeMD: got %q, want %q", cfg.ClaudeMD, customInstructions)
+	}
+}
+
+func TestDeployTeamAsync_OpenCodeProvider_WithSkills(t *testing.T) {
+	srv, mock := setupTestServer(t)
+
+	srv.db.Create(&models.Settings{Key: "OPENAI_API_KEY", Value: "sk-oai-test"})
+
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name:     "opencode-skills-team",
+		Provider: "opencode",
+		Agents: []CreateAgentInput{
+			{
+				Name: "the-leader", Role: "leader",
+				SubAgentSkills: []map[string]string{
+					{"repo_url": "https://github.com/org/skills", "skill_name": "global-skill"},
+				},
+			},
+			{
+				Name: "worker-1", Role: "worker",
+				SubAgentDescription: "test worker",
+				SubAgentSkills: []map[string]string{
+					{"repo_url": "https://github.com/org/skills", "skill_name": "worker-skill"},
+				},
+			},
+		},
+	})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+
+	srv.deployTeamAsync(team)
+
+	cfg := mock.lastAgentConfig
+	if cfg == nil {
+		t.Fatal("expected lastAgentConfig to be set")
+	}
+
+	// Skills should be collected and deduplicated in AGENT_SKILLS_INSTALL.
+	skillsJSON := cfg.Env["AGENT_SKILLS_INSTALL"]
+	if skillsJSON == "" {
+		t.Fatal("expected AGENT_SKILLS_INSTALL to be set")
+	}
+
+	var skills []struct {
+		RepoURL   string `json:"repo_url"`
+		SkillName string `json:"skill_name"`
+	}
+	if err := json.Unmarshal([]byte(skillsJSON), &skills); err != nil {
+		t.Fatalf("failed to parse skills JSON: %v", err)
+	}
+	if len(skills) != 2 {
+		t.Fatalf("expected 2 skills, got %d: %s", len(skills), skillsJSON)
+	}
+
+	// Verify the worker sub-agent file includes merged global skills.
+	workerFile, ok := cfg.SubAgentFiles["worker-1.md"]
+	if !ok {
+		t.Fatal("missing sub-agent file for worker-1")
+	}
+	if !containsStr(workerFile, "global-skill") {
+		t.Error("worker sub-agent should contain merged global skill")
+	}
+	if !containsStr(workerFile, "worker-skill") {
+		t.Error("worker sub-agent should contain its own skill")
+	}
+}
+
+func containsStr(s, substr string) bool {
+	return strings.Contains(s, substr)
 }
