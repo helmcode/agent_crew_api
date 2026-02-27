@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/helmcode/agent-crew/internal/protocol"
 )
 
 func TestSetupAgentWorkspace(t *testing.T) {
@@ -434,16 +436,15 @@ func TestFormatSkillsYAML_Empty(t *testing.T) {
 // --- OpenCode workspace tests ---
 
 func TestGenerateOpenCodeAgentsMD_Leader(t *testing.T) {
-	leader := AgentWorkspaceInfo{
-		Name:         "team-lead",
-		Role:         "leader",
-		Specialty:    "orchestration",
-		SystemPrompt: "You coordinate the team.",
-		Skills:       json.RawMessage(`["web-search"]`),
+	leader := SubAgentInfo{
+		Name:        "team-lead",
+		Description: "orchestration",
+		Skills:      json.RawMessage(`["web-search"]`),
+		ClaudeMD:    "You coordinate the team.",
 	}
-	workers := []TeamMemberInfo{
-		{Name: "backend-dev", Role: "worker", Specialty: "Go backend"},
-		{Name: "frontend-dev", Role: "worker", Specialty: "React frontend"},
+	workers := []SubAgentInfo{
+		{Name: "backend-dev", Description: "Go backend"},
+		{Name: "frontend-dev", Description: "React frontend"},
 	}
 
 	md := GenerateOpenCodeAgentsMD("my-team", leader, workers)
@@ -461,7 +462,7 @@ func TestGenerateOpenCodeAgentsMD_Leader(t *testing.T) {
 		t.Error("missing specialty")
 	}
 	if !contains(md, "You coordinate the team.") {
-		t.Error("missing system prompt")
+		t.Error("missing instructions")
 	}
 	if !contains(md, "web-search") {
 		t.Error("missing skills")
@@ -481,9 +482,8 @@ func TestGenerateOpenCodeAgentsMD_Leader(t *testing.T) {
 }
 
 func TestGenerateOpenCodeAgentsMD_NoWorkers(t *testing.T) {
-	leader := AgentWorkspaceInfo{
+	leader := SubAgentInfo{
 		Name: "solo-agent",
-		Role: "leader",
 	}
 
 	md := GenerateOpenCodeAgentsMD("solo-team", leader, nil)
@@ -500,9 +500,8 @@ func TestGenerateOpenCodeAgentsMD_NoWorkers(t *testing.T) {
 }
 
 func TestGenerateOpenCodeAgentsMD_WithClaudeMD(t *testing.T) {
-	leader := AgentWorkspaceInfo{
+	leader := SubAgentInfo{
 		Name:     "agent",
-		Role:     "leader",
 		ClaudeMD: "Custom leader instructions here.",
 	}
 
@@ -521,7 +520,9 @@ func TestGenerateOpenCodeSubAgentContent_AllFields(t *testing.T) {
 		Skills:      json.RawMessage(`["read-files"]`),
 		ClaudeMD:    "You are a research specialist.\n",
 	}
-	globalSkills := json.RawMessage(`["web-search"]`)
+	globalSkills := []protocol.SkillConfig{
+		{RepoURL: "https://example.com/skills", SkillName: "web-search"},
+	}
 
 	content := GenerateOpenCodeSubAgentContent(agent, globalSkills)
 
@@ -622,17 +623,16 @@ func TestGenerateOpenCodeSubAgentContent_YAMLQuoting(t *testing.T) {
 func TestSetupOpenCodeWorkspace(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	leader := AgentWorkspaceInfo{
-		Name:         "lead",
-		Role:         "leader",
-		SystemPrompt: "Lead the team.",
+	leader := SubAgentInfo{
+		Name:     "lead",
+		ClaudeMD: "Lead the team.",
 	}
 	workers := []SubAgentInfo{
 		{Name: "worker-1", Description: "Backend developer", ClaudeMD: "Do backend work."},
 		{Name: "worker-2", Description: "Frontend developer"},
 	}
 
-	err := SetupOpenCodeWorkspace(tmpDir, leader, workers, nil)
+	err := SetupOpenCodeWorkspace(tmpDir, "test-team", leader, workers, nil)
 	if err != nil {
 		t.Fatalf("SetupOpenCodeWorkspace: %v", err)
 	}
@@ -641,6 +641,9 @@ func TestSetupOpenCodeWorkspace(t *testing.T) {
 	agentsMD, err := os.ReadFile(filepath.Join(tmpDir, ".opencode", "AGENTS.MD"))
 	if err != nil {
 		t.Fatalf("reading AGENTS.MD: %v", err)
+	}
+	if !contains(string(agentsMD), "# Team: test-team") {
+		t.Error("AGENTS.MD missing team name")
 	}
 	if !contains(string(agentsMD), "lead") {
 		t.Error("AGENTS.MD missing leader name")
@@ -673,12 +676,11 @@ func TestSetupOpenCodeWorkspace(t *testing.T) {
 func TestSetupOpenCodeWorkspace_NoWorkers(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	leader := AgentWorkspaceInfo{
+	leader := SubAgentInfo{
 		Name: "solo",
-		Role: "leader",
 	}
 
-	err := SetupOpenCodeWorkspace(tmpDir, leader, nil, nil)
+	err := SetupOpenCodeWorkspace(tmpDir, "solo-team", leader, nil, nil)
 	if err != nil {
 		t.Fatalf("SetupOpenCodeWorkspace: %v", err)
 	}

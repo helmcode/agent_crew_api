@@ -18,7 +18,8 @@ type AgentSection struct {
 	Name         string            `yaml:"name"`
 	Team         string            `yaml:"team"`
 	Role         string            `yaml:"role"`
-	Provider     string            `yaml:"provider"` // "claude" (default) or "opencode"
+	Provider     string            `yaml:"provider"`       // "claude" (default) or "opencode"
+	OpenCodeModel string           `yaml:"opencode_model"` // Model ID for OpenCode provider (e.g. "anthropic/claude-sonnet-4-20250514").
 	SystemPrompt string            `yaml:"system_prompt"`
 	NATS         NATSSection       `yaml:"nats"`
 	Permissions  PermissionsSection `yaml:"permissions"`
@@ -79,6 +80,9 @@ func LoadConfig(path string) (*AgentConfig, error) {
 	}
 	if v := os.Getenv("AGENT_PROVIDER"); v != "" {
 		cfg.Agent.Provider = v
+	}
+	if v := os.Getenv("OPENCODE_MODEL"); v != "" {
+		cfg.Agent.OpenCodeModel = v
 	}
 	if v := os.Getenv("AGENT_FILESYSTEM_SCOPE"); v != "" {
 		cfg.Agent.Permissions.FilesystemScope = v

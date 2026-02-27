@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/helmcode/agent-crew/internal/protocol"
 )
 
 // SubAgentInfo holds the metadata needed to generate a sub-agent file
@@ -306,7 +308,14 @@ func mergeSkillsRaw(a, b json.RawMessage) json.RawMessage {
 	parseConfigs(a)
 	parseConfigs(b)
 
-	// Prefer skillConfig format if any entries were parsed that way.
+	// When both formats are present, promote strings to skillConfig format.
+	if len(merged) > 0 && len(mergedStrings) > 0 {
+		for _, s := range mergedStrings {
+			merged = append(merged, skillConfig{SkillName: s})
+		}
+		result, _ := json.Marshal(merged)
+		return result
+	}
 	if len(merged) > 0 {
 		result, _ := json.Marshal(merged)
 		return result
@@ -348,6 +357,8 @@ func formatSkills(raw json.RawMessage) string {
 					repoPath = strings.TrimPrefix(repoPath, "https://github.com/")
 				}
 				b.WriteString("- " + repoPath + ":" + cfg.SkillName + "\n")
+			} else if cfg.SkillName != "" {
+				b.WriteString("- " + cfg.SkillName + "\n")
 			}
 		}
 		if b.Len() > 0 {
@@ -390,31 +401,22 @@ func formatSkills(raw json.RawMessage) string {
 
 // GenerateOpenCodeAgentsMD produces the content for .opencode/AGENTS.MD.
 // This is the leader's instructions file, analogous to CLAUDE.md for Claude Code.
-func GenerateOpenCodeAgentsMD(teamName string, leader AgentWorkspaceInfo, workers []TeamMemberInfo) string {
+func GenerateOpenCodeAgentsMD(teamName string, leader SubAgentInfo, workers []SubAgentInfo) string {
 	var b strings.Builder
 
 	b.WriteString("# Team: " + teamName + "\n\n")
 	b.WriteString("## Agent: " + leader.Name + "\n\n")
 
-	b.WriteString("## Role\n")
-	if leader.Role != "" {
-		b.WriteString(leader.Role + "\n\n")
-	} else {
-		b.WriteString("leader\n\n")
-	}
+	b.WriteString("## Role\nleader\n\n")
 
-	if leader.Specialty != "" {
+	if leader.Description != "" {
 		b.WriteString("## Specialty\n")
-		b.WriteString(leader.Specialty + "\n\n")
+		b.WriteString(leader.Description + "\n\n")
 	}
 
-	if leader.SystemPrompt != "" {
-		b.WriteString("## Instructions\n")
-		b.WriteString(leader.SystemPrompt + "\n\n")
-	}
-
-	// Include raw CLAUDE.md content (instructions) if provided.
+	// Include InstructionsMD content if provided.
 	if leader.ClaudeMD != "" {
+		b.WriteString("## Instructions\n")
 		b.WriteString(leader.ClaudeMD)
 		if !strings.HasSuffix(leader.ClaudeMD, "\n") {
 			b.WriteString("\n")
@@ -431,13 +433,10 @@ func GenerateOpenCodeAgentsMD(teamName string, leader AgentWorkspaceInfo, worker
 	if len(workers) > 0 {
 		b.WriteString("## Team Members\n\n")
 		b.WriteString("You are the team leader. The following agents are available for task delegation:\n\n")
-		for _, m := range workers {
-			b.WriteString("- **" + m.Name + "**")
-			if m.Role != "" {
-				b.WriteString(" (role: " + m.Role + ")")
-			}
-			if m.Specialty != "" {
-				b.WriteString(" — " + m.Specialty)
+		for _, w := range workers {
+			b.WriteString("- **" + w.Name + "**")
+			if w.Description != "" {
+				b.WriteString(" — " + w.Description)
 			}
 			b.WriteString("\n")
 		}
@@ -455,7 +454,7 @@ func GenerateOpenCodeAgentsMD(teamName string, leader AgentWorkspaceInfo, worker
 
 // GenerateOpenCodeSubAgentContent produces the content for an OpenCode sub-agent
 // file at .opencode/agents/{name}.md with YAML frontmatter native to OpenCode.
-func GenerateOpenCodeSubAgentContent(agent SubAgentInfo, globalSkills json.RawMessage) string {
+func GenerateOpenCodeSubAgentContent(agent SubAgentInfo, globalSkills []protocol.SkillConfig) string {
 	var b strings.Builder
 
 	b.WriteString("---\n")
@@ -492,8 +491,9 @@ func GenerateOpenCodeSubAgentContent(agent SubAgentInfo, globalSkills json.RawMe
 		}
 	}
 
-	// Append skills section to body (merged agent + global skills).
-	mergedSkills := mergeSkillsRaw(agent.Skills, globalSkills)
+	// Merge agent's own skills with global leader skills.
+	globalRaw := skillConfigsToRaw(globalSkills)
+	mergedSkills := mergeSkillsRaw(agent.Skills, globalRaw)
 	if skills := formatSkills(mergedSkills); skills != "" {
 		b.WriteString("\n## Skills\n")
 		b.WriteString(skills)
@@ -502,10 +502,25 @@ func GenerateOpenCodeSubAgentContent(agent SubAgentInfo, globalSkills json.RawMe
 	return b.String()
 }
 
+// skillConfigsToRaw converts a []protocol.SkillConfig to json.RawMessage
+// for compatibility with the existing mergeSkillsRaw function.
+func skillConfigsToRaw(configs []protocol.SkillConfig) json.RawMessage {
+	if len(configs) == 0 {
+		return nil
+	}
+	// Convert to the internal skillConfig format.
+	internal := make([]skillConfig, len(configs))
+	for i, c := range configs {
+		internal[i] = skillConfig{RepoURL: c.RepoURL, SkillName: c.SkillName}
+	}
+	raw, _ := json.Marshal(internal)
+	return raw
+}
+
 // SetupOpenCodeWorkspace creates the .opencode directory structure under workspacePath
 // and writes AGENTS.MD (leader instructions) and agents/{name}.md for each worker.
 // Skills are always installed to .claude/skills/ regardless of provider.
-func SetupOpenCodeWorkspace(workspacePath string, leader AgentWorkspaceInfo, workers []SubAgentInfo, globalSkills json.RawMessage) error {
+func SetupOpenCodeWorkspace(workspacePath, teamName string, leader SubAgentInfo, workers []SubAgentInfo, globalSkills []protocol.SkillConfig) error {
 	opencodeDir := filepath.Join(workspacePath, ".opencode")
 	agentsDir := filepath.Join(opencodeDir, "agents")
 
@@ -513,17 +528,8 @@ func SetupOpenCodeWorkspace(workspacePath string, leader AgentWorkspaceInfo, wor
 		return fmt.Errorf("creating .opencode/agents dir: %w", err)
 	}
 
-	// Build worker roster for AGENTS.MD.
-	var workerInfos []TeamMemberInfo
-	for _, w := range workers {
-		workerInfos = append(workerInfos, TeamMemberInfo{
-			Name:      w.Name,
-			Specialty: w.Description,
-		})
-	}
-
 	// Write AGENTS.MD (leader instructions).
-	agentsMD := GenerateOpenCodeAgentsMD(leader.Name, leader, workerInfos)
+	agentsMD := GenerateOpenCodeAgentsMD(teamName, leader, workers)
 	agentsMDPath := filepath.Join(opencodeDir, "AGENTS.MD")
 	if err := os.WriteFile(agentsMDPath, []byte(agentsMD), 0644); err != nil {
 		return fmt.Errorf("writing AGENTS.MD: %w", err)
