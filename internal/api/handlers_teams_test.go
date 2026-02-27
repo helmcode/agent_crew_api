@@ -2,6 +2,8 @@ package api
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -1198,6 +1200,314 @@ func TestLoadSettingsEnv_OpenCodeKeys(t *testing.T) {
 	}
 	if env["OPENCODE_MODEL"] != "gpt-4o" {
 		t.Errorf("OPENCODE_MODEL: got %q", env["OPENCODE_MODEL"])
+	}
+}
+
+func TestDeployTeamAsync_ClaudeProvider_LeaderModelPassedAsEnvVar(t *testing.T) {
+	srv, mock := setupTestServer(t)
+
+	srv.db.Create(&models.Settings{Key: "ANTHROPIC_API_KEY", Value: "sk-ant-test"})
+
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name:     "claude-leader-model",
+		Provider: "claude",
+		Agents: []CreateAgentInput{
+			{Name: "the-leader", Role: "leader", SubAgentModel: "sonnet"},
+		},
+	})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+
+	srv.deployTeamAsync(team)
+
+	cfg := mock.lastAgentConfig
+	if cfg == nil {
+		t.Fatal("expected lastAgentConfig to be set")
+	}
+
+	want := "claude-sonnet-4-20250514"
+	if cfg.Env["CLAUDE_MODEL"] != want {
+		t.Errorf("CLAUDE_MODEL: got %q, want %q", cfg.Env["CLAUDE_MODEL"], want)
+	}
+}
+
+func TestDeployTeamAsync_ClaudeProvider_LeaderModelOpus(t *testing.T) {
+	srv, mock := setupTestServer(t)
+
+	srv.db.Create(&models.Settings{Key: "ANTHROPIC_API_KEY", Value: "sk-ant-test"})
+
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name:     "claude-leader-opus",
+		Provider: "claude",
+		Agents: []CreateAgentInput{
+			{Name: "the-leader", Role: "leader", SubAgentModel: "opus"},
+		},
+	})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+
+	srv.deployTeamAsync(team)
+
+	cfg := mock.lastAgentConfig
+	if cfg == nil {
+		t.Fatal("expected lastAgentConfig to be set")
+	}
+
+	want := "claude-opus-4-20250514"
+	if cfg.Env["CLAUDE_MODEL"] != want {
+		t.Errorf("CLAUDE_MODEL: got %q, want %q", cfg.Env["CLAUDE_MODEL"], want)
+	}
+}
+
+func TestDeployTeamAsync_ClaudeProvider_LeaderModelHaiku(t *testing.T) {
+	srv, mock := setupTestServer(t)
+
+	srv.db.Create(&models.Settings{Key: "ANTHROPIC_API_KEY", Value: "sk-ant-test"})
+
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name:     "claude-leader-haiku",
+		Provider: "claude",
+		Agents: []CreateAgentInput{
+			{Name: "the-leader", Role: "leader", SubAgentModel: "haiku"},
+		},
+	})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+
+	srv.deployTeamAsync(team)
+
+	cfg := mock.lastAgentConfig
+	if cfg == nil {
+		t.Fatal("expected lastAgentConfig to be set")
+	}
+
+	want := "claude-haiku-4-5-20251001"
+	if cfg.Env["CLAUDE_MODEL"] != want {
+		t.Errorf("CLAUDE_MODEL: got %q, want %q", cfg.Env["CLAUDE_MODEL"], want)
+	}
+}
+
+func TestDeployTeamAsync_ClaudeProvider_LeaderModelInherit_NoEnvVar(t *testing.T) {
+	srv, mock := setupTestServer(t)
+
+	srv.db.Create(&models.Settings{Key: "ANTHROPIC_API_KEY", Value: "sk-ant-test"})
+
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name:     "claude-leader-inherit",
+		Provider: "claude",
+		Agents: []CreateAgentInput{
+			{Name: "the-leader", Role: "leader", SubAgentModel: "inherit"},
+		},
+	})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+
+	srv.deployTeamAsync(team)
+
+	cfg := mock.lastAgentConfig
+	if cfg == nil {
+		t.Fatal("expected lastAgentConfig to be set")
+	}
+
+	// When model is "inherit", CLAUDE_MODEL should NOT be set.
+	if v, ok := cfg.Env["CLAUDE_MODEL"]; ok && v != "" {
+		t.Errorf("CLAUDE_MODEL should not be set for 'inherit', got %q", v)
+	}
+}
+
+func TestDeployTeamAsync_OpenCodeProvider_LeaderModelOverridesSettings(t *testing.T) {
+	srv, mock := setupTestServer(t)
+
+	srv.db.Create(&models.Settings{Key: "OPENAI_API_KEY", Value: "sk-oai-test"})
+	srv.db.Create(&models.Settings{Key: "OPENCODE_MODEL", Value: "gpt-4o"})
+
+	// CreateTeam does not validate SubAgentModel, so OpenCode format is accepted.
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name:     "opencode-leader-model",
+		Provider: "opencode",
+		Agents: []CreateAgentInput{
+			{Name: "the-leader", Role: "leader", SubAgentModel: "anthropic/claude-sonnet-4-20250514"},
+		},
+	})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+
+	srv.deployTeamAsync(team)
+
+	cfg := mock.lastAgentConfig
+	if cfg == nil {
+		t.Fatal("expected lastAgentConfig to be set")
+	}
+
+	// Leader's model should override the Settings OPENCODE_MODEL.
+	want := "anthropic/claude-sonnet-4-20250514"
+	if cfg.Env["OPENCODE_MODEL"] != want {
+		t.Errorf("OPENCODE_MODEL: got %q, want %q", cfg.Env["OPENCODE_MODEL"], want)
+	}
+}
+
+func TestDeployTeamAsync_OpenCodeProvider_LeaderModelInherit_FallsBackToSettings(t *testing.T) {
+	srv, mock := setupTestServer(t)
+
+	srv.db.Create(&models.Settings{Key: "OPENAI_API_KEY", Value: "sk-oai-test"})
+	srv.db.Create(&models.Settings{Key: "OPENCODE_MODEL", Value: "gpt-4o"})
+
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name:     "opencode-leader-inherit",
+		Provider: "opencode",
+		Agents: []CreateAgentInput{
+			{Name: "the-leader", Role: "leader"},
+		},
+	})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+
+	srv.deployTeamAsync(team)
+
+	cfg := mock.lastAgentConfig
+	if cfg == nil {
+		t.Fatal("expected lastAgentConfig to be set")
+	}
+
+	// When leader model is "inherit" (default), should fall back to Settings OPENCODE_MODEL.
+	if cfg.Env["OPENCODE_MODEL"] != "gpt-4o" {
+		t.Errorf("OPENCODE_MODEL: got %q, want 'gpt-4o'", cfg.Env["OPENCODE_MODEL"])
+	}
+}
+
+func TestDeployTeamAsync_OpenCodeProvider_WritesWorkspaceToHost(t *testing.T) {
+	srv, mock := setupTestServer(t)
+
+	// Set OpenCode-compatible API key in settings.
+	srv.db.Create(&models.Settings{Key: "OPENAI_API_KEY", Value: "sk-oai-test-ws"})
+
+	// Use a temporary directory as the workspace path so the test can verify
+	// that deployTeamAsync writes .opencode/ files to the host filesystem.
+	tmpDir := t.TempDir()
+
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name:          "opencode-workspace-host",
+		Provider:      "opencode",
+		WorkspacePath: tmpDir,
+		Agents: []CreateAgentInput{
+			{Name: "the-leader", Role: "leader", Specialty: "orchestration"},
+			{Name: "backend-dev", Role: "worker", SubAgentDescription: "Go backend developer"},
+			{Name: "frontend-dev", Role: "worker", SubAgentDescription: "React frontend developer"},
+		},
+	})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+
+	srv.deployTeamAsync(team)
+
+	// Verify the leader was deployed.
+	if len(mock.deployedAgents) != 1 {
+		t.Fatalf("deployed agents: got %d, want 1", len(mock.deployedAgents))
+	}
+
+	// Verify .opencode/AGENTS.MD was written to the host workspace path.
+	agentsMDPath := filepath.Join(tmpDir, ".opencode", "AGENTS.MD")
+	agentsMD, err := os.ReadFile(agentsMDPath)
+	if err != nil {
+		t.Fatalf("AGENTS.MD not created on host: %v", err)
+	}
+	if !containsStr(string(agentsMD), "# Team: opencode-workspace-host") {
+		t.Error("AGENTS.MD missing team name header")
+	}
+	if !containsStr(string(agentsMD), "the-leader") {
+		t.Error("AGENTS.MD missing leader name")
+	}
+	if !containsStr(string(agentsMD), "backend-dev") {
+		t.Error("AGENTS.MD missing worker backend-dev in team roster")
+	}
+	if !containsStr(string(agentsMD), "frontend-dev") {
+		t.Error("AGENTS.MD missing worker frontend-dev in team roster")
+	}
+
+	// Verify worker agent files were written.
+	backendPath := filepath.Join(tmpDir, ".opencode", "agents", "backend-dev.md")
+	backendData, err := os.ReadFile(backendPath)
+	if err != nil {
+		t.Fatalf("backend-dev.md not created on host: %v", err)
+	}
+	if !containsStr(string(backendData), "Go backend developer") {
+		t.Error("backend-dev.md missing description")
+	}
+	if !containsStr(string(backendData), "tools:") {
+		t.Error("backend-dev.md missing tools section (OpenCode format)")
+	}
+
+	frontendPath := filepath.Join(tmpDir, ".opencode", "agents", "frontend-dev.md")
+	frontendData, err := os.ReadFile(frontendPath)
+	if err != nil {
+		t.Fatalf("frontend-dev.md not created on host: %v", err)
+	}
+	if !containsStr(string(frontendData), "React frontend developer") {
+		t.Error("frontend-dev.md missing description")
+	}
+
+	// Verify the workspace path was passed to the agent config for Docker bind mount.
+	cfg := mock.lastAgentConfig
+	if cfg == nil {
+		t.Fatal("expected lastAgentConfig to be set")
+	}
+	if cfg.WorkspacePath != tmpDir {
+		t.Errorf("agent config WorkspacePath: got %q, want %q", cfg.WorkspacePath, tmpDir)
+	}
+}
+
+func TestDeployTeamAsync_OpenCodeProvider_NoWorkspacePath_SkipsHostWrite(t *testing.T) {
+	srv, mock := setupTestServer(t)
+
+	// Set OpenCode-compatible API key in settings.
+	srv.db.Create(&models.Settings{Key: "OPENAI_API_KEY", Value: "sk-oai-test-no-ws"})
+
+	// No WorkspacePath — should still deploy without errors.
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name:     "opencode-no-workspace",
+		Provider: "opencode",
+		Agents: []CreateAgentInput{
+			{Name: "the-leader", Role: "leader"},
+			{Name: "worker-1", Role: "worker", SubAgentDescription: "Backend dev"},
+		},
+	})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+
+	srv.deployTeamAsync(team)
+
+	// Deploy should succeed.
+	if len(mock.deployedAgents) != 1 {
+		t.Fatalf("deployed agents: got %d, want 1", len(mock.deployedAgents))
+	}
+
+	// Verify team is running.
+	var updated models.Team
+	srv.db.First(&updated, "id = ?", team.ID)
+	if updated.Status != models.TeamStatusRunning {
+		t.Errorf("team status: got %q, want %q", updated.Status, models.TeamStatusRunning)
+	}
+}
+
+func TestClaudeModelID(t *testing.T) {
+	tests := []struct {
+		short string
+		want  string
+	}{
+		{"sonnet", "claude-sonnet-4-20250514"},
+		{"opus", "claude-opus-4-20250514"},
+		{"haiku", "claude-haiku-4-5-20251001"},
+		{"inherit", ""},
+		{"", ""},
+		{"unknown", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.short, func(t *testing.T) {
+			got := claudeModelID(tt.short)
+			if got != tt.want {
+				t.Errorf("claudeModelID(%q) = %q, want %q", tt.short, got, tt.want)
+			}
+		})
 	}
 }
 

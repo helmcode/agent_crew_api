@@ -175,6 +175,7 @@ func startClaude(ctx context.Context, cfg *AgentConfig, workDir string, natsClie
 		SystemPrompt: cfg.Agent.SystemPrompt,
 		AllowedTools: cfg.Agent.Permissions.AllowedTools,
 		WorkDir:      workDir,
+		Model:        cfg.Agent.ClaudeModel,
 	}
 
 	claudeManager := claude.NewManager(processCfg)
