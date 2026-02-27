@@ -13,7 +13,7 @@ import (
 	"github.com/helmcode/agent-crew/internal/provider"
 )
 
-// BridgeConfig holds configuration for the NATS-Claude bridge.
+// BridgeConfig holds configuration for the NATS-agent bridge.
 type BridgeConfig struct {
 	AgentName string
 	TeamName  string

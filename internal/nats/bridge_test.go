@@ -141,6 +141,7 @@ func toProviderEvent(ce claude.StreamEvent) provider.StreamEvent {
 		Name:      ce.Name,
 		IsError:   ce.IsError,
 		Result:    ce.Result,
+		ErrorCode: ce.ErrorCode,
 		SessionID: ce.SessionID,
 	}
 	if len(ce.Message) > 0 {

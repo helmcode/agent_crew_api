@@ -595,3 +595,110 @@ func TestCreateTeam_KubernetesRuntime(t *testing.T) {
 		t.Errorf("runtime: got %q, want 'kubernetes'", team.Runtime)
 	}
 }
+
+func TestCreateTeam_DefaultProvider(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	rec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{Name: "default-prov"})
+	if rec.Code != 201 {
+		t.Fatalf("status: got %d, want 201\nbody: %s", rec.Code, rec.Body.String())
+	}
+
+	var team models.Team
+	parseJSON(t, rec, &team)
+
+	if team.Provider != "claude" {
+		t.Errorf("default provider: got %q, want 'claude'", team.Provider)
+	}
+}
+
+func TestCreateTeam_ProviderClaude(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	rec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name:     "claude-prov",
+		Provider: "claude",
+	})
+	if rec.Code != 201 {
+		t.Fatalf("status: got %d, want 201\nbody: %s", rec.Code, rec.Body.String())
+	}
+
+	var team models.Team
+	parseJSON(t, rec, &team)
+
+	if team.Provider != "claude" {
+		t.Errorf("provider: got %q, want 'claude'", team.Provider)
+	}
+}
+
+func TestCreateTeam_ProviderOpenCode(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	rec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name:     "opencode-prov",
+		Provider: "opencode",
+	})
+	if rec.Code != 201 {
+		t.Fatalf("status: got %d, want 201\nbody: %s", rec.Code, rec.Body.String())
+	}
+
+	var team models.Team
+	parseJSON(t, rec, &team)
+
+	if team.Provider != "opencode" {
+		t.Errorf("provider: got %q, want 'opencode'", team.Provider)
+	}
+}
+
+func TestCreateTeam_InvalidProvider(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	rec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name:     "bad-prov",
+		Provider: "gemini",
+	})
+
+	if rec.Code != 400 {
+		t.Fatalf("status: got %d, want 400 for invalid provider\nbody: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestUpdateTeam_Provider(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	createRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{Name: "upd-prov-team"})
+	var team models.Team
+	parseJSON(t, createRec, &team)
+
+	prov := "opencode"
+	rec := doRequest(srv, "PUT", "/api/teams/"+team.ID, UpdateTeamRequest{
+		Provider: &prov,
+	})
+
+	if rec.Code != 200 {
+		t.Fatalf("status: got %d, want 200\nbody: %s", rec.Code, rec.Body.String())
+	}
+
+	var updated models.Team
+	parseJSON(t, rec, &updated)
+	if updated.Provider != "opencode" {
+		t.Errorf("provider: got %q, want 'opencode'", updated.Provider)
+	}
+}
+
+func TestUpdateTeam_InvalidProvider(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	createRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{Name: "upd-bad-prov"})
+	var team models.Team
+	parseJSON(t, createRec, &team)
+
+	prov := "invalid-provider"
+	rec := doRequest(srv, "PUT", "/api/teams/"+team.ID, UpdateTeamRequest{
+		Provider: &prov,
+	})
+
+	if rec.Code != 400 {
+		t.Fatalf("status: got %d, want 400 for invalid provider\nbody: %s", rec.Code, rec.Body.String())
+	}
+}

@@ -26,5 +26,6 @@ type StreamEvent struct {
 	Input     string // Tool input (for tool_use events)
 	IsError   bool
 	Result    string
+	ErrorCode string // Machine-readable error code (e.g. "billing_error")
 	SessionID string
 }

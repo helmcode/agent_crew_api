@@ -69,6 +69,7 @@ func (c *ClaudeManager) convertEvents() {
 			Name:      ce.Name,
 			IsError:   ce.IsError,
 			Result:    ce.Result,
+			ErrorCode: ce.ErrorCode,
 			SessionID: ce.SessionID,
 		}
 
@@ -89,12 +90,6 @@ func (c *ClaudeManager) convertEvents() {
 	close(c.events)
 }
 
-// InnerManager returns the underlying claude.Manager for operations that need
-// direct access (e.g. ExtractToolCommand, FormatToolResult).
-func (c *ClaudeManager) InnerManager() *claude.Manager {
-	return c.inner
-}
-
 // ToClaudeStreamEvent converts a provider.StreamEvent back to a claude.StreamEvent.
 // This is used by the bridge for operations that still need the claude-specific type
 // (e.g. ExtractToolCommand, JSON marshaling for activity events).
@@ -104,6 +99,7 @@ func ToClaudeStreamEvent(pe *StreamEvent) *claude.StreamEvent {
 		Name:      pe.Name,
 		IsError:   pe.IsError,
 		Result:    pe.Result,
+		ErrorCode: pe.ErrorCode,
 		SessionID: pe.SessionID,
 	}
 	if pe.Message != "" {
