@@ -385,3 +385,159 @@ func formatSkills(raw json.RawMessage) string {
 
 	return ""
 }
+
+// --- OpenCode workspace generation ---
+
+// GenerateOpenCodeAgentsMD produces the content for .opencode/AGENTS.MD.
+// This is the leader's instructions file, analogous to CLAUDE.md for Claude Code.
+func GenerateOpenCodeAgentsMD(teamName string, leader AgentWorkspaceInfo, workers []TeamMemberInfo) string {
+	var b strings.Builder
+
+	b.WriteString("# Team: " + teamName + "\n\n")
+	b.WriteString("## Agent: " + leader.Name + "\n\n")
+
+	b.WriteString("## Role\n")
+	if leader.Role != "" {
+		b.WriteString(leader.Role + "\n\n")
+	} else {
+		b.WriteString("leader\n\n")
+	}
+
+	if leader.Specialty != "" {
+		b.WriteString("## Specialty\n")
+		b.WriteString(leader.Specialty + "\n\n")
+	}
+
+	if leader.SystemPrompt != "" {
+		b.WriteString("## Instructions\n")
+		b.WriteString(leader.SystemPrompt + "\n\n")
+	}
+
+	// Include raw CLAUDE.md content (instructions) if provided.
+	if leader.ClaudeMD != "" {
+		b.WriteString(leader.ClaudeMD)
+		if !strings.HasSuffix(leader.ClaudeMD, "\n") {
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+	}
+
+	skills := formatSkills(leader.Skills)
+	if skills != "" {
+		b.WriteString("## Skills\n")
+		b.WriteString(skills + "\n")
+	}
+
+	if len(workers) > 0 {
+		b.WriteString("## Team Members\n\n")
+		b.WriteString("You are the team leader. The following agents are available for task delegation:\n\n")
+		for _, m := range workers {
+			b.WriteString("- **" + m.Name + "**")
+			if m.Role != "" {
+				b.WriteString(" (role: " + m.Role + ")")
+			}
+			if m.Specialty != "" {
+				b.WriteString(" — " + m.Specialty)
+			}
+			b.WriteString("\n")
+		}
+
+		b.WriteString("\n## Delegation Protocol\n\n")
+		b.WriteString("To delegate tasks to team members, use the following format in your response:\n\n")
+		b.WriteString("```\n[TASK:agent-name]\nYour instruction for the agent here.\n[/TASK]\n```\n\n")
+		b.WriteString("You can delegate to multiple agents in a single response. ")
+		b.WriteString("Use the exact agent name from the Team Members list above. ")
+		b.WriteString("Each agent will execute the task and report the result back to you.\n\n")
+	}
+
+	return b.String()
+}
+
+// GenerateOpenCodeSubAgentContent produces the content for an OpenCode sub-agent
+// file at .opencode/agents/{name}.md with YAML frontmatter native to OpenCode.
+func GenerateOpenCodeSubAgentContent(agent SubAgentInfo, globalSkills json.RawMessage) string {
+	var b strings.Builder
+
+	b.WriteString("---\n")
+
+	if agent.Description != "" {
+		b.WriteString("description: " + yamlQuoteIfNeeded(agent.Description) + "\n")
+	}
+	if agent.Model != "" && agent.Model != "inherit" {
+		b.WriteString("model: " + agent.Model + "\n")
+	}
+
+	// Standard tool set for OpenCode agents.
+	b.WriteString("tools:\n")
+	b.WriteString("  - Bash\n")
+	b.WriteString("  - Read\n")
+	b.WriteString("  - Write\n")
+	b.WriteString("  - Glob\n")
+	b.WriteString("  - Grep\n")
+	b.WriteString("  - Edit\n")
+
+	// Permissions.
+	b.WriteString("permission:\n")
+	b.WriteString("  edit: allow\n")
+	b.WriteString("  bash: allow\n")
+
+	b.WriteString("---\n")
+
+	// Body: instructions + skills section.
+	if agent.ClaudeMD != "" {
+		b.WriteString("\n")
+		b.WriteString(agent.ClaudeMD)
+		if !strings.HasSuffix(agent.ClaudeMD, "\n") {
+			b.WriteString("\n")
+		}
+	}
+
+	// Append skills section to body (merged agent + global skills).
+	mergedSkills := mergeSkillsRaw(agent.Skills, globalSkills)
+	if skills := formatSkills(mergedSkills); skills != "" {
+		b.WriteString("\n## Skills\n")
+		b.WriteString(skills)
+	}
+
+	return b.String()
+}
+
+// SetupOpenCodeWorkspace creates the .opencode directory structure under workspacePath
+// and writes AGENTS.MD (leader instructions) and agents/{name}.md for each worker.
+// Skills are always installed to .claude/skills/ regardless of provider.
+func SetupOpenCodeWorkspace(workspacePath string, leader AgentWorkspaceInfo, workers []SubAgentInfo, globalSkills json.RawMessage) error {
+	opencodeDir := filepath.Join(workspacePath, ".opencode")
+	agentsDir := filepath.Join(opencodeDir, "agents")
+
+	if err := os.MkdirAll(agentsDir, 0755); err != nil {
+		return fmt.Errorf("creating .opencode/agents dir: %w", err)
+	}
+
+	// Build worker roster for AGENTS.MD.
+	var workerInfos []TeamMemberInfo
+	for _, w := range workers {
+		workerInfos = append(workerInfos, TeamMemberInfo{
+			Name:      w.Name,
+			Specialty: w.Description,
+		})
+	}
+
+	// Write AGENTS.MD (leader instructions).
+	agentsMD := GenerateOpenCodeAgentsMD(leader.Name, leader, workerInfos)
+	agentsMDPath := filepath.Join(opencodeDir, "AGENTS.MD")
+	if err := os.WriteFile(agentsMDPath, []byte(agentsMD), 0644); err != nil {
+		return fmt.Errorf("writing AGENTS.MD: %w", err)
+	}
+
+	// Write per-worker agent files.
+	for _, w := range workers {
+		safeName := sanitizeName(w.Name)
+		filePath := filepath.Join(agentsDir, safeName+".md")
+		content := GenerateOpenCodeSubAgentContent(w, globalSkills)
+		if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
+			return fmt.Errorf("writing agent file for %s: %w", w.Name, err)
+		}
+	}
+
+	return nil
+}

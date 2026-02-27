@@ -431,6 +431,269 @@ func TestFormatSkillsYAML_Empty(t *testing.T) {
 	}
 }
 
+// --- OpenCode workspace tests ---
+
+func TestGenerateOpenCodeAgentsMD_Leader(t *testing.T) {
+	leader := AgentWorkspaceInfo{
+		Name:         "team-lead",
+		Role:         "leader",
+		Specialty:    "orchestration",
+		SystemPrompt: "You coordinate the team.",
+		Skills:       json.RawMessage(`["web-search"]`),
+	}
+	workers := []TeamMemberInfo{
+		{Name: "backend-dev", Role: "worker", Specialty: "Go backend"},
+		{Name: "frontend-dev", Role: "worker", Specialty: "React frontend"},
+	}
+
+	md := GenerateOpenCodeAgentsMD("my-team", leader, workers)
+
+	if !contains(md, "# Team: my-team") {
+		t.Error("missing team name header")
+	}
+	if !contains(md, "## Agent: team-lead") {
+		t.Error("missing agent name")
+	}
+	if !contains(md, "leader") {
+		t.Error("missing role")
+	}
+	if !contains(md, "orchestration") {
+		t.Error("missing specialty")
+	}
+	if !contains(md, "You coordinate the team.") {
+		t.Error("missing system prompt")
+	}
+	if !contains(md, "web-search") {
+		t.Error("missing skills")
+	}
+	if !contains(md, "## Team Members") {
+		t.Error("missing Team Members section")
+	}
+	if !contains(md, "backend-dev") {
+		t.Error("missing worker backend-dev")
+	}
+	if !contains(md, "frontend-dev") {
+		t.Error("missing worker frontend-dev")
+	}
+	if !contains(md, "## Delegation Protocol") {
+		t.Error("missing Delegation Protocol")
+	}
+}
+
+func TestGenerateOpenCodeAgentsMD_NoWorkers(t *testing.T) {
+	leader := AgentWorkspaceInfo{
+		Name: "solo-agent",
+		Role: "leader",
+	}
+
+	md := GenerateOpenCodeAgentsMD("solo-team", leader, nil)
+
+	if !contains(md, "# Team: solo-team") {
+		t.Error("missing team name")
+	}
+	if contains(md, "## Team Members") {
+		t.Error("should not have Team Members section when no workers")
+	}
+	if contains(md, "## Delegation Protocol") {
+		t.Error("should not have Delegation Protocol when no workers")
+	}
+}
+
+func TestGenerateOpenCodeAgentsMD_WithClaudeMD(t *testing.T) {
+	leader := AgentWorkspaceInfo{
+		Name:     "agent",
+		Role:     "leader",
+		ClaudeMD: "Custom leader instructions here.",
+	}
+
+	md := GenerateOpenCodeAgentsMD("test", leader, nil)
+
+	if !contains(md, "Custom leader instructions here.") {
+		t.Error("missing ClaudeMD content")
+	}
+}
+
+func TestGenerateOpenCodeSubAgentContent_AllFields(t *testing.T) {
+	agent := SubAgentInfo{
+		Name:        "researcher",
+		Description: "Delegate research tasks to this agent",
+		Model:       "anthropic/claude-sonnet-4-20250514",
+		Skills:      json.RawMessage(`["read-files"]`),
+		ClaudeMD:    "You are a research specialist.\n",
+	}
+	globalSkills := json.RawMessage(`["web-search"]`)
+
+	content := GenerateOpenCodeSubAgentContent(agent, globalSkills)
+
+	// Check YAML frontmatter.
+	if !contains(content, "---\n") {
+		t.Error("missing frontmatter delimiters")
+	}
+	if !contains(content, "description: ") {
+		t.Error("missing description")
+	}
+	if !contains(content, "model: anthropic/claude-sonnet-4-20250514") {
+		t.Error("missing model")
+	}
+	if !contains(content, "tools:") {
+		t.Error("missing tools section")
+	}
+	if !contains(content, "  - Bash") {
+		t.Error("missing Bash tool")
+	}
+	if !contains(content, "  - Read") {
+		t.Error("missing Read tool")
+	}
+	if !contains(content, "permission:") {
+		t.Error("missing permission section")
+	}
+	if !contains(content, "  edit: allow") {
+		t.Error("missing edit permission")
+	}
+	if !contains(content, "  bash: allow") {
+		t.Error("missing bash permission")
+	}
+	// Check body.
+	if !contains(content, "You are a research specialist.") {
+		t.Error("missing body content")
+	}
+	// Check merged skills.
+	if !contains(content, "## Skills") {
+		t.Error("missing skills section in body")
+	}
+	if !contains(content, "read-files") {
+		t.Error("missing agent skill")
+	}
+	if !contains(content, "web-search") {
+		t.Error("missing global skill")
+	}
+}
+
+func TestGenerateOpenCodeSubAgentContent_Minimal(t *testing.T) {
+	agent := SubAgentInfo{
+		Name: "minimal",
+	}
+
+	content := GenerateOpenCodeSubAgentContent(agent, nil)
+
+	if !contains(content, "tools:") {
+		t.Error("minimal agent should still have tools")
+	}
+	if !contains(content, "permission:") {
+		t.Error("minimal agent should still have permissions")
+	}
+	if contains(content, "description:") {
+		t.Error("empty description should be omitted")
+	}
+	if contains(content, "model:") {
+		t.Error("empty model should be omitted")
+	}
+	if contains(content, "## Skills") {
+		t.Error("no skills should mean no skills section")
+	}
+}
+
+func TestGenerateOpenCodeSubAgentContent_OmitsModelInherit(t *testing.T) {
+	agent := SubAgentInfo{
+		Name:  "inherit-agent",
+		Model: "inherit",
+	}
+
+	content := GenerateOpenCodeSubAgentContent(agent, nil)
+
+	if contains(content, "model:") {
+		t.Error("model 'inherit' should be omitted")
+	}
+}
+
+func TestGenerateOpenCodeSubAgentContent_YAMLQuoting(t *testing.T) {
+	agent := SubAgentInfo{
+		Name:        "quoted",
+		Description: "Agent: handles complex tasks",
+	}
+
+	content := GenerateOpenCodeSubAgentContent(agent, nil)
+
+	if !contains(content, `description: "Agent`) {
+		t.Errorf("description with colon should be quoted, got:\n%s", content)
+	}
+}
+
+func TestSetupOpenCodeWorkspace(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	leader := AgentWorkspaceInfo{
+		Name:         "lead",
+		Role:         "leader",
+		SystemPrompt: "Lead the team.",
+	}
+	workers := []SubAgentInfo{
+		{Name: "worker-1", Description: "Backend developer", ClaudeMD: "Do backend work."},
+		{Name: "worker-2", Description: "Frontend developer"},
+	}
+
+	err := SetupOpenCodeWorkspace(tmpDir, leader, workers, nil)
+	if err != nil {
+		t.Fatalf("SetupOpenCodeWorkspace: %v", err)
+	}
+
+	// Check AGENTS.MD.
+	agentsMD, err := os.ReadFile(filepath.Join(tmpDir, ".opencode", "AGENTS.MD"))
+	if err != nil {
+		t.Fatalf("reading AGENTS.MD: %v", err)
+	}
+	if !contains(string(agentsMD), "lead") {
+		t.Error("AGENTS.MD missing leader name")
+	}
+	if !contains(string(agentsMD), "worker-1") {
+		t.Error("AGENTS.MD missing worker-1 in team roster")
+	}
+
+	// Check worker agent files.
+	w1, err := os.ReadFile(filepath.Join(tmpDir, ".opencode", "agents", "worker-1.md"))
+	if err != nil {
+		t.Fatalf("reading worker-1.md: %v", err)
+	}
+	if !contains(string(w1), "Do backend work.") {
+		t.Error("worker-1.md missing body content")
+	}
+	if !contains(string(w1), "tools:") {
+		t.Error("worker-1.md missing tools")
+	}
+
+	w2, err := os.ReadFile(filepath.Join(tmpDir, ".opencode", "agents", "worker-2.md"))
+	if err != nil {
+		t.Fatalf("reading worker-2.md: %v", err)
+	}
+	if !contains(string(w2), "Frontend developer") {
+		t.Error("worker-2.md missing description")
+	}
+}
+
+func TestSetupOpenCodeWorkspace_NoWorkers(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	leader := AgentWorkspaceInfo{
+		Name: "solo",
+		Role: "leader",
+	}
+
+	err := SetupOpenCodeWorkspace(tmpDir, leader, nil, nil)
+	if err != nil {
+		t.Fatalf("SetupOpenCodeWorkspace: %v", err)
+	}
+
+	// AGENTS.MD should exist.
+	if _, err := os.Stat(filepath.Join(tmpDir, ".opencode", "AGENTS.MD")); err != nil {
+		t.Error("AGENTS.MD should exist even without workers")
+	}
+
+	// agents/ directory should exist (created by MkdirAll).
+	if _, err := os.Stat(filepath.Join(tmpDir, ".opencode", "agents")); err != nil {
+		t.Error("agents/ directory should exist")
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && containsStr(s, substr)
 }

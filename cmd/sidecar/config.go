@@ -18,6 +18,7 @@ type AgentSection struct {
 	Name         string            `yaml:"name"`
 	Team         string            `yaml:"team"`
 	Role         string            `yaml:"role"`
+	Provider     string            `yaml:"provider"` // "claude" (default) or "opencode"
 	SystemPrompt string            `yaml:"system_prompt"`
 	NATS         NATSSection       `yaml:"nats"`
 	Permissions  PermissionsSection `yaml:"permissions"`
@@ -76,6 +77,9 @@ func LoadConfig(path string) (*AgentConfig, error) {
 	if v := os.Getenv("NATS_URL"); v != "" {
 		cfg.Agent.NATS.URL = v
 	}
+	if v := os.Getenv("AGENT_PROVIDER"); v != "" {
+		cfg.Agent.Provider = v
+	}
 	if v := os.Getenv("AGENT_FILESYSTEM_SCOPE"); v != "" {
 		cfg.Agent.Permissions.FilesystemScope = v
 	}
@@ -113,6 +117,9 @@ func LoadConfig(path string) (*AgentConfig, error) {
 	}
 
 	// Defaults.
+	if cfg.Agent.Provider == "" {
+		cfg.Agent.Provider = "claude"
+	}
 	if cfg.Agent.Role == "" {
 		cfg.Agent.Role = "leader"
 	}
