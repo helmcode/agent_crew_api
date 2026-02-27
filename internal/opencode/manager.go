@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -22,40 +23,51 @@ type Config struct {
 	Username string
 	// Password for HTTP Basic Auth (empty = no auth).
 	Password string
-	// Agent is the OpenCode agent to use (optional).
-	Agent string
-	// Model overrides the model configuration (optional).
-	Model *ModelConfig
+	// SystemPrompt is injected as a system message at session start.
+	SystemPrompt string
+	// Model in "providerID/modelID" format (e.g. "anthropic/claude-sonnet-4-20250514").
+	Model string
+	// HealthTimeout is the maximum time to wait for the server to become healthy.
+	// Defaults to 30s if zero.
+	HealthTimeout time.Duration
 }
 
-// ModelConfig specifies the model to use for OpenCode sessions.
-type ModelConfig struct {
+// modelConfig is the JSON model object for OpenCode API requests.
+type modelConfig struct {
 	ProviderID string `json:"providerID"`
 	ModelID    string `json:"modelID"`
 }
 
-// CreateSessionRequest is the request body for POST /session.
-type CreateSessionRequest struct {
+// createSessionRequest is the request body for POST /session.
+type createSessionRequest struct {
 	Title string `json:"title,omitempty"`
 }
 
-// CreateSessionResponse is the response from POST /session.
-type CreateSessionResponse struct {
+// createSessionResponse is the response from POST /session.
+type createSessionResponse struct {
 	ID    string `json:"id"`
 	Title string `json:"title"`
 }
 
-// SendMessageRequest is the request body for POST /session/:id/message.
-type SendMessageRequest struct {
-	Text  string       `json:"text"`
-	Agent string       `json:"agent,omitempty"`
-	Model *ModelConfig `json:"model,omitempty"`
+// promptAsyncRequest is the request body for POST /session/:id/prompt_async.
+type promptAsyncRequest struct {
+	Parts   []messagePart `json:"parts"`
+	Model   *modelConfig  `json:"model,omitempty"`
+	NoReply bool          `json:"noReply,omitempty"`
 }
 
-// HealthResponse is the response from GET /global/health.
-type HealthResponse struct {
-	Healthy bool   `json:"healthy"`
-	Version string `json:"version"`
+// systemMessageRequest is the request body for POST /session/:id/message
+// used to inject system prompts.
+type systemMessageRequest struct {
+	Parts   []messagePart `json:"parts"`
+	System  bool          `json:"system"`
+	NoReply bool          `json:"noReply"`
+}
+
+// messagePart is a single part in an OpenCode message.
+type messagePart struct {
+	Type string `json:"type"` // "text"
+	Text string `json:"text"`
 }
 
 // Manager implements provider.AgentManager for OpenCode.
@@ -85,7 +97,8 @@ func NewManager(config Config) *Manager {
 	}
 }
 
-// Start connects to the OpenCode server, creates a session, and starts the SSE listener.
+// Start connects to the OpenCode server, creates a session, injects the system
+// prompt, and starts the SSE event listener.
 func (m *Manager) Start(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -94,8 +107,12 @@ func (m *Manager) Start(ctx context.Context) error {
 		return fmt.Errorf("manager already running")
 	}
 
-	// Verify server is healthy.
-	if err := m.checkHealth(ctx); err != nil {
+	// Wait for server to be healthy (with retry).
+	healthTimeout := m.config.HealthTimeout
+	if healthTimeout == 0 {
+		healthTimeout = 30 * time.Second
+	}
+	if err := WaitForHealth(m.config.BaseURL, m.config.Username, m.config.Password, healthTimeout); err != nil {
 		m.status = "error"
 		return fmt.Errorf("opencode server health check failed: %w", err)
 	}
@@ -110,11 +127,19 @@ func (m *Manager) Start(ctx context.Context) error {
 	m.sessionID = sessionID
 	m.status = "running"
 
-	// Start SSE listener in background.
+	// Start SSE listener in background. Pass sessionID as param to avoid
+	// lock contention with Stop() which holds the write lock during wg.Wait().
 	sseCtx, cancel := context.WithCancel(ctx)
 	m.cancel = cancel
 	m.wg.Add(1)
-	go m.listenSSE(sseCtx)
+	go m.listenSSE(sseCtx, m.sessionID)
+
+	// Inject system prompt if configured (noReply = true, system = true).
+	if m.config.SystemPrompt != "" {
+		if err := m.injectSystemPrompt(ctx); err != nil {
+			slog.Warn("failed to inject system prompt", "error", err)
+		}
+	}
 
 	slog.Info("opencode manager started",
 		"base_url", m.config.BaseURL,
@@ -124,7 +149,8 @@ func (m *Manager) Start(ctx context.Context) error {
 	return nil
 }
 
-// SendInput sends a message to the active OpenCode session.
+// SendInput sends a message to the active OpenCode session via prompt_async.
+// Returns immediately; events arrive via the SSE stream.
 func (m *Manager) SendInput(input string) error {
 	m.mu.RLock()
 	if m.status != "running" {
@@ -139,37 +165,39 @@ func (m *Manager) SendInput(input string) error {
 		"session_id", sessionID,
 	)
 
-	reqBody := SendMessageRequest{
-		Text:  input,
-		Agent: m.config.Agent,
-		Model: m.config.Model,
+	reqBody := promptAsyncRequest{
+		Parts: []messagePart{{Type: "text", Text: input}},
+		Model: m.parseModel(),
 	}
 
 	body, err := json.Marshal(reqBody)
 	if err != nil {
-		return fmt.Errorf("marshaling message request: %w", err)
+		return fmt.Errorf("marshaling prompt request: %w", err)
 	}
 
-	url := fmt.Sprintf("%s/session/%s/message", m.config.BaseURL, sessionID)
+	url := fmt.Sprintf("%s/session/%s/prompt_async", m.config.BaseURL, sessionID)
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("creating message request: %w", err)
+		return fmt.Errorf("creating prompt request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	m.setAuth(req)
 
 	resp, err := m.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("sending message to opencode: %w", err)
+		return fmt.Errorf("sending prompt to opencode: %w", err)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusAccepted {
+	// prompt_async returns 204 No Content on success.
+	if resp.StatusCode != http.StatusNoContent &&
+		resp.StatusCode != http.StatusOK &&
+		resp.StatusCode != http.StatusAccepted {
 		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("opencode message failed (status %d): %s", resp.StatusCode, truncate(string(respBody), 500))
+		return fmt.Errorf("opencode prompt_async failed (status %d): %s", resp.StatusCode, truncate(string(respBody), 500))
 	}
 
-	slog.Info("opencode message sent", "session_id", sessionID)
+	slog.Info("opencode prompt sent", "session_id", sessionID)
 	return nil
 }
 
@@ -247,41 +275,9 @@ func (m *Manager) IsRunning() bool {
 	return m.Status() == "running"
 }
 
-// checkHealth verifies the OpenCode server is reachable and healthy.
-func (m *Manager) checkHealth(ctx context.Context) error {
-	url := fmt.Sprintf("%s/global/health", m.config.BaseURL)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return err
-	}
-	m.setAuth(req)
-
-	resp, err := m.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("connecting to opencode server: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("opencode server returned status %d", resp.StatusCode)
-	}
-
-	var health HealthResponse
-	if err := json.NewDecoder(resp.Body).Decode(&health); err != nil {
-		return fmt.Errorf("parsing health response: %w", err)
-	}
-
-	if !health.Healthy {
-		return fmt.Errorf("opencode server reports unhealthy")
-	}
-
-	slog.Info("opencode server healthy", "version", health.Version)
-	return nil
-}
-
 // createSession creates a new OpenCode session via POST /session.
 func (m *Manager) createSession(ctx context.Context) (string, error) {
-	reqBody := CreateSessionRequest{
+	reqBody := createSessionRequest{
 		Title: "agentcrew-session",
 	}
 	body, err := json.Marshal(reqBody)
@@ -308,7 +304,7 @@ func (m *Manager) createSession(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("create session failed (status %d): %s", resp.StatusCode, truncate(string(respBody), 500))
 	}
 
-	var session CreateSessionResponse
+	var session createSessionResponse
 	if err := json.NewDecoder(resp.Body).Decode(&session); err != nil {
 		return "", fmt.Errorf("parsing session response: %w", err)
 	}
@@ -319,6 +315,42 @@ func (m *Manager) createSession(ctx context.Context) (string, error) {
 
 	slog.Info("opencode session created", "session_id", session.ID)
 	return session.ID, nil
+}
+
+// injectSystemPrompt sends a system message to the session without expecting a reply.
+func (m *Manager) injectSystemPrompt(ctx context.Context) error {
+	reqBody := systemMessageRequest{
+		Parts:   []messagePart{{Type: "text", Text: m.config.SystemPrompt}},
+		System:  true,
+		NoReply: true,
+	}
+
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return err
+	}
+
+	url := fmt.Sprintf("%s/session/%s/message", m.config.BaseURL, m.sessionID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	m.setAuth(req)
+
+	resp, err := m.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("injecting system prompt: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusNoContent {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("system prompt injection failed (status %d): %s", resp.StatusCode, truncate(string(respBody), 500))
+	}
+
+	slog.Info("opencode system prompt injected", "session_id", m.sessionID, "length", len(m.config.SystemPrompt))
+	return nil
 }
 
 // abortSession sends POST /session/:id/abort to stop a running session.
@@ -344,10 +376,11 @@ func (m *Manager) abortSession(sessionID string) {
 }
 
 // listenSSE connects to the SSE endpoint and converts events to provider.StreamEvent.
-func (m *Manager) listenSSE(ctx context.Context) {
+// Events are filtered to only include those for the given sessionID.
+func (m *Manager) listenSSE(ctx context.Context, sessionID string) {
 	defer m.wg.Done()
 
-	url := fmt.Sprintf("%s/global/event", m.config.BaseURL)
+	url := fmt.Sprintf("%s/event", m.config.BaseURL)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		slog.Error("failed to create SSE request", "error", err)
@@ -376,7 +409,7 @@ func (m *Manager) listenSSE(ctx context.Context) {
 
 	slog.Info("opencode SSE stream connected", "url", url)
 
-	// Parse SSE events in a goroutine and filter to provider events.
+	// Parse SSE events in a goroutine.
 	sseEvents := make(chan SSEEvent, 256)
 	go func() {
 		ParseSSEStream(resp.Body, sseEvents)
@@ -393,7 +426,8 @@ func (m *Manager) listenSSE(ctx context.Context) {
 				return
 			}
 
-			pe := ConvertSSEToProviderEvent(evt)
+			// Convert and filter by session ID.
+			pe := ConvertSSEToProviderEvent(evt, sessionID)
 			if pe == nil {
 				continue
 			}
@@ -404,6 +438,23 @@ func (m *Manager) listenSSE(ctx context.Context) {
 				slog.Warn("provider event channel full, dropping event", "type", pe.Type)
 			}
 		}
+	}
+}
+
+// parseModel splits the "providerID/modelID" format into a modelConfig.
+// Returns nil if no model is configured.
+func (m *Manager) parseModel() *modelConfig {
+	if m.config.Model == "" {
+		return nil
+	}
+	parts := strings.SplitN(m.config.Model, "/", 2)
+	if len(parts) != 2 {
+		slog.Warn("invalid model format, expected 'providerID/modelID'", "model", m.config.Model)
+		return nil
+	}
+	return &modelConfig{
+		ProviderID: parts[0],
+		ModelID:    parts[1],
 	}
 }
 

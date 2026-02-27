@@ -53,9 +53,10 @@ type SSEEvent struct {
 
 // MessagePartPayload represents the properties of a message.part.updated event.
 type MessagePartPayload struct {
-	SessionID string `json:"sessionID"`
-	MessageID string `json:"messageID"`
-	Part      Part   `json:"part"`
+	SessionID string          `json:"sessionID"`
+	MessageID string          `json:"messageID"`
+	Part      Part            `json:"part"`
+	Delta     json.RawMessage `json:"delta,omitempty"` // Incremental content fragment.
 }
 
 // Part represents a single part of an OpenCode message.
@@ -76,16 +77,7 @@ type ToolContent struct {
 	Tool   string          `json:"tool"`
 	Input  json.RawMessage `json:"input"`
 	Output string          `json:"output"`
-}
-
-// ToolExecutePayload represents the properties of tool.execute.before/after events.
-type ToolExecutePayload struct {
-	SessionID string `json:"sessionID"`
-	MessageID string `json:"messageID"`
-	Tool      string `json:"tool"`
-	Input     json.RawMessage `json:"input"`
-	Output    string          `json:"output,omitempty"`
-	Error     string          `json:"error,omitempty"`
+	Error  string          `json:"error,omitempty"`
 }
 
 // SessionErrorPayload represents the properties of a session.error event.
@@ -98,27 +90,6 @@ type SessionErrorPayload struct {
 // SessionIdlePayload represents the properties of a session.idle event.
 type SessionIdlePayload struct {
 	SessionID string `json:"sessionID"`
-}
-
-// MessageUpdatedPayload represents the properties of a message.updated event.
-type MessageUpdatedPayload struct {
-	SessionID string  `json:"sessionID"`
-	MessageID string  `json:"messageID"`
-	Message   Message `json:"message"`
-}
-
-// Message represents an OpenCode message.
-type Message struct {
-	ID        string `json:"id"`
-	SessionID string `json:"sessionID"`
-	Role      string `json:"role"` // "user", "assistant"
-	Parts     []Part `json:"parts"`
-}
-
-// SessionStatusPayload represents a session.status event.
-type SessionStatusPayload struct {
-	SessionID string `json:"sessionID"`
-	Status    string `json:"status"` // "idle", "busy", "error"
 }
 
 // ParseSSEStream reads an SSE stream from r and sends parsed events to the channel.
@@ -187,28 +158,30 @@ func ParseSSEStream(r io.Reader, ch chan<- SSEEvent) {
 }
 
 // ConvertSSEToProviderEvent converts an OpenCode SSE event to a provider.StreamEvent.
+// sessionID filters events to the active session; empty string disables filtering.
 // Returns nil if the event should be skipped (not relevant for the bridge).
-func ConvertSSEToProviderEvent(evt SSEEvent) *provider.StreamEvent {
+func ConvertSSEToProviderEvent(evt SSEEvent, sessionID string) *provider.StreamEvent {
 	switch evt.Type {
 	case EventMessagePartUpdated:
-		return convertMessagePart(evt.Data)
-	case EventToolExecuteBefore:
-		return convertToolBefore(evt.Data)
-	case EventToolExecuteAfter:
-		return convertToolAfter(evt.Data)
+		return convertMessagePart(evt.Data, sessionID)
 	case EventSessionError:
-		return convertSessionError(evt.Data)
+		return convertSessionError(evt.Data, sessionID)
 	case EventSessionIdle:
-		return convertSessionIdle(evt.Data)
+		return convertSessionIdle(evt.Data, sessionID)
 	default:
 		return nil
 	}
 }
 
-func convertMessagePart(data json.RawMessage) *provider.StreamEvent {
+func convertMessagePart(data json.RawMessage, filterSessionID string) *provider.StreamEvent {
 	var payload MessagePartPayload
 	if err := json.Unmarshal(data, &payload); err != nil {
 		slog.Debug("failed to parse message.part.updated", "error", err)
+		return nil
+	}
+
+	// Filter by session ID.
+	if filterSessionID != "" && payload.SessionID != filterSessionID {
 		return nil
 	}
 
@@ -219,7 +192,6 @@ func convertMessagePart(data json.RawMessage) *provider.StreamEvent {
 			slog.Debug("failed to parse text content", "error", err)
 			return nil
 		}
-		// Only emit when the part is completed or has content.
 		if content.Text == "" {
 			return nil
 		}
@@ -236,16 +208,37 @@ func convertMessagePart(data json.RawMessage) *provider.StreamEvent {
 			slog.Debug("failed to parse tool content", "error", err)
 			return nil
 		}
-		// Tool parts with output are results.
-		if content.Output != "" {
-			return &provider.StreamEvent{
-				Type:      "tool_result",
-				Name:      content.Tool,
-				Result:    content.Output,
-				SessionID: payload.SessionID,
-			}
+		return convertToolPart(payload, content)
+
+	case "reasoning":
+		var content TextContent
+		if err := json.Unmarshal(payload.Part.Content, &content); err != nil {
+			slog.Debug("failed to parse reasoning content", "error", err)
+			return nil
 		}
-		// Tool parts without output are in-progress.
+		if content.Text == "" {
+			return nil
+		}
+		msgJSON, _ := json.Marshal(map[string]string{"type": "text", "text": content.Text})
+		return &provider.StreamEvent{
+			Type:      "assistant",
+			Message:   string(msgJSON),
+			SessionID: payload.SessionID,
+		}
+
+	default:
+		// file, snapshot — skip.
+		return nil
+	}
+}
+
+// convertToolPart maps tool parts using the state field:
+//   - state: "running" → tool_use
+//   - state: "completed" → tool_result
+//   - state: "error" → tool_result with IsError=true
+func convertToolPart(payload MessagePartPayload, content ToolContent) *provider.StreamEvent {
+	switch payload.Part.State {
+	case "running", "pending":
 		inputStr := ""
 		if len(content.Input) > 0 {
 			inputStr = string(content.Input)
@@ -257,58 +250,50 @@ func convertMessagePart(data json.RawMessage) *provider.StreamEvent {
 			SessionID: payload.SessionID,
 		}
 
+	case "completed":
+		return &provider.StreamEvent{
+			Type:      "tool_result",
+			Name:      content.Tool,
+			Result:    content.Output,
+			SessionID: payload.SessionID,
+		}
+
+	case "error":
+		errMsg := content.Error
+		if errMsg == "" {
+			errMsg = content.Output
+		}
+		return &provider.StreamEvent{
+			Type:      "tool_result",
+			Name:      content.Tool,
+			IsError:   true,
+			Result:    errMsg,
+			SessionID: payload.SessionID,
+		}
+
 	default:
-		// reasoning, file, snapshot — skip.
-		return nil
+		// Unknown state, treat as tool_use.
+		inputStr := ""
+		if len(content.Input) > 0 {
+			inputStr = string(content.Input)
+		}
+		return &provider.StreamEvent{
+			Type:      "tool_use",
+			Name:      content.Tool,
+			Input:     inputStr,
+			SessionID: payload.SessionID,
+		}
 	}
 }
 
-func convertToolBefore(data json.RawMessage) *provider.StreamEvent {
-	var payload ToolExecutePayload
-	if err := json.Unmarshal(data, &payload); err != nil {
-		slog.Debug("failed to parse tool.execute.before", "error", err)
-		return nil
-	}
-
-	inputStr := ""
-	if len(payload.Input) > 0 {
-		inputStr = string(payload.Input)
-	}
-
-	return &provider.StreamEvent{
-		Type:      "tool_use",
-		Name:      payload.Tool,
-		Input:     inputStr,
-		SessionID: payload.SessionID,
-	}
-}
-
-func convertToolAfter(data json.RawMessage) *provider.StreamEvent {
-	var payload ToolExecutePayload
-	if err := json.Unmarshal(data, &payload); err != nil {
-		slog.Debug("failed to parse tool.execute.after", "error", err)
-		return nil
-	}
-
-	pe := &provider.StreamEvent{
-		Type:      "tool_result",
-		Name:      payload.Tool,
-		Result:    payload.Output,
-		SessionID: payload.SessionID,
-	}
-
-	if payload.Error != "" {
-		pe.IsError = true
-		pe.Result = payload.Error
-	}
-
-	return pe
-}
-
-func convertSessionError(data json.RawMessage) *provider.StreamEvent {
+func convertSessionError(data json.RawMessage, filterSessionID string) *provider.StreamEvent {
 	var payload SessionErrorPayload
 	if err := json.Unmarshal(data, &payload); err != nil {
 		slog.Debug("failed to parse session.error", "error", err)
+		return nil
+	}
+
+	if filterSessionID != "" && payload.SessionID != filterSessionID {
 		return nil
 	}
 
@@ -321,10 +306,14 @@ func convertSessionError(data json.RawMessage) *provider.StreamEvent {
 	}
 }
 
-func convertSessionIdle(data json.RawMessage) *provider.StreamEvent {
+func convertSessionIdle(data json.RawMessage, filterSessionID string) *provider.StreamEvent {
 	var payload SessionIdlePayload
 	if err := json.Unmarshal(data, &payload); err != nil {
 		slog.Debug("failed to parse session.idle", "error", err)
+		return nil
+	}
+
+	if filterSessionID != "" && payload.SessionID != filterSessionID {
 		return nil
 	}
 
