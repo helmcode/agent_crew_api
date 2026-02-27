@@ -10,7 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install OpenCode CLI and skills package manager
-RUN npm install -g opencode skills
+RUN npm install -g opencode-ai skills
 
 # Create non-root user for running the agent
 RUN groupadd -r agentcrew && useradd -r -g agentcrew -m agentcrew
