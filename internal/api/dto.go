@@ -18,6 +18,7 @@ type CreateTeamRequest struct {
 	Name          string              `json:"name" validate:"required"`
 	Description   string              `json:"description"`
 	Runtime       string              `json:"runtime"`
+	Provider      string              `json:"provider"`
 	WorkspacePath string              `json:"workspace_path"`
 	Agents        []CreateAgentInput  `json:"agents"`
 }
@@ -26,6 +27,7 @@ type CreateTeamRequest struct {
 type UpdateTeamRequest struct {
 	Name          *string `json:"name"`
 	Description   *string `json:"description"`
+	Provider      *string `json:"provider"`
 	WorkspacePath *string `json:"workspace_path"`
 }
 
@@ -35,7 +37,8 @@ type CreateAgentInput struct {
 	Role                string      `json:"role"`
 	Specialty           string      `json:"specialty"`
 	SystemPrompt        string      `json:"system_prompt"`
-	ClaudeMD            string      `json:"claude_md"`
+	InstructionsMD      string      `json:"instructions_md"`
+	ClaudeMD            string      `json:"claude_md"` // Deprecated: backward compat alias for instructions_md
 	Skills              interface{} `json:"skills"`
 	Permissions         interface{} `json:"permissions"`
 	Resources           interface{} `json:"resources"`
@@ -50,7 +53,8 @@ type CreateAgentRequest struct {
 	Role                string      `json:"role"`
 	Specialty           string      `json:"specialty"`
 	SystemPrompt        string      `json:"system_prompt"`
-	ClaudeMD            string      `json:"claude_md"`
+	InstructionsMD      string      `json:"instructions_md"`
+	ClaudeMD            string      `json:"claude_md"` // Deprecated: backward compat alias for instructions_md
 	Skills              interface{} `json:"skills"`
 	Permissions         interface{} `json:"permissions"`
 	Resources           interface{} `json:"resources"`
@@ -65,7 +69,8 @@ type UpdateAgentRequest struct {
 	Role                *string     `json:"role"`
 	Specialty           *string     `json:"specialty"`
 	SystemPrompt        *string     `json:"system_prompt"`
-	ClaudeMD            *string     `json:"claude_md"`
+	InstructionsMD      *string     `json:"instructions_md"`
+	ClaudeMD            *string     `json:"claude_md"` // Deprecated: backward compat alias for instructions_md
 	Skills              interface{} `json:"skills"`
 	Permissions         interface{} `json:"permissions"`
 	Resources           interface{} `json:"resources"`

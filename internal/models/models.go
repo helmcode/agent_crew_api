@@ -53,6 +53,7 @@ type Team struct {
 	Description   string    `gorm:"size:1024" json:"description"`
 	Status        string    `gorm:"not null;size:50;default:stopped" json:"status"`
 	Runtime       string    `gorm:"not null;size:50;default:docker" json:"runtime"`
+	Provider      string    `gorm:"type:varchar(50);default:'claude'" json:"provider"`
 	WorkspacePath string    `gorm:"size:512" json:"workspace_path"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
@@ -67,7 +68,7 @@ type Agent struct {
 	Role            string    `gorm:"not null;size:50;default:worker" json:"role"`
 	Specialty       string    `gorm:"size:512" json:"specialty"`
 	SystemPrompt    string    `gorm:"type:text" json:"system_prompt"`
-	ClaudeMD        string    `gorm:"type:text" json:"claude_md"`
+	InstructionsMD  string    `gorm:"column:instructions_md;type:text" json:"instructions_md"`
 	Skills          JSON      `gorm:"type:text" json:"skills"`
 	Permissions     JSON      `gorm:"type:text" json:"permissions"`
 	Resources       JSON      `gorm:"type:text" json:"resources"`
@@ -77,7 +78,7 @@ type Agent struct {
 	// Sub-agent configuration fields for .claude/agents/{name}.md frontmatter.
 	// These are only used for non-leader agents in the native sub-agent architecture.
 	SubAgentDescription string `gorm:"type:text" json:"sub_agent_description"`
-	SubAgentModel       string `gorm:"size:50;default:inherit" json:"sub_agent_model"`
+	SubAgentModel       string `gorm:"size:255;default:inherit" json:"sub_agent_model"`
 	SubAgentSkills      JSON   `gorm:"type:text" json:"sub_agent_skills"`
 
 	// SkillStatuses stores per-skill installation results reported by the sidecar.
@@ -176,4 +177,10 @@ const (
 	ScheduleRunStatusSuccess = "success"
 	ScheduleRunStatusFailed  = "failed"
 	ScheduleRunStatusTimeout = "timeout"
+)
+
+// Valid providers.
+const (
+	ProviderClaude   = "claude"
+	ProviderOpenCode = "opencode"
 )

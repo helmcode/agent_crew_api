@@ -54,12 +54,21 @@ func (s *Server) CreateTeam(c *fiber.Ctx) error {
 		rt = "docker"
 	}
 
+	prov := req.Provider
+	if prov == "" {
+		prov = models.ProviderClaude
+	}
+	if prov != models.ProviderClaude && prov != models.ProviderOpenCode {
+		return fiber.NewError(fiber.StatusBadRequest, "provider must be 'claude' or 'opencode'")
+	}
+
 	team := models.Team{
 		ID:            uuid.New().String(),
 		Name:          req.Name,
 		Description:   req.Description,
 		Status:        models.TeamStatusStopped,
 		Runtime:       rt,
+		Provider:      prov,
 		WorkspacePath: req.WorkspacePath,
 	}
 
@@ -105,13 +114,19 @@ func (s *Server) CreateTeam(c *fiber.Ctx) error {
 			subAgentModel = "inherit"
 		}
 
+		// Backward compat: accept claude_md as alias for instructions_md.
+		instructionsMD := a.InstructionsMD
+		if instructionsMD == "" && a.ClaudeMD != "" {
+			instructionsMD = a.ClaudeMD
+		}
+
 		team.Agents = append(team.Agents, models.Agent{
 			ID:                  uuid.New().String(),
 			Name:                a.Name,
 			Role:                role,
 			Specialty:           a.Specialty,
 			SystemPrompt:        a.SystemPrompt,
-			ClaudeMD:            a.ClaudeMD,
+			InstructionsMD:      instructionsMD,
 			Skills:              models.JSON(skills),
 			Permissions:         models.JSON(perms),
 			Resources:           models.JSON(resources),
@@ -153,6 +168,12 @@ func (s *Server) UpdateTeam(c *fiber.Ctx) error {
 	}
 	if req.WorkspacePath != nil {
 		updates["workspace_path"] = *req.WorkspacePath
+	}
+	if req.Provider != nil {
+		if *req.Provider != models.ProviderClaude && *req.Provider != models.ProviderOpenCode {
+			return fiber.NewError(fiber.StatusBadRequest, "provider must be 'claude' or 'opencode'")
+		}
+		updates["provider"] = *req.Provider
 	}
 
 	if len(updates) > 0 {
@@ -276,7 +297,7 @@ func (s *Server) deployTeamAsync(team models.Team) {
 			Role:         agent.Role,
 			Specialty:    agent.Specialty,
 			SystemPrompt: agent.SystemPrompt,
-			ClaudeMD:     agent.ClaudeMD,
+			ClaudeMD:     agent.InstructionsMD,
 			Skills:       json.RawMessage(agent.Skills),
 		}
 		// Give the leader the full team roster so it can delegate tasks.
@@ -291,7 +312,7 @@ func (s *Server) deployTeamAsync(team models.Team) {
 				Model:        agent.SubAgentModel,
 				Skills:       json.RawMessage(agent.SubAgentSkills),
 				GlobalSkills: leaderSkills,
-				ClaudeMD:     agent.ClaudeMD,
+				ClaudeMD:     agent.InstructionsMD,
 			}
 			if subInfo.ClaudeMD == "" {
 				subInfo.ClaudeMD = runtime.GenerateClaudeMD(info)
@@ -333,7 +354,7 @@ func (s *Server) deployTeamAsync(team models.Team) {
 		Role:         leader.Role,
 		Specialty:    leader.Specialty,
 		SystemPrompt: leader.SystemPrompt,
-		ClaudeMD:     leader.ClaudeMD,
+		ClaudeMD:     leader.InstructionsMD,
 		Skills:       json.RawMessage(leader.Skills),
 		TeamMembers:  teamMembers,
 	}
@@ -343,7 +364,7 @@ func (s *Server) deployTeamAsync(team models.Team) {
 		_ = json.Unmarshal(leader.Resources, &res)
 	}
 
-	claudeMDContent := leader.ClaudeMD
+	claudeMDContent := leader.InstructionsMD
 	if claudeMDContent == "" {
 		claudeMDContent = runtime.GenerateClaudeMD(leaderInfo)
 	}

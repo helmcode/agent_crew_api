@@ -262,7 +262,7 @@ func (e *Executor) deployTeam(ctx context.Context, team models.Team) error {
 		TeamName:      team.Name,
 		Role:          leader.Role,
 		SystemPrompt:  leader.SystemPrompt,
-		ClaudeMD:      leader.ClaudeMD,
+		ClaudeMD:      leader.InstructionsMD,
 		NATSUrl:       natsURL,
 		WorkspacePath: team.WorkspacePath,
 		Env:           env,
