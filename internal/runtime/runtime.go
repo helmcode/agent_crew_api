@@ -3,7 +3,10 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"io"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/helmcode/agent-crew/internal/permissions"
@@ -80,4 +83,41 @@ type AgentRuntime interface {
 	// ExecInContainer runs a command inside a running agent container and returns
 	// the combined stdout+stderr output.
 	ExecInContainer(ctx context.Context, id string, cmd []string) (string, error)
+	// ReadFile reads a file from a running agent container at the given path.
+	// The path must pass ValidateAgentFilePath checks.
+	ReadFile(ctx context.Context, containerID string, path string) ([]byte, error)
+	// WriteFile writes content to a file inside a running agent container.
+	// The path must pass ValidateAgentFilePath checks.
+	WriteFile(ctx context.Context, containerID string, path string, content []byte) error
+}
+
+// ValidateAgentFilePath checks that the given path is safe for agent file
+// operations. It rejects path traversal attempts and only allows paths under
+// /workspace/.claude/. Specifically: /workspace/.claude/CLAUDE.md (leader
+// instructions) or /workspace/.claude/agents/<name>.md (worker instructions).
+func ValidateAgentFilePath(filePath string) error {
+	if strings.Contains(filePath, "..") {
+		return fmt.Errorf("path traversal not allowed: %s", filePath)
+	}
+
+	cleaned := filepath.Clean(filePath)
+
+	const allowedPrefix = "/workspace/.claude/"
+	if !strings.HasPrefix(cleaned, allowedPrefix) {
+		return fmt.Errorf("path must be under /workspace/.claude/: %s", filePath)
+	}
+
+	// Allow /workspace/.claude/CLAUDE.md
+	if cleaned == "/workspace/.claude/CLAUDE.md" {
+		return nil
+	}
+
+	// Allow /workspace/.claude/agents/<name>.md
+	dir := filepath.Dir(cleaned)
+	base := filepath.Base(cleaned)
+	if dir == "/workspace/.claude/agents" && strings.HasSuffix(base, ".md") {
+		return nil
+	}
+
+	return fmt.Errorf("path not allowed (must be /workspace/.claude/CLAUDE.md or /workspace/.claude/agents/<name>.md): %s", filePath)
 }

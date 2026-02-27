@@ -615,6 +615,63 @@ func (d *DockerRuntime) ExecInContainer(ctx context.Context, id string, cmd []st
 	return combined, nil
 }
 
+// ReadFile reads a file from a running Docker container using exec + cat.
+func (d *DockerRuntime) ReadFile(ctx context.Context, containerID string, path string) ([]byte, error) {
+	if err := ValidateAgentFilePath(path); err != nil {
+		return nil, err
+	}
+	output, err := d.ExecInContainer(ctx, containerID, []string{"cat", path})
+	if err != nil {
+		return nil, fmt.Errorf("reading file %s: %w", path, err)
+	}
+	return []byte(output), nil
+}
+
+// WriteFile writes content to a file inside a running Docker container using
+// exec with stdin piped to cat.
+func (d *DockerRuntime) WriteFile(ctx context.Context, containerID string, path string, content []byte) error {
+	if err := ValidateAgentFilePath(path); err != nil {
+		return err
+	}
+
+	dir := filepath.Dir(path)
+	cmd := []string{"sh", "-c", fmt.Sprintf("mkdir -p '%s' && cat > '%s'", dir, path)}
+
+	execResp, err := d.client.ContainerExecCreate(ctx, containerID, container.ExecOptions{
+		Cmd:          cmd,
+		AttachStdin:  true,
+		AttachStdout: true,
+		AttachStderr: true,
+	})
+	if err != nil {
+		return fmt.Errorf("creating exec for writing %s: %w", path, err)
+	}
+
+	resp, err := d.client.ContainerExecAttach(ctx, execResp.ID, container.ExecAttachOptions{})
+	if err != nil {
+		return fmt.Errorf("attaching to exec for writing %s: %w", path, err)
+	}
+	defer resp.Close()
+
+	if _, err := resp.Conn.Write(content); err != nil {
+		return fmt.Errorf("writing content to %s: %w", path, err)
+	}
+	resp.CloseWrite()
+
+	// Drain output to ensure exec completes.
+	_, _ = io.Copy(io.Discard, resp.Reader)
+
+	inspect, err := d.client.ContainerExecInspect(ctx, execResp.ID)
+	if err != nil {
+		return fmt.Errorf("inspecting exec result for %s: %w", path, err)
+	}
+	if inspect.ExitCode != 0 {
+		return fmt.Errorf("write to %s exited with code %d", path, inspect.ExitCode)
+	}
+
+	return nil
+}
+
 // parseMemoryLimit converts a human-readable memory string (e.g. "512m", "1g")
 // to bytes. Returns 0 if parsing fails.
 func parseMemoryLimit(mem string) int64 {

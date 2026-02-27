@@ -597,6 +597,63 @@ func (k *K8sRuntime) ExecInContainer(ctx context.Context, id string, cmd []strin
 	return stdout.String() + stderr.String(), nil
 }
 
+// ReadFile reads a file from a running agent pod using exec + cat.
+func (k *K8sRuntime) ReadFile(ctx context.Context, id string, path string) ([]byte, error) {
+	if err := ValidateAgentFilePath(path); err != nil {
+		return nil, err
+	}
+	output, err := k.ExecInContainer(ctx, id, []string{"cat", path})
+	if err != nil {
+		return nil, fmt.Errorf("reading file %s: %w", path, err)
+	}
+	return []byte(output), nil
+}
+
+// WriteFile writes content to a file inside a running agent pod using exec
+// with stdin piped to cat.
+func (k *K8sRuntime) WriteFile(ctx context.Context, id string, path string, content []byte) error {
+	if err := ValidateAgentFilePath(path); err != nil {
+		return err
+	}
+
+	namespace, podName, err := parseAgentID(id)
+	if err != nil {
+		return err
+	}
+
+	dir := filepath.Dir(path)
+	cmd := []string{"sh", "-c", fmt.Sprintf("mkdir -p '%s' && cat > '%s'", dir, path)}
+
+	req := k.clientset.CoreV1().RESTClient().Post().
+		Resource("pods").
+		Name(podName).
+		Namespace(namespace).
+		SubResource("exec").
+		VersionedParams(&corev1.PodExecOptions{
+			Container: "agent",
+			Command:   cmd,
+			Stdin:     true,
+			Stdout:    true,
+			Stderr:    true,
+		}, k8sscheme.ParameterCodec)
+
+	executor, err := remotecommand.NewSPDYExecutor(k.restConfig, "POST", req.URL())
+	if err != nil {
+		return fmt.Errorf("creating SPDY executor for writing %s: %w", path, err)
+	}
+
+	var stderr bytes.Buffer
+	if err := executor.StreamWithContext(ctx, remotecommand.StreamOptions{
+		Stdin:  bytes.NewReader(content),
+		Stdout: io.Discard,
+		Stderr: &stderr,
+	}); err != nil {
+		return fmt.Errorf("writing file %s: %w (stderr: %s)", path, err, stderr.String())
+	}
+
+	return nil
+}
+
 // podPhaseToStatus converts a Kubernetes PodPhase to the internal status string.
 func podPhaseToStatus(phase corev1.PodPhase) string {
 	switch phase {

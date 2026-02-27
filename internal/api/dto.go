@@ -125,6 +125,17 @@ type InstallSkillResponse struct {
 	UpdatedSkills []map[string]string `json:"updated_skills,omitempty"`
 }
 
+// InstructionsResponse is the response for GET/PUT agent instructions.
+type InstructionsResponse struct {
+	Content string `json:"content"`
+	Path    string `json:"path"`
+}
+
+// UpdateInstructionsRequest is the payload for PUT /api/teams/:id/agents/:agentId/instructions.
+type UpdateInstructionsRequest struct {
+	Content string `json:"content"`
+}
+
 // invalidSlugChars matches any character that is not lowercase alphanumeric, hyphen, or underscore.
 var invalidSlugChars = regexp.MustCompile(`[^a-z0-9_-]`)
 

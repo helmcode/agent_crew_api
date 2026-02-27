@@ -75,6 +75,17 @@ func (m *mockRuntime) ExecInContainer(_ context.Context, _ string, _ []string) (
 	return "mock exec output", nil
 }
 
+func (m *mockRuntime) ReadFile(_ context.Context, _ string, path string) ([]byte, error) {
+	if err := runtime.ValidateAgentFilePath(path); err != nil {
+		return nil, err
+	}
+	return []byte("# Mock file content\n"), nil
+}
+
+func (m *mockRuntime) WriteFile(_ context.Context, _ string, path string, _ []byte) error {
+	return runtime.ValidateAgentFilePath(path)
+}
+
 // setupTestServer creates a Server with in-memory SQLite and mock runtime.
 func setupTestServer(t *testing.T) (*Server, *mockRuntime) {
 	t.Helper()

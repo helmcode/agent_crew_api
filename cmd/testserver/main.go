@@ -59,6 +59,17 @@ func (m *mockRuntime) ExecInContainer(_ context.Context, _ string, cmd []string)
 	return "mock exec output", nil
 }
 
+func (m *mockRuntime) ReadFile(_ context.Context, _ string, path string) ([]byte, error) {
+	if err := runtime.ValidateAgentFilePath(path); err != nil {
+		return nil, err
+	}
+	return []byte("# Mock file content\n"), nil
+}
+
+func (m *mockRuntime) WriteFile(_ context.Context, _ string, path string, _ []byte) error {
+	return runtime.ValidateAgentFilePath(path)
+}
+
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,

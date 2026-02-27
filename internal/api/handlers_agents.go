@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
@@ -381,6 +382,126 @@ func (s *Server) InstallAgentSkill(c *fiber.Ctx) error {
 		Output:        output,
 		UpdatedSkills: existingSkills,
 	})
+}
+
+// maxInstructionsSize is the maximum allowed size for agent instructions content (100KB).
+const maxInstructionsSize = 100 * 1024
+
+// GetInstructions reads the instructions file from a running agent's container.
+func (s *Server) GetInstructions(c *fiber.Ctx) error {
+	teamID := c.Params("id")
+	agentID := c.Params("agentId")
+
+	var team models.Team
+	if err := s.db.First(&team, "id = ?", teamID).Error; err != nil {
+		return fiber.NewError(fiber.StatusNotFound, "team not found")
+	}
+	if team.Status != models.TeamStatusRunning {
+		return fiber.NewError(fiber.StatusConflict, "team is not running")
+	}
+
+	var agent models.Agent
+	if err := s.db.Where("id = ? AND team_id = ?", agentID, teamID).First(&agent).Error; err != nil {
+		return fiber.NewError(fiber.StatusNotFound, "agent not found")
+	}
+
+	containerID, err := s.resolveAgentContainerID(teamID, agent)
+	if err != nil {
+		return err
+	}
+
+	absPath, relPath := agentInstructionsPath(agent)
+
+	content, err := s.runtime.ReadFile(c.Context(), containerID, absPath)
+	if err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, "failed to read instructions: "+err.Error())
+	}
+
+	return c.JSON(InstructionsResponse{
+		Content: string(content),
+		Path:    relPath,
+	})
+}
+
+// UpdateInstructions writes updated instructions to a running agent's container.
+func (s *Server) UpdateInstructions(c *fiber.Ctx) error {
+	teamID := c.Params("id")
+	agentID := c.Params("agentId")
+
+	var team models.Team
+	if err := s.db.First(&team, "id = ?", teamID).Error; err != nil {
+		return fiber.NewError(fiber.StatusNotFound, "team not found")
+	}
+	if team.Status != models.TeamStatusRunning {
+		return fiber.NewError(fiber.StatusConflict, "team is not running")
+	}
+
+	var agent models.Agent
+	if err := s.db.Where("id = ? AND team_id = ?", agentID, teamID).First(&agent).Error; err != nil {
+		return fiber.NewError(fiber.StatusNotFound, "agent not found")
+	}
+
+	containerID, err := s.resolveAgentContainerID(teamID, agent)
+	if err != nil {
+		return err
+	}
+
+	var req UpdateInstructionsRequest
+	if err := c.BodyParser(&req); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+	}
+
+	if strings.TrimSpace(req.Content) == "" {
+		return fiber.NewError(fiber.StatusBadRequest, "content is required")
+	}
+	if len(req.Content) > maxInstructionsSize {
+		return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("content exceeds maximum size of %d bytes", maxInstructionsSize))
+	}
+
+	absPath, relPath := agentInstructionsPath(agent)
+
+	if err := s.runtime.WriteFile(c.Context(), containerID, absPath, []byte(req.Content)); err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, "failed to write instructions: "+err.Error())
+	}
+
+	slog.Info("agent instructions updated", "agent", agent.Name, "team", teamID, "path", relPath)
+
+	return c.JSON(InstructionsResponse{
+		Content: req.Content,
+		Path:    relPath,
+	})
+}
+
+// resolveAgentContainerID returns the container ID to use for file operations.
+// Leaders use their own container; workers use the leader's container since
+// worker agent files live in the leader's shared workspace.
+func (s *Server) resolveAgentContainerID(teamID string, agent models.Agent) (string, error) {
+	if agent.Role == models.AgentRoleLeader {
+		if agent.ContainerStatus != models.ContainerStatusRunning {
+			return "", fiber.NewError(fiber.StatusConflict, "agent is not running")
+		}
+		return agent.ContainerID, nil
+	}
+
+	// Workers live inside the leader's container workspace.
+	var leader models.Agent
+	if err := s.db.Where("team_id = ? AND role = ?", teamID, models.AgentRoleLeader).First(&leader).Error; err != nil {
+		return "", fiber.NewError(fiber.StatusNotFound, "team leader not found")
+	}
+	if leader.ContainerStatus != models.ContainerStatusRunning {
+		return "", fiber.NewError(fiber.StatusConflict, "team leader is not running")
+	}
+	return leader.ContainerID, nil
+}
+
+// agentInstructionsPath returns the absolute container path and relative display
+// path for an agent's instructions file.
+func agentInstructionsPath(agent models.Agent) (absPath, relPath string) {
+	if agent.Role == models.AgentRoleLeader {
+		return "/workspace/.claude/CLAUDE.md", ".claude/CLAUDE.md"
+	}
+	filename := runtime.SubAgentFileName(agent.Name)
+	return "/workspace/.claude/agents/" + filename, ".claude/agents/" + filename
 }
 
 // DeleteAgent removes an agent from a team.
