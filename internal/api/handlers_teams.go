@@ -261,8 +261,12 @@ func (s *Server) deployTeamAsync(team models.Team) {
 	}
 
 	natsURL := s.runtime.GetNATSURL(team.Name)
+	provider := team.Provider
+	if provider == "" {
+		provider = models.ProviderClaude
+	}
 
-	// Build team member list for the leader's CLAUDE.md.
+	// Build team member list for the leader's instructions.
 	var teamMembers []runtime.TeamMemberInfo
 	for _, a := range team.Agents {
 		teamMembers = append(teamMembers, runtime.TeamMemberInfo{
@@ -273,90 +277,89 @@ func (s *Server) deployTeamAsync(team models.Team) {
 	}
 
 	// Find the leader agent and extract its skills before building sub-agent files.
-	// Leader skills are "global" — they are included in every worker's .md file.
 	var leaderSkills json.RawMessage
+	var leaderSkillConfigs []protocol.SkillConfig
 	for _, a := range team.Agents {
 		if a.Role == models.AgentRoleLeader {
 			if len(a.SubAgentSkills) > 0 && string(a.SubAgentSkills) != "null" {
 				leaderSkills = json.RawMessage(a.SubAgentSkills)
+				_ = json.Unmarshal(a.SubAgentSkills, &leaderSkillConfigs)
 			}
 			break
 		}
 	}
 
 	// Setup workspace files for all agents and deploy only the leader container.
-	// Non-leader agents are sub-agent files only — no containers.
 	var leader *models.Agent
 	subAgentFiles := map[string]string{}
 	for i := range team.Agents {
 		agent := &team.Agents[i]
 
-		// Build agent workspace info for CLAUDE.md generation.
-		info := runtime.AgentWorkspaceInfo{
-			Name:         agent.Name,
-			Role:         agent.Role,
-			Specialty:    agent.Specialty,
-			SystemPrompt: agent.SystemPrompt,
-			ClaudeMD:     agent.InstructionsMD,
-			Skills:       json.RawMessage(agent.Skills),
-		}
-		// Give the leader the full team roster so it can delegate tasks.
-		if agent.Role == models.AgentRoleLeader {
-			info.TeamMembers = teamMembers
-		}
-
 		if agent.Role != models.AgentRoleLeader {
-			subInfo := runtime.SubAgentInfo{
-				Name:         agent.Name,
-				Description:  agent.SubAgentDescription,
-				Model:        agent.SubAgentModel,
-				Skills:       json.RawMessage(agent.SubAgentSkills),
-				GlobalSkills: leaderSkills,
-				ClaudeMD:     agent.InstructionsMD,
-			}
-			if subInfo.ClaudeMD == "" {
-				subInfo.ClaudeMD = runtime.GenerateClaudeMD(info)
-			}
+			if provider == models.ProviderOpenCode {
+				// OpenCode sub-agent files go to .opencode/agents/
+				subInfo := runtime.SubAgentInfo{
+					Name:        agent.Name,
+					Description: agent.SubAgentDescription,
+					Model:       agent.SubAgentModel,
+					Skills:      json.RawMessage(agent.SubAgentSkills),
+					ClaudeMD:    agent.InstructionsMD,
+				}
+				filename := runtime.SubAgentFileName(agent.Name)
+				subAgentFiles[filename] = runtime.GenerateOpenCodeSubAgentContent(subInfo, leaderSkillConfigs)
+			} else {
+				// Claude sub-agent files go to .claude/agents/
+				info := runtime.AgentWorkspaceInfo{
+					Name:         agent.Name,
+					Role:         agent.Role,
+					Specialty:    agent.Specialty,
+					SystemPrompt: agent.SystemPrompt,
+					ClaudeMD:     agent.InstructionsMD,
+					Skills:       json.RawMessage(agent.Skills),
+				}
+				subInfo := runtime.SubAgentInfo{
+					Name:         agent.Name,
+					Description:  agent.SubAgentDescription,
+					Model:        agent.SubAgentModel,
+					Skills:       json.RawMessage(agent.SubAgentSkills),
+					GlobalSkills: leaderSkills,
+					ClaudeMD:     agent.InstructionsMD,
+				}
+				if subInfo.ClaudeMD == "" {
+					subInfo.ClaudeMD = runtime.GenerateClaudeMD(info)
+				}
+				filename := runtime.SubAgentFileName(agent.Name)
+				subAgentFiles[filename] = runtime.GenerateSubAgentContent(subInfo)
 
-			// Always collect sub-agent content for env var delivery to the sidecar.
-			// This ensures files are created even when using a Docker volume (no WorkspacePath).
-			filename := runtime.SubAgentFileName(agent.Name)
-			subAgentFiles[filename] = runtime.GenerateSubAgentContent(subInfo)
-
-			// Also write to disk when the API has direct filesystem access.
-			if team.WorkspacePath != "" {
-				if _, err := runtime.SetupSubAgentFile(team.WorkspacePath, subInfo); err != nil {
-					slog.Error("failed to setup sub-agent file", "agent", agent.Name, "error", err)
+				if team.WorkspacePath != "" {
+					if _, err := runtime.SetupSubAgentFile(team.WorkspacePath, subInfo); err != nil {
+						slog.Error("failed to setup sub-agent file", "agent", agent.Name, "error", err)
+					}
 				}
 			}
-		} else if team.WorkspacePath != "" {
-			// Leader gets a CLAUDE.md at .claude/CLAUDE.md when API has filesystem access.
-			if _, err := runtime.SetupAgentWorkspace(team.WorkspacePath, info); err != nil {
-				slog.Error("failed to setup agent workspace", "agent", agent.Name, "error", err)
+		} else {
+			if team.WorkspacePath != "" && provider == models.ProviderClaude {
+				info := runtime.AgentWorkspaceInfo{
+					Name:         agent.Name,
+					Role:         agent.Role,
+					Specialty:    agent.Specialty,
+					SystemPrompt: agent.SystemPrompt,
+					ClaudeMD:     agent.InstructionsMD,
+					Skills:       json.RawMessage(agent.Skills),
+					TeamMembers:  teamMembers,
+				}
+				if _, err := runtime.SetupAgentWorkspace(team.WorkspacePath, info); err != nil {
+					slog.Error("failed to setup agent workspace", "agent", agent.Name, "error", err)
+				}
 			}
-		}
-
-		if agent.Role == models.AgentRoleLeader {
 			leader = agent
 		}
 	}
 
-	// Only the leader gets a container. Sub-agents are file-based.
 	if leader == nil {
 		slog.Error("no leader agent found in team", "team", team.Name)
 		s.db.Model(&team).Update("status", models.TeamStatusError)
 		return
-	}
-
-	// Build leader workspace info for CLAUDE.md content.
-	leaderInfo := runtime.AgentWorkspaceInfo{
-		Name:         leader.Name,
-		Role:         leader.Role,
-		Specialty:    leader.Specialty,
-		SystemPrompt: leader.SystemPrompt,
-		ClaudeMD:     leader.InstructionsMD,
-		Skills:       json.RawMessage(leader.Skills),
-		TeamMembers:  teamMembers,
 	}
 
 	var res runtime.ResourceConfig
@@ -364,15 +367,46 @@ func (s *Server) deployTeamAsync(team models.Team) {
 		_ = json.Unmarshal(leader.Resources, &res)
 	}
 
-	claudeMDContent := leader.InstructionsMD
-	if claudeMDContent == "" {
-		claudeMDContent = runtime.GenerateClaudeMD(leaderInfo)
+	// Generate leader instructions content based on provider.
+	var instructionsMDContent string
+	if provider == models.ProviderOpenCode {
+		if leader.InstructionsMD != "" {
+			instructionsMDContent = leader.InstructionsMD
+		} else {
+			leaderSubInfo := runtime.SubAgentInfo{
+				Name:        leader.Name,
+				Description: leader.Specialty,
+				Skills:      json.RawMessage(leader.Skills),
+				ClaudeMD:    leader.InstructionsMD,
+			}
+			workers := make([]runtime.SubAgentInfo, 0)
+			for _, a := range team.Agents {
+				if a.Role != models.AgentRoleLeader {
+					workers = append(workers, runtime.SubAgentInfo{
+						Name:        a.Name,
+						Description: a.SubAgentDescription,
+					})
+				}
+			}
+			instructionsMDContent = runtime.GenerateOpenCodeAgentsMD(team.Name, leaderSubInfo, workers)
+		}
+	} else {
+		leaderInfo := runtime.AgentWorkspaceInfo{
+			Name:         leader.Name,
+			Role:         leader.Role,
+			Specialty:    leader.Specialty,
+			SystemPrompt: leader.SystemPrompt,
+			ClaudeMD:     leader.InstructionsMD,
+			Skills:       json.RawMessage(leader.Skills),
+			TeamMembers:  teamMembers,
+		}
+		instructionsMDContent = leader.InstructionsMD
+		if instructionsMDContent == "" {
+			instructionsMDContent = runtime.GenerateClaudeMD(leaderInfo)
+		}
 	}
 
-	// Collect all unique skills from all agents (leaders and workers) so the
-	// sidecar can install them via `skills add` before the leader process starts.
-	// Leader skills are "global" — they get installed in the container and are
-	// listed in every worker sub-agent .md file.
+	// Collect all unique skills from all agents for sidecar installation.
 	type skillKey struct{ RepoURL, SkillName string }
 	skillsSet := map[skillKey]struct{}{}
 	var allSkills []protocol.SkillConfig
@@ -389,13 +423,9 @@ func (s *Server) deployTeamAsync(team models.Team) {
 				}
 			}
 		} else {
-			// Fallback: try as array of strings ("owner/repo:skill-name" legacy format).
 			var strSkills []string
 			if err := json.Unmarshal(a.SubAgentSkills, &strSkills); err == nil {
 				for _, s := range strSkills {
-					// Use LastIndex to find the colon separating repo from skill name,
-					// since full URLs like "https://github.com/owner/repo:skill" contain
-					// earlier colons in the scheme (https:).
 					idx := strings.LastIndex(s, ":")
 					if idx <= 0 || idx == len(s)-1 {
 						continue
@@ -420,18 +450,24 @@ func (s *Server) deployTeamAsync(team models.Team) {
 	}
 	skillsJSON, _ := json.Marshal(allSkills)
 
-	// Merge settings env with skills install list.
 	agentEnv := envFromSettings
 	if len(allSkills) > 0 {
 		agentEnv["AGENT_SKILLS_INSTALL"] = string(skillsJSON)
+	}
+	// Pass OPENCODE_MODEL for OpenCode teams.
+	if provider == models.ProviderOpenCode {
+		if m := envFromSettings["OPENCODE_MODEL"]; m != "" {
+			agentEnv["OPENCODE_MODEL"] = m
+		}
 	}
 
 	agentCfg := runtime.AgentConfig{
 		Name:          leader.Name,
 		TeamName:      team.Name,
 		Role:          leader.Role,
+		Provider:      provider,
 		SystemPrompt:  leader.SystemPrompt,
-		ClaudeMD:      claudeMDContent,
+		ClaudeMD:      instructionsMDContent,
 		Resources:     res,
 		NATSUrl:       natsURL,
 		WorkspacePath: team.WorkspacePath,

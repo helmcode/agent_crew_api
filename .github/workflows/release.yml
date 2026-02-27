@@ -63,9 +63,10 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Prepare agent build context
+      - name: Prepare agent build contexts
         run: |
           cp bin/sidecar-linux build/agent/sidecar
+          cp bin/sidecar-linux build/opencode-agent/sidecar
 
       - name: Build and push Agent image
         uses: docker/build-push-action@v6
@@ -77,6 +78,21 @@ jobs:
           tags: |
             ghcr.io/helmcode/agent_crew_agent:${{ steps.version.outputs.version }}
             ghcr.io/helmcode/agent_crew_agent:latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push OpenCode Agent image
+        uses: docker/build-push-action@v6
+        with:
+          context: build/opencode-agent
+          file: build/opencode-agent/Dockerfile
+          push: true
+          provenance: false
+          tags: |
+            ghcr.io/helmcode/agent_crew_opencode_agent:${{ steps.version.outputs.version }}
+            ghcr.io/helmcode/agent_crew_opencode_agent:latest
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
           cache-from: type=gha

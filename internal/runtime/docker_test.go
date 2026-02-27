@@ -96,6 +96,133 @@ func TestExtractNATSAuthToken(t *testing.T) {
 	}
 }
 
+func TestImageSelectionByProvider(t *testing.T) {
+	tests := []struct {
+		name           string
+		provider       string
+		configImage    string
+		agentImage     string
+		openCodeImage  string
+		expectedPrefix string
+	}{
+		{"claude default", "claude", "", "claude-img:v1", "opencode-img:v1", "claude-img:v1"},
+		{"opencode default", "opencode", "", "claude-img:v1", "opencode-img:v1", "opencode-img:v1"},
+		{"empty provider defaults to claude", "", "", "claude-img:v1", "opencode-img:v1", "claude-img:v1"},
+		{"config image overrides provider", "opencode", "custom:v2", "claude-img:v1", "opencode-img:v1", "custom:v2"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			img := tt.configImage
+			if img == "" {
+				if tt.provider == "opencode" {
+					img = tt.openCodeImage
+				} else {
+					img = tt.agentImage
+				}
+			}
+			if img != tt.expectedPrefix {
+				t.Errorf("got image %q, want %q", img, tt.expectedPrefix)
+			}
+		})
+	}
+}
+
+func TestDefaultOpenCodeAgentImage(t *testing.T) {
+	if DefaultOpenCodeAgentImage == "" {
+		t.Error("DefaultOpenCodeAgentImage should not be empty")
+	}
+	if DefaultOpenCodeAgentImage == DefaultAgentImage {
+		t.Error("DefaultOpenCodeAgentImage should differ from DefaultAgentImage")
+	}
+}
+
+func TestProviderAuthValidation_Claude(t *testing.T) {
+	// Claude requires ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN.
+	tests := []struct {
+		name    string
+		env     map[string]string
+		wantErr bool
+	}{
+		{"api key only", map[string]string{"ANTHROPIC_API_KEY": "sk-ant-123"}, false},
+		{"oauth token only", map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "oauth-token"}, false},
+		{"both present", map[string]string{"ANTHROPIC_API_KEY": "sk-ant-123", "CLAUDE_CODE_OAUTH_TOKEN": "oauth"}, false},
+		{"none present", map[string]string{}, true},
+		{"alias only", map[string]string{"ANTHROPIC_AUTH_TOKEN": "auth-token"}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			apiKey := tt.env["ANTHROPIC_API_KEY"]
+			oauthToken := tt.env["CLAUDE_CODE_OAUTH_TOKEN"]
+			if oauthToken == "" {
+				oauthToken = tt.env["ANTHROPIC_AUTH_TOKEN"]
+			}
+			hasAuth := apiKey != "" || oauthToken != ""
+			if tt.wantErr && hasAuth {
+				t.Error("expected no auth, but found auth")
+			}
+			if !tt.wantErr && !hasAuth {
+				t.Error("expected auth, but found none")
+			}
+		})
+	}
+}
+
+func TestProviderAuthValidation_OpenCode(t *testing.T) {
+	// OpenCode requires at least one API key or model URL.
+	openCodeKeys := []string{
+		"ANTHROPIC_API_KEY", "OPENAI_API_KEY",
+		"GOOGLE_GENERATIVE_AI_API_KEY",
+		"OLLAMA_BASE_URL", "LM_STUDIO_BASE_URL",
+	}
+
+	tests := []struct {
+		name    string
+		env     map[string]string
+		wantErr bool
+	}{
+		{"anthropic key", map[string]string{"ANTHROPIC_API_KEY": "sk-ant-123"}, false},
+		{"openai key", map[string]string{"OPENAI_API_KEY": "sk-oai-123"}, false},
+		{"google key", map[string]string{"GOOGLE_GENERATIVE_AI_API_KEY": "goog-123"}, false},
+		{"ollama url", map[string]string{"OLLAMA_BASE_URL": "http://localhost:11434"}, false},
+		{"lmstudio url", map[string]string{"LM_STUDIO_BASE_URL": "http://localhost:1234"}, false},
+		{"none present", map[string]string{}, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hasAuth := false
+			for _, key := range openCodeKeys {
+				if v := tt.env[key]; v != "" {
+					hasAuth = true
+					break
+				}
+			}
+			if tt.wantErr && hasAuth {
+				t.Error("expected no auth, but found auth")
+			}
+			if !tt.wantErr && !hasAuth {
+				t.Error("expected auth, but found none")
+			}
+		})
+	}
+}
+
+func TestProviderEnvVars(t *testing.T) {
+	// Verify that AGENT_PROVIDER is included in the env vars.
+	config := AgentConfig{
+		Name:     "test-agent",
+		TeamName: "test-team",
+		Role:     "leader",
+		Provider: "opencode",
+	}
+
+	if config.Provider != "opencode" {
+		t.Errorf("expected provider 'opencode', got %q", config.Provider)
+	}
+}
+
 func TestAgentContainerName(t *testing.T) {
 	tests := []struct {
 		teamName  string

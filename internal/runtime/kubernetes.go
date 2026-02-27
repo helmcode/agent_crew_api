@@ -27,9 +27,10 @@ import (
 
 // K8sRuntime implements AgentRuntime using the Kubernetes API.
 type K8sRuntime struct {
-	clientset  kubernetes.Interface
-	restConfig *rest.Config
-	agentImage string
+	clientset          kubernetes.Interface
+	restConfig         *rest.Config
+	agentImage         string
+	openCodeAgentImage string
 }
 
 // NewK8sRuntime creates a K8sRuntime, trying in-cluster config first,
@@ -59,7 +60,12 @@ func NewK8sRuntime() (*K8sRuntime, error) {
 		agentImage = DefaultAgentImage
 	}
 
-	return &K8sRuntime{clientset: clientset, restConfig: config, agentImage: agentImage}, nil
+	openCodeAgentImage := os.Getenv("OPENCODE_AGENT_IMAGE")
+	if openCodeAgentImage == "" {
+		openCodeAgentImage = DefaultOpenCodeAgentImage
+	}
+
+	return &K8sRuntime{clientset: clientset, restConfig: config, agentImage: agentImage, openCodeAgentImage: openCodeAgentImage}, nil
 }
 
 // Naming conventions for Kubernetes resources.
@@ -300,50 +306,70 @@ func (k *K8sRuntime) DeployAgent(ctx context.Context, config AgentConfig) (*Agen
 	podName := agentPodName(config.Name)
 	img := config.Image
 	if img == "" {
-		img = k.agentImage
+		if config.Provider == "opencode" {
+			img = k.openCodeAgentImage
+		} else {
+			img = k.agentImage
+		}
 	}
 
 	slog.Info("deploying k8s agent", "agent", config.Name, "team", config.TeamName, "namespace", ns)
 
-	// Ensure API key secret exists in namespace.
-	if err := k.ensureAPIKeySecret(ctx, ns, config.Env); err != nil {
-		return nil, fmt.Errorf("ensuring api key secret: %w", err)
+	// Ensure API key secret exists in namespace (Claude provider needs it mounted as file).
+	if config.Provider != "opencode" {
+		if err := k.ensureAPIKeySecret(ctx, ns, config.Env); err != nil {
+			return nil, fmt.Errorf("ensuring api key secret: %w", err)
+		}
 	}
 
-	// Build env vars.
+	// Build common env vars.
 	permJSON, _ := json.Marshal(config.Permissions)
 	env := []corev1.EnvVar{
 		{Name: "AGENT_NAME", Value: config.Name},
 		{Name: "TEAM_NAME", Value: config.TeamName},
 		{Name: "NATS_URL", Value: config.NATSUrl},
 		{Name: "AGENT_ROLE", Value: config.Role},
+		{Name: "AGENT_PROVIDER", Value: config.Provider},
 		{Name: "AGENT_PERMISSIONS", Value: string(permJSON)},
-		{Name: "ANTHROPIC_API_KEY_FILE", Value: "/run/secrets/anthropic_api_key"},
 	}
 
-	// Set WORKSPACE_PATH env var when a host workspace is mounted.
 	if config.WorkspacePath != "" {
 		env = append(env, corev1.EnvVar{Name: "WORKSPACE_PATH", Value: "/workspace"})
 	}
-
-	// Pass CLAUDE.md content via env var so the sidecar can write it at startup.
 	if config.ClaudeMD != "" {
 		env = append(env, corev1.EnvVar{Name: "AGENT_CLAUDE_MD", Value: config.ClaudeMD})
 	}
 
-	// Pass OAuth token if available (for Claude Code OAuth authentication).
-	oauthToken := config.Env["CLAUDE_CODE_OAUTH_TOKEN"]
-	if oauthToken != "" {
-		env = append(env, corev1.EnvVar{Name: "CLAUDE_CODE_OAUTH_TOKEN", Value: oauthToken})
+	// Provider-specific env vars.
+	handledEnvKeys := map[string]bool{}
+	if config.Provider == "opencode" {
+		openCodeKeys := []string{
+			"ANTHROPIC_API_KEY", "OPENAI_API_KEY",
+			"GOOGLE_GENERATIVE_AI_API_KEY",
+			"OLLAMA_BASE_URL", "LM_STUDIO_BASE_URL",
+		}
+		for _, key := range openCodeKeys {
+			handledEnvKeys[key] = true
+			if v := config.Env[key]; v != "" {
+				env = append(env, corev1.EnvVar{Name: key, Value: v})
+			}
+		}
+		if v := config.Env["OPENCODE_MODEL"]; v != "" {
+			env = append(env, corev1.EnvVar{Name: "OPENCODE_MODEL", Value: v})
+			handledEnvKeys["OPENCODE_MODEL"] = true
+		}
+	} else {
+		env = append(env, corev1.EnvVar{Name: "ANTHROPIC_API_KEY_FILE", Value: "/run/secrets/anthropic_api_key"})
+		oauthToken := config.Env["CLAUDE_CODE_OAUTH_TOKEN"]
+		if oauthToken != "" {
+			env = append(env, corev1.EnvVar{Name: "CLAUDE_CODE_OAUTH_TOKEN", Value: oauthToken})
+		}
+		handledEnvKeys["ANTHROPIC_API_KEY"] = true
+		handledEnvKeys["CLAUDE_CODE_OAUTH_TOKEN"] = true
+		handledEnvKeys["ANTHROPIC_AUTH_TOKEN"] = true
 	}
 
-	// Forward remaining env vars from config.Env (e.g. AGENT_SKILLS_INSTALL)
-	// that were not already handled above via specific logic.
-	handledEnvKeys := map[string]bool{
-		"ANTHROPIC_API_KEY":       true,
-		"CLAUDE_CODE_OAUTH_TOKEN": true,
-		"ANTHROPIC_AUTH_TOKEN":    true,
-	}
+	// Forward remaining env vars from config.Env.
 	for k, v := range config.Env {
 		if !handledEnvKeys[k] && v != "" {
 			env = append(env, corev1.EnvVar{Name: k, Value: v})
@@ -373,7 +399,13 @@ func (k *K8sRuntime) DeployAgent(ctx context.Context, config AgentConfig) (*Agen
 	volumes := []corev1.Volume{}
 	volumeMounts := []corev1.VolumeMount{
 		{Name: "workspace", MountPath: "/workspace"},
-		{Name: "api-key", MountPath: "/run/secrets", ReadOnly: true},
+	}
+
+	// Claude provider mounts the API key as a file secret.
+	if config.Provider != "opencode" {
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name: "api-key", MountPath: "/run/secrets", ReadOnly: true,
+		})
 	}
 
 	if config.WorkspacePath != "" {
@@ -416,20 +448,23 @@ func (k *K8sRuntime) DeployAgent(ctx context.Context, config AgentConfig) (*Agen
 		}
 	}
 
-	// Build final volumes list: workspace + agent-config (if any) + api-key.
+	// Build final volumes list.
 	allVolumes := []corev1.Volume{workspaceVolume}
 	allVolumes = append(allVolumes, volumes...)
-	allVolumes = append(allVolumes, corev1.Volume{
-		Name: "api-key",
-		VolumeSource: corev1.VolumeSource{
-			Secret: &corev1.SecretVolumeSource{
-				SecretName: apiKeySecretName(),
-				Items: []corev1.KeyToPath{
-					{Key: "api-key", Path: "anthropic_api_key"},
+	// Claude provider needs the API key secret volume.
+	if config.Provider != "opencode" {
+		allVolumes = append(allVolumes, corev1.Volume{
+			Name: "api-key",
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName: apiKeySecretName(),
+					Items: []corev1.KeyToPath{
+						{Key: "api-key", Path: "anthropic_api_key"},
+					},
 				},
 			},
-		},
-	})
+		})
+	}
 
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{

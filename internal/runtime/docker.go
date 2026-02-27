@@ -167,8 +167,9 @@ func natsHostAddress() string {
 
 // DockerRuntime implements AgentRuntime using the Docker Engine API.
 type DockerRuntime struct {
-	client     *client.Client
-	agentImage string
+	client              *client.Client
+	agentImage          string
+	openCodeAgentImage  string
 }
 
 // NewDockerRuntime creates a DockerRuntime using the default Docker client from env.
@@ -183,7 +184,12 @@ func NewDockerRuntime() (*DockerRuntime, error) {
 		agentImage = DefaultAgentImage
 	}
 
-	return &DockerRuntime{client: cli, agentImage: agentImage}, nil
+	openCodeAgentImage := os.Getenv("OPENCODE_AGENT_IMAGE")
+	if openCodeAgentImage == "" {
+		openCodeAgentImage = DefaultOpenCodeAgentImage
+	}
+
+	return &DockerRuntime{client: cli, agentImage: agentImage, openCodeAgentImage: openCodeAgentImage}, nil
 }
 
 func teamNetworkName(teamName string) string { return "team-" + teamName }
@@ -343,7 +349,11 @@ func (d *DockerRuntime) DeployAgent(ctx context.Context, config AgentConfig) (*A
 	config.Name = sanitizeName(config.Name)
 	img := config.Image
 	if img == "" {
-		img = d.agentImage
+		if config.Provider == "opencode" {
+			img = d.openCodeAgentImage
+		} else {
+			img = d.agentImage
+		}
 	}
 
 	// Validate workspace path exists on the host before attempting to mount it.
@@ -374,37 +384,19 @@ func (d *DockerRuntime) DeployAgent(ctx context.Context, config AgentConfig) (*A
 	// Serialize permissions for env var.
 	permJSON, _ := json.Marshal(config.Permissions)
 
-	// Read API key from Settings DB.
-	apiKey := config.Env["ANTHROPIC_API_KEY"]
-
-	// Read OAuth token from Settings DB (including alias).
-	oauthToken := config.Env["CLAUDE_CODE_OAUTH_TOKEN"]
-	if oauthToken == "" {
-		oauthToken = config.Env["ANTHROPIC_AUTH_TOKEN"]
-	}
-
-	// Require at least one authentication method.
-	if apiKey == "" && oauthToken == "" {
-		return nil, fmt.Errorf("no auth configured: set ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN in the Settings page")
-	}
-
 	// Read NATS auth token: same token used to start the NATS container.
 	natsToken := os.Getenv("NATS_AUTH_TOKEN")
 
+	// Common env vars for all providers.
 	env := []string{
 		"AGENT_NAME=" + config.Name,
 		"TEAM_NAME=" + config.TeamName,
 		"NATS_URL=" + config.NATSUrl,
 		"AGENT_ROLE=" + config.Role,
+		"AGENT_PROVIDER=" + config.Provider,
 		"AGENT_PERMISSIONS=" + string(permJSON),
 	}
 
-	if apiKey != "" {
-		env = append(env, "ANTHROPIC_API_KEY="+apiKey)
-	}
-	if oauthToken != "" {
-		env = append(env, "CLAUDE_CODE_OAUTH_TOKEN="+oauthToken)
-	}
 	if natsToken != "" {
 		env = append(env, "NATS_AUTH_TOKEN="+natsToken)
 	}
@@ -414,26 +406,64 @@ func (d *DockerRuntime) DeployAgent(ctx context.Context, config AgentConfig) (*A
 		env = append(env, "WORKSPACE_PATH=/workspace")
 	}
 
-	// Pass CLAUDE.md content via env var so the sidecar can write it at startup.
-	// This works even when the API container has no access to the host workspace path.
+	// Pass CLAUDE.md / AGENTS.MD content via env var so the sidecar writes it at startup.
 	if config.ClaudeMD != "" {
 		env = append(env, "AGENT_CLAUDE_MD="+config.ClaudeMD)
 	}
 
-	// Pass sub-agent file contents via env var so the sidecar can write them to
-	// .claude/agents/. Required when using a Docker volume (no WorkspacePath).
+	// Pass sub-agent file contents via env var so the sidecar can write them.
 	if len(config.SubAgentFiles) > 0 {
 		filesJSON, _ := json.Marshal(config.SubAgentFiles)
 		env = append(env, "AGENT_SUB_AGENT_FILES="+string(filesJSON))
 	}
 
-	// Forward remaining env vars from config.Env (e.g. AGENT_SKILLS_INSTALL)
-	// that were not already handled above via specific logic.
-	handledEnvKeys := map[string]bool{
-		"ANTHROPIC_API_KEY":       true,
-		"CLAUDE_CODE_OAUTH_TOKEN": true,
-		"ANTHROPIC_AUTH_TOKEN":    true,
+	// Provider-specific auth validation and env vars.
+	handledEnvKeys := map[string]bool{}
+	if config.Provider == "opencode" {
+		// OpenCode: forward all supported API keys/URLs. Require at least one.
+		openCodeKeys := []string{
+			"ANTHROPIC_API_KEY", "OPENAI_API_KEY",
+			"GOOGLE_GENERATIVE_AI_API_KEY",
+			"OLLAMA_BASE_URL", "LM_STUDIO_BASE_URL",
+		}
+		hasAuth := false
+		for _, key := range openCodeKeys {
+			handledEnvKeys[key] = true
+			if v := config.Env[key]; v != "" {
+				env = append(env, key+"="+v)
+				hasAuth = true
+			}
+		}
+		if !hasAuth {
+			return nil, fmt.Errorf("no auth configured for OpenCode: set at least one API key (ANTHROPIC_API_KEY, OPENAI_API_KEY, etc.) in the Settings page")
+		}
+		// Forward OPENCODE_MODEL if set.
+		if v := config.Env["OPENCODE_MODEL"]; v != "" {
+			env = append(env, "OPENCODE_MODEL="+v)
+			handledEnvKeys["OPENCODE_MODEL"] = true
+		}
+	} else {
+		// Claude: require ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN.
+		apiKey := config.Env["ANTHROPIC_API_KEY"]
+		oauthToken := config.Env["CLAUDE_CODE_OAUTH_TOKEN"]
+		if oauthToken == "" {
+			oauthToken = config.Env["ANTHROPIC_AUTH_TOKEN"]
+		}
+		if apiKey == "" && oauthToken == "" {
+			return nil, fmt.Errorf("no auth configured: set ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN in the Settings page")
+		}
+		if apiKey != "" {
+			env = append(env, "ANTHROPIC_API_KEY="+apiKey)
+		}
+		if oauthToken != "" {
+			env = append(env, "CLAUDE_CODE_OAUTH_TOKEN="+oauthToken)
+		}
+		handledEnvKeys["ANTHROPIC_API_KEY"] = true
+		handledEnvKeys["CLAUDE_CODE_OAUTH_TOKEN"] = true
+		handledEnvKeys["ANTHROPIC_AUTH_TOKEN"] = true
 	}
+
+	// Forward remaining env vars from config.Env (e.g. AGENT_SKILLS_INSTALL).
 	for k, v := range config.Env {
 		if !handledEnvKeys[k] && v != "" {
 			env = append(env, k+"="+v)
