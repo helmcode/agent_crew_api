@@ -45,9 +45,10 @@ type UserMessagePayload struct {
 
 // LeaderResponsePayload carries the leader's response back to the user.
 type LeaderResponsePayload struct {
-	Status string `json:"status"` // completed, failed, partial
-	Result string `json:"result"`
-	Error  string `json:"error,omitempty"`
+	Status         string `json:"status"` // completed, failed, partial
+	Result         string `json:"result"`
+	Error          string `json:"error,omitempty"`
+	ScheduledRunID string `json:"scheduled_run_id,omitempty"` // Correlation ID for scheduled runs
 }
 
 // SystemCommandPayload carries a system-level command.

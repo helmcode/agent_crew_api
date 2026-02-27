@@ -37,6 +37,9 @@ type Bridge struct {
 	manager *claude.Manager
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
+
+	mu             sync.Mutex
+	scheduledRunID string // correlation ID from the latest scheduled run request
 }
 
 // NewBridge creates a Bridge with the given components.
@@ -110,6 +113,11 @@ func (b *Bridge) handleUserMessage(msg *protocol.Message) {
 		slog.Error("failed to parse user message", "error", err)
 		return
 	}
+
+	// Store the scheduled run ID for correlation in the response.
+	b.mu.Lock()
+	b.scheduledRunID = payload.ScheduledRunID
+	b.mu.Unlock()
 
 	slog.Info("forwarding user message to claude", "agent", b.config.AgentName, "content_length", len(payload.Content))
 	if err := b.manager.SendInput(payload.Content); err != nil {
@@ -288,10 +296,17 @@ func (b *Bridge) publishActivityEvent(event *claude.StreamEvent, action string) 
 
 // publishLeaderResponse sends a leader response to the team leader NATS channel.
 func (b *Bridge) publishLeaderResponse(refMsgID, status, result, errMsg string) {
+	// Capture and clear the scheduled run ID for this response.
+	b.mu.Lock()
+	runID := b.scheduledRunID
+	b.scheduledRunID = ""
+	b.mu.Unlock()
+
 	payload := protocol.LeaderResponsePayload{
-		Status: status,
-		Result: result,
-		Error:  errMsg,
+		Status:         status,
+		Result:         result,
+		Error:          errMsg,
+		ScheduledRunID: runID,
 	}
 
 	msg, err := protocol.NewMessage(

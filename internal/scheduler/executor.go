@@ -383,9 +383,16 @@ func (e *Executor) sendPromptAndWait(ctx context.Context, teamName, message, run
 				}
 			}
 
+			// Filter: ignore responses meant for a different scheduled run.
+			if payload.ScheduledRunID != "" && payload.ScheduledRunID != runID {
+				slog.Debug("executor: ignoring response for different scheduled run",
+					"expected_run_id", runID, "got_run_id", payload.ScheduledRunID)
+				return
+			}
+
 			slog.Info("executor: received leader response",
 				"subject", subject, "status", payload.Status,
-				"response_length", len(responseText))
+				"run_id", runID, "response_length", len(responseText))
 
 			select {
 			case responseCh <- leaderResult{text: responseText}:
