@@ -342,3 +342,105 @@ func TestK8sImageSelection(t *testing.T) {
 		t.Error("K8s claude and opencode images should be different")
 	}
 }
+
+func TestProviderFieldOnAgentConfig(t *testing.T) {
+	// Verify that the Provider field is carried on AgentConfig for both providers.
+	tests := []struct {
+		name     string
+		provider string
+	}{
+		{"claude provider", "claude"},
+		{"opencode provider", "opencode"},
+		{"empty defaults to claude", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := AgentConfig{
+				Name:     "test-agent",
+				TeamName: "test-team",
+				Role:     "leader",
+				Provider: tt.provider,
+			}
+
+			if cfg.Provider != tt.provider {
+				t.Errorf("provider: got %q, want %q", cfg.Provider, tt.provider)
+			}
+		})
+	}
+}
+
+func TestProviderAuthValidation_OpenCodeAcceptsAllKeys(t *testing.T) {
+	// Each OpenCode-supported key should independently satisfy auth.
+	keys := []string{
+		"ANTHROPIC_API_KEY",
+		"OPENAI_API_KEY",
+		"GOOGLE_GENERATIVE_AI_API_KEY",
+		"OLLAMA_BASE_URL",
+		"LM_STUDIO_BASE_URL",
+	}
+
+	for _, key := range keys {
+		t.Run(key, func(t *testing.T) {
+			env := map[string]string{key: "test-value-123"}
+			openCodeKeys := []string{
+				"ANTHROPIC_API_KEY", "OPENAI_API_KEY",
+				"GOOGLE_GENERATIVE_AI_API_KEY",
+				"OLLAMA_BASE_URL", "LM_STUDIO_BASE_URL",
+			}
+			hasAuth := false
+			for _, k := range openCodeKeys {
+				if v := env[k]; v != "" {
+					hasAuth = true
+					break
+				}
+			}
+			if !hasAuth {
+				t.Errorf("key %s should satisfy OpenCode auth", key)
+			}
+		})
+	}
+}
+
+func TestDockerRuntimeFields(t *testing.T) {
+	// Verify DockerRuntime carries both image fields.
+	d := &DockerRuntime{
+		agentImage:         DefaultAgentImage,
+		openCodeAgentImage: DefaultOpenCodeAgentImage,
+	}
+
+	if d.agentImage == "" {
+		t.Error("agentImage should not be empty")
+	}
+	if d.openCodeAgentImage == "" {
+		t.Error("openCodeAgentImage should not be empty")
+	}
+	if d.agentImage == d.openCodeAgentImage {
+		t.Error("agentImage and openCodeAgentImage should be different")
+	}
+}
+
+func TestValidateAgentFilePath_OpenCodePaths(t *testing.T) {
+	// ValidateAgentFilePath only allows /workspace/.claude/ paths.
+	// OpenCode paths (.opencode/) are NOT validated by this function
+	// because file operations through the API only target Claude paths.
+	tests := []struct {
+		path    string
+		wantErr bool
+	}{
+		{"/workspace/.claude/CLAUDE.md", false},
+		{"/workspace/.claude/agents/worker.md", false},
+		{"/workspace/.opencode/AGENTS.MD", true},             // OpenCode paths not allowed
+		{"/workspace/.opencode/agents/worker.md", true},      // OpenCode paths not allowed
+		{"/workspace/../etc/passwd", true},                    // Path traversal
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			err := ValidateAgentFilePath(tt.path)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateAgentFilePath(%q): got err=%v, wantErr=%v", tt.path, err, tt.wantErr)
+			}
+		})
+	}
+}

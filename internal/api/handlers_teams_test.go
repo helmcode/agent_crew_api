@@ -960,6 +960,247 @@ func TestDeployTeamAsync_OpenCodeProvider_WithSkills(t *testing.T) {
 	}
 }
 
+func TestDeployTeamAsync_ClaudeProvider_GeneratesClaudeFiles(t *testing.T) {
+	srv, mock := setupTestServer(t)
+
+	srv.db.Create(&models.Settings{Key: "ANTHROPIC_API_KEY", Value: "sk-ant-test"})
+
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name:     "claude-files-team",
+		Provider: "claude",
+		Agents: []CreateAgentInput{
+			{Name: "the-leader", Role: "leader", SystemPrompt: "You lead"},
+			{Name: "backend-dev", Role: "worker", SubAgentDescription: "Go backend developer"},
+		},
+	})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+
+	srv.deployTeamAsync(team)
+
+	cfg := mock.lastAgentConfig
+	if cfg == nil {
+		t.Fatal("expected lastAgentConfig to be set")
+	}
+
+	// Claude sub-agent files should have Claude-specific frontmatter.
+	backendFile, ok := cfg.SubAgentFiles["backend-dev.md"]
+	if !ok {
+		t.Fatal("missing sub-agent file for backend-dev")
+	}
+	if !containsStr(backendFile, "background: true") {
+		t.Error("Claude sub-agent file should contain 'background: true'")
+	}
+	if !containsStr(backendFile, "isolation: worktree") {
+		t.Error("Claude sub-agent file should contain 'isolation: worktree'")
+	}
+	if !containsStr(backendFile, "permissionMode: bypassPermissions") {
+		t.Error("Claude sub-agent file should contain 'permissionMode: bypassPermissions'")
+	}
+
+	// Claude sub-agent files should NOT have OpenCode-specific sections.
+	if containsStr(backendFile, "tools:") {
+		t.Error("Claude sub-agent file should NOT contain OpenCode 'tools:' section")
+	}
+	if containsStr(backendFile, "permission:") {
+		t.Error("Claude sub-agent file should NOT contain OpenCode 'permission:' section")
+	}
+
+	// Verify provider is claude.
+	if cfg.Provider != "claude" {
+		t.Errorf("agent config provider: got %q, want 'claude'", cfg.Provider)
+	}
+}
+
+func TestDeployTeamAsync_OpenCodeProvider_MultipleWorkers(t *testing.T) {
+	srv, mock := setupTestServer(t)
+
+	srv.db.Create(&models.Settings{Key: "OPENAI_API_KEY", Value: "sk-oai-test"})
+
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name:     "opencode-multi-worker",
+		Provider: "opencode",
+		Agents: []CreateAgentInput{
+			{Name: "the-leader", Role: "leader"},
+			{Name: "worker-a", Role: "worker", SubAgentDescription: "First worker"},
+			{Name: "worker-b", Role: "worker", SubAgentDescription: "Second worker"},
+			{Name: "worker-c", Role: "worker", SubAgentDescription: "Third worker"},
+		},
+	})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+
+	srv.deployTeamAsync(team)
+
+	cfg := mock.lastAgentConfig
+	if cfg == nil {
+		t.Fatal("expected lastAgentConfig to be set")
+	}
+
+	// All three workers should have sub-agent files.
+	expectedWorkers := []string{"worker-a.md", "worker-b.md", "worker-c.md"}
+	for _, name := range expectedWorkers {
+		content, ok := cfg.SubAgentFiles[name]
+		if !ok {
+			t.Errorf("missing sub-agent file for %s", name)
+			continue
+		}
+		// Each should have OpenCode format.
+		if !containsStr(content, "tools:") {
+			t.Errorf("%s missing 'tools:' section", name)
+		}
+		if !containsStr(content, "permission:") {
+			t.Errorf("%s missing 'permission:' section", name)
+		}
+	}
+
+	// AGENTS.MD should list all workers.
+	if cfg.ClaudeMD == "" {
+		t.Fatal("expected ClaudeMD (AGENTS.MD) to be set")
+	}
+	if !containsStr(cfg.ClaudeMD, "worker-a") {
+		t.Error("AGENTS.MD should list worker-a")
+	}
+	if !containsStr(cfg.ClaudeMD, "worker-b") {
+		t.Error("AGENTS.MD should list worker-b")
+	}
+	if !containsStr(cfg.ClaudeMD, "worker-c") {
+		t.Error("AGENTS.MD should list worker-c")
+	}
+}
+
+func TestDeployTeamAsync_ProviderForwardedInAgentConfig(t *testing.T) {
+	// Verify that the provider field is always forwarded to the runtime.
+	tests := []struct {
+		name         string
+		provider     string
+		settingsKey  string
+		settingsVal  string
+		wantProvider string
+	}{
+		{"claude", "claude", "ANTHROPIC_API_KEY", "sk-ant-test", "claude"},
+		{"opencode", "opencode", "OPENAI_API_KEY", "sk-oai-test", "opencode"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv, mock := setupTestServer(t)
+
+			srv.db.Create(&models.Settings{Key: tt.settingsKey, Value: tt.settingsVal})
+
+			teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+				Name:     "provider-fwd-" + tt.name,
+				Provider: tt.provider,
+				Agents: []CreateAgentInput{
+					{Name: "the-leader", Role: "leader"},
+				},
+			})
+			var team models.Team
+			parseJSON(t, teamRec, &team)
+
+			srv.deployTeamAsync(team)
+
+			cfg := mock.lastAgentConfig
+			if cfg == nil {
+				t.Fatal("expected lastAgentConfig to be set")
+			}
+			if cfg.Provider != tt.wantProvider {
+				t.Errorf("provider: got %q, want %q", cfg.Provider, tt.wantProvider)
+			}
+		})
+	}
+}
+
+func TestDeployTeamAsync_ClaudeProvider_DoesNotGenerateOpenCodeFormat(t *testing.T) {
+	srv, mock := setupTestServer(t)
+
+	srv.db.Create(&models.Settings{Key: "ANTHROPIC_API_KEY", Value: "sk-ant-test"})
+
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name:     "claude-no-opencode",
+		Provider: "claude",
+		Agents: []CreateAgentInput{
+			{Name: "the-leader", Role: "leader"},
+			{Name: "worker-1", Role: "worker", SubAgentDescription: "test worker"},
+		},
+	})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+
+	srv.deployTeamAsync(team)
+
+	cfg := mock.lastAgentConfig
+	if cfg == nil {
+		t.Fatal("expected lastAgentConfig to be set")
+	}
+
+	// ClaudeMD should be Claude format, not OpenCode AGENTS.MD.
+	if containsStr(cfg.ClaudeMD, "# Team:") {
+		t.Error("Claude deploy should NOT generate OpenCode '# Team:' header in ClaudeMD")
+	}
+
+	// Sub-agent files should be Claude format.
+	workerFile, ok := cfg.SubAgentFiles["worker-1.md"]
+	if !ok {
+		t.Fatal("missing worker-1.md sub-agent file")
+	}
+	// Claude format has 'name:' in frontmatter; OpenCode format has 'tools:'.
+	if !containsStr(workerFile, "name: worker-1") {
+		t.Error("Claude sub-agent should have 'name:' in frontmatter")
+	}
+}
+
+func TestDeployTeamAsync_OpenCodeProvider_NoSubAgentNameField(t *testing.T) {
+	srv, mock := setupTestServer(t)
+
+	srv.db.Create(&models.Settings{Key: "OPENAI_API_KEY", Value: "sk-oai-test"})
+
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name:     "opencode-no-name-field",
+		Provider: "opencode",
+		Agents: []CreateAgentInput{
+			{Name: "the-leader", Role: "leader"},
+			{Name: "worker-1", Role: "worker", SubAgentDescription: "Backend dev"},
+		},
+	})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+
+	srv.deployTeamAsync(team)
+
+	cfg := mock.lastAgentConfig
+	if cfg == nil {
+		t.Fatal("expected lastAgentConfig to be set")
+	}
+
+	// OpenCode sub-agent files do NOT have a 'name:' field in frontmatter.
+	workerFile := cfg.SubAgentFiles["worker-1.md"]
+	if containsStr(workerFile, "name:") {
+		t.Error("OpenCode sub-agent file should NOT have 'name:' in frontmatter (Claude-specific)")
+	}
+}
+
+func TestLoadSettingsEnv_OpenCodeKeys(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	// Set OpenCode-relevant keys.
+	srv.db.Create(&models.Settings{Key: "OPENAI_API_KEY", Value: "sk-oai-123"})
+	srv.db.Create(&models.Settings{Key: "GOOGLE_GENERATIVE_AI_API_KEY", Value: "goog-123"})
+	srv.db.Create(&models.Settings{Key: "OPENCODE_MODEL", Value: "gpt-4o"})
+
+	env := srv.LoadSettingsEnv()
+
+	if env["OPENAI_API_KEY"] != "sk-oai-123" {
+		t.Errorf("OPENAI_API_KEY: got %q", env["OPENAI_API_KEY"])
+	}
+	if env["GOOGLE_GENERATIVE_AI_API_KEY"] != "goog-123" {
+		t.Errorf("GOOGLE_GENERATIVE_AI_API_KEY: got %q", env["GOOGLE_GENERATIVE_AI_API_KEY"])
+	}
+	if env["OPENCODE_MODEL"] != "gpt-4o" {
+		t.Errorf("OPENCODE_MODEL: got %q", env["OPENCODE_MODEL"])
+	}
+}
+
 func containsStr(s, substr string) bool {
 	return strings.Contains(s, substr)
 }

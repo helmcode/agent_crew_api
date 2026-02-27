@@ -820,6 +820,192 @@ func TestGenerateOpenCodeAgentsMD_LeaderWithSkills(t *testing.T) {
 	}
 }
 
+// --- Regression: Claude workspace generation unchanged ---
+
+func TestSetupAgentWorkspace_RegressionClaudeFormat(t *testing.T) {
+	// Verify that Claude workspace generation has not been affected by OpenCode additions.
+	tmpDir := t.TempDir()
+
+	agent := AgentWorkspaceInfo{
+		Name:         "regression-agent",
+		Role:         "leader",
+		Specialty:    "orchestration",
+		SystemPrompt: "You lead the team.",
+		Skills:       json.RawMessage(`["go","python"]`),
+		TeamMembers: []TeamMemberInfo{
+			{Name: "worker-1", Role: "worker", Specialty: "backend"},
+		},
+	}
+
+	dir, err := SetupAgentWorkspace(tmpDir, agent)
+	if err != nil {
+		t.Fatalf("SetupAgentWorkspace: %v", err)
+	}
+
+	// Should create .claude/CLAUDE.md, NOT .opencode/.
+	claudeMDPath := filepath.Join(dir, "CLAUDE.md")
+	data, err := os.ReadFile(claudeMDPath)
+	if err != nil {
+		t.Fatalf("reading CLAUDE.md: %v", err)
+	}
+
+	content := string(data)
+
+	// Claude-specific content.
+	if !contains(content, "# Agent: regression-agent") {
+		t.Error("missing agent name header")
+	}
+	if !contains(content, "## Team Members") {
+		t.Error("leader should have Team Members section")
+	}
+	if !contains(content, "## Delegation Protocol") {
+		t.Error("leader should have Delegation Protocol section")
+	}
+	if !contains(content, "You lead the team.") {
+		t.Error("missing system prompt")
+	}
+
+	// Should NOT have OpenCode-specific content.
+	if contains(content, "tools:") {
+		t.Error("Claude CLAUDE.md should NOT have OpenCode 'tools:' section")
+	}
+	if contains(content, "permission:") {
+		t.Error("Claude CLAUDE.md should NOT have OpenCode 'permission:' section")
+	}
+
+	// .opencode/ directory should NOT exist.
+	opencodePath := filepath.Join(tmpDir, ".opencode")
+	if _, err := os.Stat(opencodePath); err == nil {
+		t.Error(".opencode/ directory should NOT be created by SetupAgentWorkspace")
+	}
+}
+
+func TestGenerateSubAgentContent_RegressionClaudeFormat(t *testing.T) {
+	// Verify that Claude sub-agent generation still produces correct format.
+	agent := SubAgentInfo{
+		Name:        "regression-worker",
+		Description: "Test worker for regression",
+		Model:       "sonnet",
+		Skills:      json.RawMessage(`["web-search","read-files"]`),
+		ClaudeMD:    "Custom worker instructions.\n",
+	}
+
+	content := GenerateSubAgentContent(agent)
+
+	// Must have Claude frontmatter fields.
+	if !contains(content, "name: regression-worker") {
+		t.Error("missing name in frontmatter")
+	}
+	if !contains(content, "background: true") {
+		t.Error("missing background: true")
+	}
+	if !contains(content, "isolation: worktree") {
+		t.Error("missing isolation: worktree")
+	}
+	if !contains(content, "permissionMode: bypassPermissions") {
+		t.Error("missing permissionMode: bypassPermissions")
+	}
+	if !contains(content, "skills:") {
+		t.Error("missing skills section")
+	}
+
+	// Must NOT have OpenCode frontmatter fields.
+	if contains(content, "tools:") {
+		t.Error("Claude sub-agent should NOT have 'tools:' (OpenCode-specific)")
+	}
+	if contains(content, "permission:") {
+		t.Error("Claude sub-agent should NOT have 'permission:' (OpenCode-specific)")
+	}
+
+	// Body content should be present.
+	if !contains(content, "Custom worker instructions.") {
+		t.Error("missing body content")
+	}
+}
+
+func TestOpenCodeWorkspace_DoesNotCreateClaudeDir(t *testing.T) {
+	// Verify that OpenCode workspace generation doesn't create .claude/ directory.
+	tmpDir := t.TempDir()
+
+	leader := SubAgentInfo{Name: "lead"}
+	workers := []SubAgentInfo{{Name: "worker-1"}}
+
+	err := SetupOpenCodeWorkspace(tmpDir, "test-team", leader, workers, nil)
+	if err != nil {
+		t.Fatalf("SetupOpenCodeWorkspace: %v", err)
+	}
+
+	// .opencode/ should exist.
+	if _, err := os.Stat(filepath.Join(tmpDir, ".opencode")); err != nil {
+		t.Error(".opencode/ should exist")
+	}
+
+	// .claude/ should NOT be created by SetupOpenCodeWorkspace.
+	if _, err := os.Stat(filepath.Join(tmpDir, ".claude")); err == nil {
+		t.Error(".claude/ should NOT be created by SetupOpenCodeWorkspace")
+	}
+}
+
+func TestSetupOpenCodeWorkspace_WithMultipleWorkersAndSkills(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	leader := SubAgentInfo{
+		Name:     "lead",
+		ClaudeMD: "Lead instructions.",
+	}
+	workers := []SubAgentInfo{
+		{Name: "worker-a", Description: "Alpha", Skills: json.RawMessage(`["read-files"]`), ClaudeMD: "Alpha instructions."},
+		{Name: "worker-b", Description: "Beta", Skills: json.RawMessage(`[{"repo_url":"https://github.com/org/repo","skill_name":"custom-skill"}]`)},
+	}
+	globalSkills := []protocol.SkillConfig{
+		{RepoURL: "https://github.com/org/shared", SkillName: "shared-tool"},
+	}
+
+	err := SetupOpenCodeWorkspace(tmpDir, "multi-team", leader, workers, globalSkills)
+	if err != nil {
+		t.Fatalf("SetupOpenCodeWorkspace: %v", err)
+	}
+
+	// AGENTS.MD should list both workers.
+	agentsMD, err := os.ReadFile(filepath.Join(tmpDir, ".opencode", "AGENTS.MD"))
+	if err != nil {
+		t.Fatalf("reading AGENTS.MD: %v", err)
+	}
+	if !contains(string(agentsMD), "worker-a") {
+		t.Error("AGENTS.MD missing worker-a")
+	}
+	if !contains(string(agentsMD), "worker-b") {
+		t.Error("AGENTS.MD missing worker-b")
+	}
+
+	// worker-a should have own skill + global skill.
+	wa, err := os.ReadFile(filepath.Join(tmpDir, ".opencode", "agents", "worker-a.md"))
+	if err != nil {
+		t.Fatalf("reading worker-a.md: %v", err)
+	}
+	if !contains(string(wa), "read-files") {
+		t.Error("worker-a.md missing own skill 'read-files'")
+	}
+	if !contains(string(wa), "shared-tool") {
+		t.Error("worker-a.md missing global skill 'shared-tool'")
+	}
+	if !contains(string(wa), "Alpha instructions.") {
+		t.Error("worker-a.md missing body content")
+	}
+
+	// worker-b should have own skill + global skill.
+	wb, err := os.ReadFile(filepath.Join(tmpDir, ".opencode", "agents", "worker-b.md"))
+	if err != nil {
+		t.Fatalf("reading worker-b.md: %v", err)
+	}
+	if !contains(string(wb), "custom-skill") {
+		t.Error("worker-b.md missing own skill 'custom-skill'")
+	}
+	if !contains(string(wb), "shared-tool") {
+		t.Error("worker-b.md missing global skill 'shared-tool'")
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && containsStr(s, substr)
 }
