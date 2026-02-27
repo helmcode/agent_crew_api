@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/helmcode/agent-crew/internal/claude"
 	agentNats "github.com/helmcode/agent-crew/internal/nats"
@@ -89,11 +88,17 @@ func main() {
 		workDir = "/workspace"
 	}
 
+	// Create a cancelable context for child processes (e.g. opencode serve).
+	// Cancelling this context kills spawned processes on shutdown.
+	sidecarCtx, sidecarCancel := context.WithCancel(ctx)
+	defer sidecarCancel()
+
 	var manager provider.AgentManager
+	var opencodeCmd *exec.Cmd // non-nil when provider=opencode
 
 	switch cfg.Agent.Provider {
 	case "opencode":
-		manager, err = startOpenCode(ctx, cfg, workDir, natsClient)
+		manager, opencodeCmd, err = startOpenCode(sidecarCtx, cfg, workDir, natsClient)
 	default:
 		// "claude" or any unrecognized value defaults to Claude.
 		manager, err = startClaude(ctx, cfg, workDir, natsClient)
@@ -138,6 +143,12 @@ func main() {
 	if err := manager.Stop(); err != nil {
 		slog.Error("error stopping agent", "error", err)
 	}
+	// Kill the opencode serve process if running.
+	if opencodeCmd != nil && opencodeCmd.Process != nil {
+		sidecarCancel() // signals process via context
+		_ = opencodeCmd.Wait()
+		slog.Info("opencode serve process stopped")
+	}
 	natsClient.Close()
 
 	slog.Info("agent sidecar stopped")
@@ -177,8 +188,10 @@ func startClaude(ctx context.Context, cfg *AgentConfig, workDir string, natsClie
 // startOpenCode handles the OpenCode provider startup flow.
 // Writes .opencode/AGENTS.MD and .opencode/agents/*.md, installs skills
 // (to .claude/skills/ as OpenCode reads them natively), starts `opencode serve`,
-// waits for health, then creates an OpenCode Manager.
-func startOpenCode(ctx context.Context, cfg *AgentConfig, workDir string, natsClient *agentNats.Client) (provider.AgentManager, error) {
+// then creates an OpenCode Manager (which handles health check internally).
+// Returns the manager and the exec.Cmd for the opencode serve process so the
+// caller can kill it on shutdown.
+func startOpenCode(ctx context.Context, cfg *AgentConfig, workDir string, natsClient *agentNats.Client) (provider.AgentManager, *exec.Cmd, error) {
 	claudeDir := workDir + "/.claude"
 
 	// Write OpenCode workspace files from env vars.
@@ -194,10 +207,11 @@ func startOpenCode(ctx context.Context, cfg *AgentConfig, workDir string, natsCl
 	// Generate a secure random password for the OpenCode server.
 	password, err := generateSecurePassword(32)
 	if err != nil {
-		return nil, fmt.Errorf("generating opencode server password: %w", err)
+		return nil, nil, fmt.Errorf("generating opencode server password: %w", err)
 	}
 
 	// Start `opencode serve` as a background process.
+	// The context ensures the process is killed when sidecarCancel() is called.
 	port := "4096"
 	cmd := exec.CommandContext(ctx, "opencode", "serve", "--port", port)
 	cmd.Dir = workDir
@@ -208,23 +222,15 @@ func startOpenCode(ctx context.Context, cfg *AgentConfig, workDir string, natsCl
 	cmd.Stderr = os.Stderr
 
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("starting opencode serve: %w", err)
+		return nil, nil, fmt.Errorf("starting opencode serve: %w", err)
 	}
 
 	slog.Info("opencode serve started", "port", port, "pid", cmd.Process.Pid)
 
-	// Wait for the server to become healthy.
-	baseURL := "http://127.0.0.1:" + port
-	if err := opencode.WaitForHealth(baseURL, "opencode", password, 60*time.Second); err != nil {
-		// Kill the process if health check fails.
-		_ = cmd.Process.Kill()
-		return nil, fmt.Errorf("opencode health check failed: %w", err)
-	}
-
-	// Create the OpenCode Manager.
-	model := os.Getenv("OPENCODE_MODEL")
+	// Create the OpenCode Manager. Manager.Start() handles its own health check.
+	model := cfg.Agent.OpenCodeModel
 	mgr := opencode.NewManager(opencode.Config{
-		BaseURL:      baseURL,
+		BaseURL:      "http://127.0.0.1:" + port,
 		Username:     "opencode",
 		Password:     password,
 		SystemPrompt: cfg.Agent.SystemPrompt,
@@ -233,10 +239,11 @@ func startOpenCode(ctx context.Context, cfg *AgentConfig, workDir string, natsCl
 
 	if err := mgr.Start(ctx); err != nil {
 		_ = cmd.Process.Kill()
-		return nil, fmt.Errorf("starting opencode manager: %w", err)
+		_ = cmd.Wait()
+		return nil, nil, fmt.Errorf("starting opencode manager: %w", err)
 	}
 
-	return mgr, nil
+	return mgr, cmd, nil
 }
 
 // writeClaudeWorkspace writes .claude/CLAUDE.md and .claude/agents/*.md from env vars.
