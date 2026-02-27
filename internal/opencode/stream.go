@@ -92,6 +92,10 @@ type SessionIdlePayload struct {
 	SessionID string `json:"sessionID"`
 }
 
+// maxDataLines is the maximum number of "data:" lines allowed per SSE event.
+// This prevents unbounded memory growth from a malicious or buggy server.
+const maxDataLines = 1000
+
 // ParseSSEStream reads an SSE stream from r and sends parsed events to the channel.
 // Blocks until the stream is closed or an error occurs.
 func ParseSSEStream(r io.Reader, ch chan<- SSEEvent) {
@@ -130,6 +134,12 @@ func ParseSSEStream(r io.Reader, ch chan<- SSEEvent) {
 		if strings.HasPrefix(line, "event:") {
 			eventType = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
 		} else if strings.HasPrefix(line, "data:") {
+			if len(dataLines) >= maxDataLines {
+				slog.Warn("SSE event exceeded max data lines, discarding", "type", eventType)
+				eventType = ""
+				dataLines = nil
+				continue
+			}
 			dataLines = append(dataLines, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
 		} else if strings.HasPrefix(line, ":") {
 			// Comment line, ignore.
@@ -306,6 +316,9 @@ func convertSessionError(data json.RawMessage, filterSessionID string) *provider
 	}
 }
 
+// convertSessionIdle maps session.idle to a "result" event. The NATS bridge
+// should accumulate preceding assistant text parts into the final result
+// message before forwarding this event to the client.
 func convertSessionIdle(data json.RawMessage, filterSessionID string) *provider.StreamEvent {
 	var payload SessionIdlePayload
 	if err := json.Unmarshal(data, &payload); err != nil {

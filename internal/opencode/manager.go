@@ -8,12 +8,17 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/helmcode/agent-crew/internal/provider"
 )
+
+// maxErrorBodyBytes limits how many bytes we read from error responses
+// to prevent unbounded memory allocation from malicious servers.
+const maxErrorBodyBytes = 8192
 
 // Config holds the configuration for the OpenCode manager.
 type Config struct {
@@ -89,11 +94,33 @@ func NewManager(config Config) *Manager {
 	if config.Username == "" {
 		config.Username = "opencode"
 	}
+
+	// Warn if credentials are sent over a non-TLS connection to a remote host.
+	if config.Password != "" {
+		warnIfInsecureRemote(config.BaseURL)
+	}
+
 	return &Manager{
 		config: config,
 		client: &http.Client{Timeout: 30 * time.Second},
 		status: "stopped",
 		events: make(chan provider.StreamEvent, 256),
+	}
+}
+
+// warnIfInsecureRemote logs a warning when credentials are configured
+// for a non-localhost, non-TLS endpoint.
+func warnIfInsecureRemote(baseURL string) {
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return
+	}
+	host := u.Hostname()
+	isLocal := host == "localhost" || host == "127.0.0.1" || host == "::1"
+	if u.Scheme != "https" && !isLocal {
+		slog.Warn("sending HTTP Basic Auth credentials over insecure connection to non-localhost",
+			"base_url", baseURL,
+		)
 	}
 }
 
@@ -193,7 +220,7 @@ func (m *Manager) SendInput(input string) error {
 	if resp.StatusCode != http.StatusNoContent &&
 		resp.StatusCode != http.StatusOK &&
 		resp.StatusCode != http.StatusAccepted {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
 		return fmt.Errorf("opencode prompt_async failed (status %d): %s", resp.StatusCode, truncate(string(respBody), 500))
 	}
 
@@ -240,7 +267,6 @@ drained:
 // Stop aborts the active session and shuts down the SSE listener.
 func (m *Manager) Stop() error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	slog.Info("stopping opencode manager", "session_id", m.sessionID)
 
@@ -256,8 +282,10 @@ func (m *Manager) Stop() error {
 	}
 
 	m.status = "stopped"
+	m.mu.Unlock()
 
-	// Wait for SSE goroutine to finish.
+	// Wait for SSE goroutine to finish outside the lock to avoid
+	// potential deadlock if the goroutine needs to acquire the mutex.
 	m.wg.Wait()
 
 	return nil
@@ -300,7 +328,7 @@ func (m *Manager) createSession(ctx context.Context) (string, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
 		return "", fmt.Errorf("create session failed (status %d): %s", resp.StatusCode, truncate(string(respBody), 500))
 	}
 
@@ -345,7 +373,7 @@ func (m *Manager) injectSystemPrompt(ctx context.Context) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusNoContent {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
 		return fmt.Errorf("system prompt injection failed (status %d): %s", resp.StatusCode, truncate(string(respBody), 500))
 	}
 
@@ -409,9 +437,12 @@ func (m *Manager) listenSSE(ctx context.Context, sessionID string) {
 
 	slog.Info("opencode SSE stream connected", "url", url)
 
-	// Parse SSE events in a goroutine.
+	// Parse SSE events in a goroutine. Track with WaitGroup so
+	// Stop() waits for all goroutines before returning.
 	sseEvents := make(chan SSEEvent, 256)
+	m.wg.Add(1)
 	go func() {
+		defer m.wg.Done()
 		ParseSSEStream(resp.Body, sseEvents)
 		close(sseEvents)
 	}()
