@@ -1,5 +1,5 @@
 .PHONY: build-api build-sidecar build-all run-api test lint clean \
-	build-api-image build-agent-image build-images \
+	build-api-image build-agent-image build-opencode-agent-image build-images \
 	docker-compose-up docker-compose-down docker-compose-logs
 
 BIN_DIR := bin
@@ -39,7 +39,12 @@ build-agent-image: build-sidecar-linux
 	docker build -t agentcrew-agent:$(IMAGE_TAG) -f build/agent/Dockerfile build/agent
 	rm -f build/agent/sidecar $(BIN_DIR)/sidecar-linux
 
-build-images: build-api-image build-agent-image
+build-opencode-agent-image: build-sidecar-linux
+	cp $(BIN_DIR)/sidecar-linux build/opencode-agent/sidecar
+	docker build -t agentcrew-opencode-agent:$(IMAGE_TAG) -f build/opencode-agent/Dockerfile build/opencode-agent
+	rm -f build/opencode-agent/sidecar $(BIN_DIR)/sidecar-linux
+
+build-images: build-api-image build-agent-image build-opencode-agent-image
 
 # ---------- Docker Compose ----------
 
@@ -65,4 +70,4 @@ lint:
 clean:
 	rm -rf $(BIN_DIR)
 	go clean -testcache
-	rm -f build/agent/sidecar
+	rm -f build/agent/sidecar build/opencode-agent/sidecar

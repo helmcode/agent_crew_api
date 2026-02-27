@@ -17,6 +17,7 @@ type AgentConfig struct {
 	Name            string
 	TeamName        string
 	Role            string
+	Provider        string // "claude" (default) or "opencode"
 	SystemPrompt    string
 	Permissions     permissions.PermissionConfig
 	Resources       ResourceConfig
@@ -60,11 +61,12 @@ type AgentStatus struct {
 
 // Shared constants used by both Docker and Kubernetes runtimes.
 const (
-	DefaultAgentImage = "ghcr.io/helmcode/agent-crew-agent:latest"
-	NATSImage         = "nats:2.10-alpine"
-	LabelTeam         = "agentcrew.team"
-	LabelAgent        = "agentcrew.agent"
-	LabelRole         = "agentcrew.role"
+	DefaultAgentImage         = "ghcr.io/helmcode/agent-crew-agent:latest"
+	DefaultOpenCodeAgentImage = "ghcr.io/helmcode/agent_crew_opencode_agent:latest"
+	NATSImage                 = "nats:2.10-alpine"
+	LabelTeam                 = "agentcrew.team"
+	LabelAgent                = "agentcrew.agent"
+	LabelRole                 = "agentcrew.role"
 )
 
 // AgentRuntime is the interface for managing agent container lifecycles.
