@@ -38,8 +38,8 @@ type Bridge struct {
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
 
-	mu             sync.Mutex
-	scheduledRunID string // correlation ID from the latest scheduled run request
+	mu              sync.Mutex
+	scheduledRunIDs []string // FIFO queue of correlation IDs from scheduled run requests
 }
 
 // NewBridge creates a Bridge with the given components.
@@ -114,9 +114,11 @@ func (b *Bridge) handleUserMessage(msg *protocol.Message) {
 		return
 	}
 
-	// Store the scheduled run ID for correlation in the response.
+	// Enqueue the scheduled run ID for FIFO correlation with responses.
+	// Claude processes messages sequentially, so the Nth result corresponds
+	// to the Nth message we forwarded.
 	b.mu.Lock()
-	b.scheduledRunID = payload.ScheduledRunID
+	b.scheduledRunIDs = append(b.scheduledRunIDs, payload.ScheduledRunID)
 	b.mu.Unlock()
 
 	slog.Info("forwarding user message to claude", "agent", b.config.AgentName, "content_length", len(payload.Content))
@@ -296,10 +298,14 @@ func (b *Bridge) publishActivityEvent(event *claude.StreamEvent, action string) 
 
 // publishLeaderResponse sends a leader response to the team leader NATS channel.
 func (b *Bridge) publishLeaderResponse(refMsgID, status, result, errMsg string) {
-	// Capture and clear the scheduled run ID for this response.
+	// Pop the next scheduled run ID from the FIFO queue.
+	// Order is preserved because Claude processes messages sequentially.
 	b.mu.Lock()
-	runID := b.scheduledRunID
-	b.scheduledRunID = ""
+	var runID string
+	if len(b.scheduledRunIDs) > 0 {
+		runID = b.scheduledRunIDs[0]
+		b.scheduledRunIDs = b.scheduledRunIDs[1:]
+	}
 	b.mu.Unlock()
 
 	payload := protocol.LeaderResponsePayload{

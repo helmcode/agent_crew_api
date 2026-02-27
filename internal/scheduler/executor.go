@@ -383,9 +383,11 @@ func (e *Executor) sendPromptAndWait(ctx context.Context, teamName, message, run
 				}
 			}
 
-			// Filter: ignore responses meant for a different scheduled run.
-			if payload.ScheduledRunID != "" && payload.ScheduledRunID != runID {
-				slog.Debug("executor: ignoring response for different scheduled run",
+			// Strict filter: only accept responses tagged with our exact run ID.
+			// Responses from chat (empty ScheduledRunID) or other scheduled
+			// runs are ignored.
+			if payload.ScheduledRunID != runID {
+				slog.Debug("executor: ignoring response for different run",
 					"expected_run_id", runID, "got_run_id", payload.ScheduledRunID)
 				return
 			}
