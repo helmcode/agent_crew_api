@@ -348,11 +348,16 @@ func (k *K8sRuntime) DeployAgent(ctx context.Context, config AgentConfig) (*Agen
 			"GOOGLE_GENERATIVE_AI_API_KEY",
 			"OLLAMA_BASE_URL", "LM_STUDIO_BASE_URL",
 		}
+		hasAuth := false
 		for _, key := range openCodeKeys {
 			handledEnvKeys[key] = true
 			if v := config.Env[key]; v != "" {
 				env = append(env, corev1.EnvVar{Name: key, Value: v})
+				hasAuth = true
 			}
+		}
+		if !hasAuth {
+			return nil, fmt.Errorf("no auth configured for OpenCode: at least one API key or local model URL required")
 		}
 		if v := config.Env["OPENCODE_MODEL"]; v != "" {
 			env = append(env, corev1.EnvVar{Name: "OPENCODE_MODEL", Value: v})
