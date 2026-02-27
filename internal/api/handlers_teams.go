@@ -292,6 +292,7 @@ func (s *Server) deployTeamAsync(team models.Team) {
 	// Setup workspace files for all agents and deploy only the leader container.
 	var leader *models.Agent
 	subAgentFiles := map[string]string{}
+	var openCodeWorkers []runtime.SubAgentInfo // Collect workers for OpenCode host workspace setup.
 	for i := range team.Agents {
 		agent := &team.Agents[i]
 
@@ -307,6 +308,7 @@ func (s *Server) deployTeamAsync(team models.Team) {
 				}
 				filename := runtime.SubAgentFileName(agent.Name)
 				subAgentFiles[filename] = runtime.GenerateOpenCodeSubAgentContent(subInfo, leaderSkillConfigs)
+				openCodeWorkers = append(openCodeWorkers, subInfo)
 			} else {
 				// Claude sub-agent files go to .claude/agents/
 				info := runtime.AgentWorkspaceInfo{
@@ -353,6 +355,20 @@ func (s *Server) deployTeamAsync(team models.Team) {
 				}
 			}
 			leader = agent
+		}
+	}
+
+	// Write OpenCode workspace to host path so the directory exists before
+	// Docker tries to bind-mount it (os.Stat in DeployAgent would fail otherwise).
+	if team.WorkspacePath != "" && provider == models.ProviderOpenCode && leader != nil {
+		leaderSub := runtime.SubAgentInfo{
+			Name:        leader.Name,
+			Description: leader.Specialty,
+			Skills:      json.RawMessage(leader.Skills),
+			ClaudeMD:    leader.InstructionsMD,
+		}
+		if err := runtime.SetupOpenCodeWorkspace(team.WorkspacePath, team.Name, leaderSub, openCodeWorkers, leaderSkillConfigs); err != nil {
+			slog.Error("failed to setup opencode workspace", "team", team.Name, "error", err)
 		}
 	}
 
