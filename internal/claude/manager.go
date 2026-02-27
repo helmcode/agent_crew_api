@@ -18,6 +18,7 @@ type ProcessConfig struct {
 	AllowedTools []string
 	WorkDir      string
 	MaxTokens    int
+	Model        string // Full Claude model ID (e.g. "claude-sonnet-4-20250514"). Empty uses CLI default.
 }
 
 // Manager manages the lifecycle of Claude Code CLI invocations.
@@ -83,6 +84,9 @@ func (m *Manager) runInitialPrompt(ctx context.Context, prompt string) (string, 
 		"--verbose",
 		"--dangerously-skip-permissions",
 	}
+	if m.config.Model != "" {
+		args = append(args, "--model", m.config.Model)
+	}
 	for _, tool := range m.config.AllowedTools {
 		args = append(args, "--allowedTools", tool)
 	}
@@ -95,6 +99,7 @@ func (m *Manager) runInitialPrompt(ctx context.Context, prompt string) (string, 
 	slog.Info("running initial claude prompt",
 		"command", "claude",
 		"args", args,
+		"model", m.config.Model,
 		"has_api_key", os.Getenv("ANTHROPIC_API_KEY") != "",
 		"has_oauth_token", os.Getenv("CLAUDE_CODE_OAUTH_TOKEN") != "",
 	)
@@ -144,6 +149,9 @@ func (m *Manager) SendInput(input string) error {
 		"--output-format", "stream-json",
 		"--verbose",
 		"--dangerously-skip-permissions",
+	}
+	if m.config.Model != "" {
+		args = append(args, "--model", m.config.Model)
 	}
 	if sessionID != "" {
 		args = append(args, "--resume", sessionID)

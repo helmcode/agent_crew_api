@@ -454,8 +454,21 @@ func (s *Server) deployTeamAsync(team models.Team) {
 	if len(allSkills) > 0 {
 		agentEnv["AGENT_SKILLS_INSTALL"] = string(skillsJSON)
 	}
-	// Pass OPENCODE_MODEL for OpenCode teams.
-	if provider == models.ProviderOpenCode {
+	// Pass the leader's model to the agent container.
+	leaderModel := leader.SubAgentModel
+	if leaderModel != "" && leaderModel != "inherit" {
+		if provider == models.ProviderOpenCode {
+			// OpenCode uses OPENCODE_MODEL env var with "providerID/modelID" format.
+			// Leader's SubAgentModel is already in that format for OpenCode teams.
+			agentEnv["OPENCODE_MODEL"] = leaderModel
+		} else {
+			// Claude uses CLAUDE_MODEL env var. Map short names to full model IDs.
+			if fullModel := claudeModelID(leaderModel); fullModel != "" {
+				agentEnv["CLAUDE_MODEL"] = fullModel
+			}
+		}
+	} else if provider == models.ProviderOpenCode {
+		// Fallback: use OPENCODE_MODEL from Settings if the leader has no specific model.
 		if m := envFromSettings["OPENCODE_MODEL"]; m != "" {
 			agentEnv["OPENCODE_MODEL"] = m
 		}
@@ -496,6 +509,22 @@ func (s *Server) deployTeamAsync(team models.Team) {
 	// Start relay goroutine: subscribes to team NATS and saves agent
 	// responses as TaskLogs so StreamActivity WebSocket delivers them to UI.
 	s.startTeamRelay(team.ID, team.Name)
+}
+
+// claudeModelID maps the short model names used in SubAgentModel (sonnet, opus,
+// haiku) to the full Claude Code CLI model IDs. Returns empty string for
+// unrecognized values.
+func claudeModelID(short string) string {
+	switch short {
+	case "sonnet":
+		return "claude-sonnet-4-20250514"
+	case "opus":
+		return "claude-opus-4-20250514"
+	case "haiku":
+		return "claude-haiku-4-5-20251001"
+	default:
+		return ""
+	}
 }
 
 // LoadSettingsEnv reads all settings from the database and returns them as a
