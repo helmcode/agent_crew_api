@@ -10,6 +10,7 @@ import (
 	"github.com/helmcode/agent-crew/internal/claude"
 	"github.com/helmcode/agent-crew/internal/permissions"
 	"github.com/helmcode/agent-crew/internal/protocol"
+	"github.com/helmcode/agent-crew/internal/provider"
 )
 
 // BridgeConfig holds configuration for the NATS-Claude bridge.
@@ -27,14 +28,14 @@ type publisher interface {
 	Subscribe(subject string, handler func(*protocol.Message)) error
 }
 
-// Bridge connects NATS messaging with the Claude Code CLI process.
+// Bridge connects NATS messaging with an AI agent process.
 // It receives user messages via the team leader NATS channel, forwards them
-// to Claude's stdin, reads Claude's stdout events, and publishes leader
+// to the agent's input, reads the agent's output events, and publishes leader
 // responses back via NATS.
 type Bridge struct {
 	config  BridgeConfig
 	client  publisher
-	manager *claude.Manager
+	manager provider.AgentManager
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
 
@@ -43,7 +44,7 @@ type Bridge struct {
 }
 
 // NewBridge creates a Bridge with the given components.
-func NewBridge(config BridgeConfig, client *Client, manager *claude.Manager) *Bridge {
+func NewBridge(config BridgeConfig, client *Client, manager provider.AgentManager) *Bridge {
 	return &Bridge{
 		config:  config,
 		client:  client,
@@ -155,7 +156,7 @@ func (b *Bridge) handleSystemCommand(msg *protocol.Message) {
 	}
 }
 
-// forwardEvents reads Claude stdout events and publishes significant ones to NATS.
+// forwardEvents reads agent stdout events and publishes significant ones to NATS.
 func (b *Bridge) forwardEvents(ctx context.Context) {
 	defer b.wg.Done()
 
@@ -169,7 +170,7 @@ func (b *Bridge) forwardEvents(ctx context.Context) {
 		case event, ok := <-events:
 			if !ok {
 				// Channel closed, process exited.
-				slog.Info("claude events channel closed", "agent", b.config.AgentName)
+				slog.Info("agent events channel closed", "agent", b.config.AgentName)
 				return
 			}
 			b.processEvent(&event, &currentResult)
@@ -177,17 +178,20 @@ func (b *Bridge) forwardEvents(ctx context.Context) {
 	}
 }
 
-// processEvent handles a single Claude stream event.
-func (b *Bridge) processEvent(event *claude.StreamEvent, currentResult *string) {
+// processEvent handles a single agent stream event.
+func (b *Bridge) processEvent(event *provider.StreamEvent, currentResult *string) {
+	// Convert to claude.StreamEvent for operations that need the claude-specific type.
+	claudeEvent := provider.ToClaudeStreamEvent(event)
+
 	switch event.Type {
 	case "tool_use":
 		// Publish activity event for the tool call so the UI can show progress.
-		toolName, command, paths := claude.ExtractToolCommand(event)
+		toolName, command, paths := claude.ExtractToolCommand(claudeEvent)
 		action := toolName
 		if command != "" {
 			action = toolName + ": " + command
 		}
-		b.publishActivityEvent(event, action)
+		b.publishActivityEvent(claudeEvent, action)
 
 		// Check permissions before allowing tool execution.
 		if b.config.Gate != nil {
@@ -198,13 +202,13 @@ func (b *Bridge) processEvent(event *claude.StreamEvent, currentResult *string) 
 					"command", command,
 					"reason", decision.Reason,
 				)
-				// Send denial result back to Claude.
+				// Send denial result back to the agent.
 				denial := claude.FormatToolResult(
 					"Permission denied: "+decision.Reason,
 					true,
 				)
 				if err := b.manager.SendInput(denial); err != nil {
-					slog.Error("failed to send denial to claude", "error", err)
+					slog.Error("failed to send denial to agent", "error", err)
 				}
 				return
 			}
@@ -213,15 +217,14 @@ func (b *Bridge) processEvent(event *claude.StreamEvent, currentResult *string) 
 	case "assistant":
 		// Publish assistant messages as activity events so the UI shows
 		// intermediate thinking/responses in real time.
-		b.publishActivityEvent(event, "assistant message")
+		b.publishActivityEvent(claudeEvent, "assistant message")
 
 	case "result":
-		// Check if Claude returned an error (billing, auth, etc.).
+		// Check if the agent returned an error (billing, auth, etc.).
 		if event.IsError {
-			friendlyMsg := event.FriendlyError()
-			slog.Error("claude result is an error",
+			friendlyMsg := claudeEvent.FriendlyError()
+			slog.Error("agent result is an error",
 				"agent", b.config.AgentName,
-				"error_code", event.ErrorCode,
 				"result", event.Result,
 				"friendly", friendlyMsg,
 			)
@@ -231,13 +234,15 @@ func (b *Bridge) processEvent(event *claude.StreamEvent, currentResult *string) 
 			return
 		}
 
-		// Final result from Claude — extract text and publish.
+		// Final result from agent — extract text and publish.
 		var msgContent struct {
 			Type string `json:"type"`
 			Text string `json:"text"`
 		}
-		if err := json.Unmarshal(event.Message, &msgContent); err == nil {
-			*currentResult = msgContent.Text
+		if event.Message != "" {
+			if err := json.Unmarshal([]byte(event.Message), &msgContent); err == nil {
+				*currentResult = msgContent.Text
+			}
 		}
 		// Also check Result field (stream-json sometimes uses it directly).
 		if *currentResult == "" && event.Result != "" {
@@ -250,11 +255,11 @@ func (b *Bridge) processEvent(event *claude.StreamEvent, currentResult *string) 
 
 	case "tool_result":
 		// Publish tool results as activity events for visibility.
-		b.publishActivityEvent(event, "tool result")
+		b.publishActivityEvent(claudeEvent, "tool result")
 
 	case "error":
-		slog.Error("claude error event", "agent", b.config.AgentName)
-		b.publishActivityEvent(event, "error")
+		slog.Error("agent error event", "agent", b.config.AgentName)
+		b.publishActivityEvent(claudeEvent, "error")
 	}
 }
 

@@ -99,6 +99,12 @@ func (s *Server) CreateAgent(c *fiber.Ctx) error {
 		subAgentModel = "inherit"
 	}
 
+	// Backward compat: accept claude_md as alias for instructions_md.
+	instructionsMD := req.InstructionsMD
+	if instructionsMD == "" && req.ClaudeMD != "" {
+		instructionsMD = req.ClaudeMD
+	}
+
 	agent := models.Agent{
 		ID:                  uuid.New().String(),
 		TeamID:              teamID,
@@ -106,7 +112,7 @@ func (s *Server) CreateAgent(c *fiber.Ctx) error {
 		Role:                role,
 		Specialty:           req.Specialty,
 		SystemPrompt:        req.SystemPrompt,
-		ClaudeMD:            req.ClaudeMD,
+		InstructionsMD:      instructionsMD,
 		Skills:              models.JSON(skills),
 		Permissions:         models.JSON(perms),
 		Resources:           models.JSON(resources),
@@ -159,8 +165,11 @@ func (s *Server) UpdateAgent(c *fiber.Ctx) error {
 	if req.SystemPrompt != nil {
 		updates["system_prompt"] = *req.SystemPrompt
 	}
-	if req.ClaudeMD != nil {
-		updates["claude_md"] = *req.ClaudeMD
+	if req.InstructionsMD != nil {
+		updates["instructions_md"] = *req.InstructionsMD
+	} else if req.ClaudeMD != nil {
+		// Backward compat: accept claude_md as alias for instructions_md.
+		updates["instructions_md"] = *req.ClaudeMD
 	}
 	if req.Skills != nil {
 		raw, _ := json.Marshal(req.Skills)
@@ -329,7 +338,7 @@ func (s *Server) InstallAgentSkill(c *fiber.Ctx) error {
 			Model:        agent.SubAgentModel,
 			Skills:       json.RawMessage(updatedSkillsJSON),
 			GlobalSkills: workerLeaderSkills,
-			ClaudeMD:     agent.ClaudeMD,
+			ClaudeMD:     agent.InstructionsMD,
 		}
 		content := runtime.GenerateSubAgentContent(subInfo)
 
@@ -362,7 +371,7 @@ func (s *Server) InstallAgentSkill(c *fiber.Ctx) error {
 				Model:        w.SubAgentModel,
 				Skills:       json.RawMessage(w.SubAgentSkills),
 				GlobalSkills: globalSkills,
-				ClaudeMD:     w.ClaudeMD,
+				ClaudeMD:     w.InstructionsMD,
 			}
 			content := runtime.GenerateSubAgentContent(subInfo)
 			encoded := base64.StdEncoding.EncodeToString([]byte(content))

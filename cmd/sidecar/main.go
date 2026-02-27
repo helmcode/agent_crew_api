@@ -15,6 +15,7 @@ import (
 	agentNats "github.com/helmcode/agent-crew/internal/nats"
 	"github.com/helmcode/agent-crew/internal/permissions"
 	"github.com/helmcode/agent-crew/internal/protocol"
+	"github.com/helmcode/agent-crew/internal/provider"
 )
 
 func main() {
@@ -147,13 +148,16 @@ func main() {
 		WorkDir:      workDir,
 	}
 
-	manager := claude.NewManager(processCfg)
-	if err := manager.Start(ctx); err != nil {
+	claudeManager := claude.NewManager(processCfg)
+	if err := claudeManager.Start(ctx); err != nil {
 		slog.Error("failed to start claude process", "error", err)
 		os.Exit(1)
 	}
 
-	// 8. Start Bridge (NATS <-> Claude stdin/stdout).
+	// Wrap claude.Manager with provider.AgentManager interface.
+	manager := provider.NewClaudeManager(claudeManager)
+
+	// 8. Start Bridge (NATS <-> agent stdin/stdout).
 	bridgeCfg := agentNats.BridgeConfig{
 		AgentName: cfg.Agent.Name,
 		TeamName:  cfg.Agent.Team,
@@ -183,7 +187,7 @@ func main() {
 
 	// Graceful shutdown in reverse order.
 	bridge.Stop()
-	if err := manager.Stop(); err != nil {
+	if err := claudeManager.Stop(); err != nil {
 		slog.Error("error stopping claude process", "error", err)
 	}
 	natsClient.Close()

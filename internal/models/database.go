@@ -31,6 +31,15 @@ func InitDB(dbPath string) (*gorm.DB, error) {
 		slog.Warn("failed to enable foreign keys", "error", err)
 	}
 
+	// Rename claude_md → instructions_md if the old column exists (backward compat migration).
+	if db.Migrator().HasColumn(&Agent{}, "claude_md") {
+		if err := db.Migrator().RenameColumn(&Agent{}, "claude_md", "instructions_md"); err != nil {
+			slog.Warn("failed to rename claude_md to instructions_md (may already be renamed)", "error", err)
+		} else {
+			slog.Info("renamed column claude_md → instructions_md")
+		}
+	}
+
 	if err := db.AutoMigrate(&Team{}, &Agent{}, &TaskLog{}, &Settings{}, &Schedule{}, &ScheduleRun{}); err != nil {
 		return nil, fmt.Errorf("auto-migrating models: %w", err)
 	}

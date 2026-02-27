@@ -8,6 +8,7 @@ import (
 	"github.com/helmcode/agent-crew/internal/claude"
 	"github.com/helmcode/agent-crew/internal/permissions"
 	"github.com/helmcode/agent-crew/internal/protocol"
+	"github.com/helmcode/agent-crew/internal/provider"
 )
 
 // publishedMsg captures a message published to a NATS subject.
@@ -133,6 +134,24 @@ func TestPublishLeaderResponse_ErrorPayload(t *testing.T) {
 	}
 }
 
+// toProviderEvent converts a claude.StreamEvent to a provider.StreamEvent for tests.
+func toProviderEvent(ce claude.StreamEvent) provider.StreamEvent {
+	pe := provider.StreamEvent{
+		Type:      ce.Type,
+		Name:      ce.Name,
+		IsError:   ce.IsError,
+		Result:    ce.Result,
+		SessionID: ce.SessionID,
+	}
+	if len(ce.Message) > 0 {
+		pe.Message = string(ce.Message)
+	}
+	if len(ce.Input) > 0 {
+		pe.Input = string(ce.Input)
+	}
+	return pe
+}
+
 // --- processEvent tests ---
 
 func TestProcessEvent_ResultPublishesLeaderResponse(t *testing.T) {
@@ -148,10 +167,10 @@ func TestProcessEvent_ResultPublishesLeaderResponse(t *testing.T) {
 
 	resultText := "Here is my completed work."
 	msgContent, _ := json.Marshal(map[string]string{"type": "text", "text": resultText})
-	event := claude.StreamEvent{
+	event := toProviderEvent(claude.StreamEvent{
 		Type:    "result",
 		Message: msgContent,
-	}
+	})
 
 	var currentResult string
 	bridge.processEvent(&event, &currentResult)
@@ -201,12 +220,12 @@ func TestProcessEvent_ErrorResultPublishesFailedResponse(t *testing.T) {
 		client: pub,
 	}
 
-	event := claude.StreamEvent{
+	event := toProviderEvent(claude.StreamEvent{
 		Type:      "result",
 		IsError:   true,
 		ErrorCode: "billing_error",
 		Result:    "insufficient credits",
-	}
+	})
 
 	var currentResult string
 	bridge.processEvent(&event, &currentResult)
@@ -309,11 +328,11 @@ func TestProcessEvent_ToolUsePublishesActivityEvent(t *testing.T) {
 		client: pub,
 	}
 
-	event := claude.StreamEvent{
+	event := toProviderEvent(claude.StreamEvent{
 		Type:  "tool_use",
 		Name:  "Read",
 		Input: json.RawMessage(`{"file_path":"/workspace/main.go"}`),
-	}
+	})
 
 	var currentResult string
 	bridge.processEvent(&event, &currentResult)
@@ -344,10 +363,10 @@ func TestProcessEvent_AssistantPublishesActivityEvent(t *testing.T) {
 	}
 
 	msgContent, _ := json.Marshal(map[string]string{"type": "text", "text": "Thinking about the problem..."})
-	event := claude.StreamEvent{
+	event := toProviderEvent(claude.StreamEvent{
 		Type:    "assistant",
 		Message: msgContent,
-	}
+	})
 
 	var currentResult string
 	bridge.processEvent(&event, &currentResult)
@@ -385,10 +404,10 @@ func TestProcessEvent_ResultFromResultField(t *testing.T) {
 	}
 
 	// When Message field doesn't produce text, the Result field is used.
-	event := claude.StreamEvent{
+	event := toProviderEvent(claude.StreamEvent{
 		Type:   "result",
 		Result: "Fallback result text",
-	}
+	})
 
 	var currentResult string
 	bridge.processEvent(&event, &currentResult)
@@ -424,10 +443,10 @@ func TestProcessEvent_ToolResultPublishesActivityEvent(t *testing.T) {
 		client: pub,
 	}
 
-	event := claude.StreamEvent{
+	event := toProviderEvent(claude.StreamEvent{
 		Type:   "tool_result",
 		Result: "file contents here",
-	}
+	})
 
 	var currentResult string
 	bridge.processEvent(&event, &currentResult)
@@ -466,9 +485,9 @@ func TestProcessEvent_ErrorPublishesActivityEvent(t *testing.T) {
 		client: pub,
 	}
 
-	event := claude.StreamEvent{
+	event := toProviderEvent(claude.StreamEvent{
 		Type: "error",
-	}
+	})
 
 	var currentResult string
 	bridge.processEvent(&event, &currentResult)
@@ -506,11 +525,11 @@ func TestProcessEvent_ToolUseActionFormat_WithCommand(t *testing.T) {
 		client: pub,
 	}
 
-	event := claude.StreamEvent{
+	event := toProviderEvent(claude.StreamEvent{
 		Type:  "tool_use",
 		Name:  "Bash",
 		Input: json.RawMessage(`{"command":"ls -la /workspace"}`),
-	}
+	})
 
 	var currentResult string
 	bridge.processEvent(&event, &currentResult)
@@ -540,11 +559,11 @@ func TestProcessEvent_ToolUseActionFormat_WithoutCommand(t *testing.T) {
 		client: pub,
 	}
 
-	event := claude.StreamEvent{
+	event := toProviderEvent(claude.StreamEvent{
 		Type:  "tool_use",
 		Name:  "Read",
 		Input: json.RawMessage(`{"file_path":"/workspace/main.go"}`),
-	}
+	})
 
 	var currentResult string
 	bridge.processEvent(&event, &currentResult)
@@ -573,7 +592,7 @@ func TestProcessEvent_ToolUseDeniedByGate(t *testing.T) {
 		// Bash is NOT in the allowed list.
 	})
 	// A real Manager (status="stopped") so SendInput returns error instead of panicking.
-	mgr := claude.NewManager(claude.ProcessConfig{})
+	mgr := provider.NewClaudeManager(claude.NewManager(claude.ProcessConfig{}))
 	bridge := &Bridge{
 		config: BridgeConfig{
 			AgentName: "leader",
@@ -585,11 +604,11 @@ func TestProcessEvent_ToolUseDeniedByGate(t *testing.T) {
 		manager: mgr,
 	}
 
-	event := claude.StreamEvent{
+	event := toProviderEvent(claude.StreamEvent{
 		Type:  "tool_use",
 		Name:  "Bash",
 		Input: json.RawMessage(`{"command":"rm -rf /"}`),
-	}
+	})
 
 	var currentResult string
 	bridge.processEvent(&event, &currentResult)
@@ -620,11 +639,11 @@ func TestProcessEvent_ToolUseAllowedByGate(t *testing.T) {
 		client: pub,
 	}
 
-	event := claude.StreamEvent{
+	event := toProviderEvent(claude.StreamEvent{
 		Type:  "tool_use",
 		Name:  "Read",
 		Input: json.RawMessage(`{"file_path":"/workspace/main.go"}`),
-	}
+	})
 
 	var currentResult string
 	bridge.processEvent(&event, &currentResult)
@@ -645,7 +664,7 @@ func TestProcessEvent_ToolUseDeniedByDeniedCommand(t *testing.T) {
 		AllowedTools:   []string{"Bash"},
 		DeniedCommands: []string{"rm *"},
 	})
-	mgr := claude.NewManager(claude.ProcessConfig{})
+	mgr := provider.NewClaudeManager(claude.NewManager(claude.ProcessConfig{}))
 	bridge := &Bridge{
 		config: BridgeConfig{
 			AgentName: "leader",
@@ -657,11 +676,11 @@ func TestProcessEvent_ToolUseDeniedByDeniedCommand(t *testing.T) {
 		manager: mgr,
 	}
 
-	event := claude.StreamEvent{
+	event := toProviderEvent(claude.StreamEvent{
 		Type:  "tool_use",
 		Name:  "Bash",
 		Input: json.RawMessage(`{"command":"rm -rf /workspace"}`),
-	}
+	})
 
 	var currentResult string
 	bridge.processEvent(&event, &currentResult)
@@ -682,7 +701,7 @@ func TestProcessEvent_FilesystemScopeEnforced(t *testing.T) {
 		AllowedTools:    []string{"Read", "Write"},
 		FilesystemScope: "/workspace",
 	})
-	mgr := claude.NewManager(claude.ProcessConfig{})
+	mgr := provider.NewClaudeManager(claude.NewManager(claude.ProcessConfig{}))
 	bridge := &Bridge{
 		config: BridgeConfig{
 			AgentName: "leader",
@@ -695,11 +714,11 @@ func TestProcessEvent_FilesystemScopeEnforced(t *testing.T) {
 	}
 
 	// Path OUTSIDE scope — should be denied.
-	event := claude.StreamEvent{
+	event := toProviderEvent(claude.StreamEvent{
 		Type:  "tool_use",
 		Name:  "Read",
 		Input: json.RawMessage(`{"file_path":"/etc/passwd"}`),
-	}
+	})
 
 	var currentResult string
 	bridge.processEvent(&event, &currentResult)
@@ -731,11 +750,11 @@ func TestProcessEvent_FilesystemScopeAllowed(t *testing.T) {
 	}
 
 	// Path INSIDE scope — should be allowed.
-	event := claude.StreamEvent{
+	event := toProviderEvent(claude.StreamEvent{
 		Type:  "tool_use",
 		Name:  "Read",
 		Input: json.RawMessage(`{"file_path":"/workspace/src/main.go"}`),
-	}
+	})
 
 	var currentResult string
 	bridge.processEvent(&event, &currentResult)
@@ -762,11 +781,11 @@ func TestProcessEvent_NilGateAllowsAll(t *testing.T) {
 		client: pub,
 	}
 
-	event := claude.StreamEvent{
+	event := toProviderEvent(claude.StreamEvent{
 		Type:  "tool_use",
 		Name:  "Bash",
 		Input: json.RawMessage(`{"command":"echo hello"}`),
-	}
+	})
 
 	var currentResult string
 	bridge.processEvent(&event, &currentResult)
@@ -795,10 +814,10 @@ func TestProcessEvent_ResultClearsCurrentResult(t *testing.T) {
 	}
 
 	msgContent, _ := json.Marshal(map[string]string{"type": "text", "text": "Final answer"})
-	event := claude.StreamEvent{
+	event := toProviderEvent(claude.StreamEvent{
 		Type:    "result",
 		Message: msgContent,
-	}
+	})
 
 	currentResult := "leftover from previous"
 	bridge.processEvent(&event, &currentResult)
