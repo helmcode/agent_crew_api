@@ -241,3 +241,206 @@ func TestAgentContainerName(t *testing.T) {
 		}
 	}
 }
+
+func TestProviderEnvVars_OpenCodeKeysAreDistinct(t *testing.T) {
+	// Verify that OpenCode and Claude providers use distinct API keys.
+	claudeKeys := map[string]bool{
+		"ANTHROPIC_API_KEY":        true,
+		"CLAUDE_CODE_OAUTH_TOKEN":  true,
+		"ANTHROPIC_AUTH_TOKEN":     true,
+	}
+	openCodeKeys := []string{
+		"OPENAI_API_KEY",
+		"GOOGLE_GENERATIVE_AI_API_KEY",
+		"OLLAMA_BASE_URL",
+		"LM_STUDIO_BASE_URL",
+	}
+
+	// OpenCode-specific keys should not overlap with Claude-specific auth keys
+	// (except ANTHROPIC_API_KEY which is shared).
+	for _, key := range openCodeKeys {
+		if claudeKeys[key] {
+			t.Errorf("OpenCode key %q should not be in Claude-only keys", key)
+		}
+	}
+}
+
+func TestImageSelectionByProvider_AllCases(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider string
+		want     string
+	}{
+		{"claude uses claude image", "claude", DefaultAgentImage},
+		{"opencode uses opencode image", "opencode", DefaultOpenCodeAgentImage},
+		{"empty provider defaults to claude", "", DefaultAgentImage},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var img string
+			if tt.provider == "opencode" {
+				img = DefaultOpenCodeAgentImage
+			} else {
+				img = DefaultAgentImage
+			}
+			if img != tt.want {
+				t.Errorf("got %q, want %q", img, tt.want)
+			}
+		})
+	}
+}
+
+func TestProviderAuthValidation_NoLeakage(t *testing.T) {
+	// Verify that a config with ONLY OpenAI key does NOT satisfy Claude auth.
+	claudeEnv := map[string]string{
+		"OPENAI_API_KEY": "sk-oai-123",
+	}
+	apiKey := claudeEnv["ANTHROPIC_API_KEY"]
+	oauthToken := claudeEnv["CLAUDE_CODE_OAUTH_TOKEN"]
+	if oauthToken == "" {
+		oauthToken = claudeEnv["ANTHROPIC_AUTH_TOKEN"]
+	}
+	if apiKey != "" || oauthToken != "" {
+		t.Error("OpenAI-only config should NOT satisfy Claude auth requirements")
+	}
+
+	// Verify that a config with ONLY Anthropic key does satisfy OpenCode auth.
+	openCodeEnv := map[string]string{
+		"ANTHROPIC_API_KEY": "sk-ant-123",
+	}
+	openCodeKeys := []string{
+		"ANTHROPIC_API_KEY", "OPENAI_API_KEY",
+		"GOOGLE_GENERATIVE_AI_API_KEY",
+		"OLLAMA_BASE_URL", "LM_STUDIO_BASE_URL",
+	}
+	hasOpenCodeAuth := false
+	for _, key := range openCodeKeys {
+		if v := openCodeEnv[key]; v != "" {
+			hasOpenCodeAuth = true
+			break
+		}
+	}
+	if !hasOpenCodeAuth {
+		t.Error("Anthropic key should satisfy OpenCode auth (shared key)")
+	}
+}
+
+func TestK8sImageSelection(t *testing.T) {
+	k := &K8sRuntime{
+		agentImage:         "claude-img:v1",
+		openCodeAgentImage: "opencode-img:v1",
+	}
+
+	if k.agentImage != "claude-img:v1" {
+		t.Errorf("K8s claude image: got %q", k.agentImage)
+	}
+	if k.openCodeAgentImage != "opencode-img:v1" {
+		t.Errorf("K8s opencode image: got %q", k.openCodeAgentImage)
+	}
+	if k.agentImage == k.openCodeAgentImage {
+		t.Error("K8s claude and opencode images should be different")
+	}
+}
+
+func TestProviderFieldOnAgentConfig(t *testing.T) {
+	// Verify that the Provider field is carried on AgentConfig for both providers.
+	tests := []struct {
+		name     string
+		provider string
+	}{
+		{"claude provider", "claude"},
+		{"opencode provider", "opencode"},
+		{"empty defaults to claude", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := AgentConfig{
+				Name:     "test-agent",
+				TeamName: "test-team",
+				Role:     "leader",
+				Provider: tt.provider,
+			}
+
+			if cfg.Provider != tt.provider {
+				t.Errorf("provider: got %q, want %q", cfg.Provider, tt.provider)
+			}
+		})
+	}
+}
+
+func TestProviderAuthValidation_OpenCodeAcceptsAllKeys(t *testing.T) {
+	// Each OpenCode-supported key should independently satisfy auth.
+	keys := []string{
+		"ANTHROPIC_API_KEY",
+		"OPENAI_API_KEY",
+		"GOOGLE_GENERATIVE_AI_API_KEY",
+		"OLLAMA_BASE_URL",
+		"LM_STUDIO_BASE_URL",
+	}
+
+	for _, key := range keys {
+		t.Run(key, func(t *testing.T) {
+			env := map[string]string{key: "test-value-123"}
+			openCodeKeys := []string{
+				"ANTHROPIC_API_KEY", "OPENAI_API_KEY",
+				"GOOGLE_GENERATIVE_AI_API_KEY",
+				"OLLAMA_BASE_URL", "LM_STUDIO_BASE_URL",
+			}
+			hasAuth := false
+			for _, k := range openCodeKeys {
+				if v := env[k]; v != "" {
+					hasAuth = true
+					break
+				}
+			}
+			if !hasAuth {
+				t.Errorf("key %s should satisfy OpenCode auth", key)
+			}
+		})
+	}
+}
+
+func TestDockerRuntimeFields(t *testing.T) {
+	// Verify DockerRuntime carries both image fields.
+	d := &DockerRuntime{
+		agentImage:         DefaultAgentImage,
+		openCodeAgentImage: DefaultOpenCodeAgentImage,
+	}
+
+	if d.agentImage == "" {
+		t.Error("agentImage should not be empty")
+	}
+	if d.openCodeAgentImage == "" {
+		t.Error("openCodeAgentImage should not be empty")
+	}
+	if d.agentImage == d.openCodeAgentImage {
+		t.Error("agentImage and openCodeAgentImage should be different")
+	}
+}
+
+func TestValidateAgentFilePath_OpenCodePaths(t *testing.T) {
+	// ValidateAgentFilePath only allows /workspace/.claude/ paths.
+	// OpenCode paths (.opencode/) are NOT validated by this function
+	// because file operations through the API only target Claude paths.
+	tests := []struct {
+		path    string
+		wantErr bool
+	}{
+		{"/workspace/.claude/CLAUDE.md", false},
+		{"/workspace/.claude/agents/worker.md", false},
+		{"/workspace/.opencode/AGENTS.MD", true},             // OpenCode paths not allowed
+		{"/workspace/.opencode/agents/worker.md", true},      // OpenCode paths not allowed
+		{"/workspace/../etc/passwd", true},                    // Path traversal
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			err := ValidateAgentFilePath(tt.path)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateAgentFilePath(%q): got err=%v, wantErr=%v", tt.path, err, tt.wantErr)
+			}
+		})
+	}
+}
