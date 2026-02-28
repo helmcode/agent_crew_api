@@ -52,6 +52,7 @@ type Team struct {
 	Name          string    `gorm:"uniqueIndex;not null;size:255" json:"name"`
 	Description   string    `gorm:"size:1024" json:"description"`
 	Status        string    `gorm:"not null;size:50;default:stopped" json:"status"`
+	StatusMessage string    `gorm:"type:text" json:"status_message"`
 	Runtime       string    `gorm:"not null;size:50;default:docker" json:"runtime"`
 	Provider      string    `gorm:"type:varchar(50);default:'claude'" json:"provider"`
 	WorkspacePath string    `gorm:"size:512" json:"workspace_path"`

@@ -539,11 +539,11 @@ func TestGenerateOpenCodeSubAgentContent_AllFields(t *testing.T) {
 	if !contains(content, "tools:") {
 		t.Error("missing tools section")
 	}
-	if !contains(content, "  - Bash") {
-		t.Error("missing Bash tool")
+	if !contains(content, "  bash: true") {
+		t.Error("missing bash tool")
 	}
-	if !contains(content, "  - Read") {
-		t.Error("missing Read tool")
+	if !contains(content, "  read: true") {
+		t.Error("missing read tool")
 	}
 	if !contains(content, "permission:") {
 		t.Error("missing permission section")

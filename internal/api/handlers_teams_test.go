@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1513,4 +1514,219 @@ func TestClaudeModelID(t *testing.T) {
 
 func containsStr(s, substr string) bool {
 	return strings.Contains(s, substr)
+}
+
+// --- StatusMessage tests ---
+
+func TestStatusMessage_ReturnedInTeamJSON(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name:   "status-msg-team",
+		Agents: []CreateAgentInput{{Name: "a1", Role: "leader"}},
+	})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+
+	// Verify status_message is present in JSON response (empty by default).
+	if team.StatusMessage != "" {
+		t.Errorf("status_message should be empty on creation, got %q", team.StatusMessage)
+	}
+
+	// Manually set a status message to verify it's returned via GET.
+	srv.db.Model(&team).Updates(map[string]interface{}{
+		"status":         models.TeamStatusError,
+		"status_message": "test error message",
+	})
+
+	getRec := doRequest(srv, "GET", "/api/teams/"+team.ID, nil)
+	if getRec.Code != 200 {
+		t.Fatalf("status: got %d, want 200", getRec.Code)
+	}
+
+	var fetched models.Team
+	parseJSON(t, getRec, &fetched)
+	if fetched.StatusMessage != "test error message" {
+		t.Errorf("status_message: got %q, want 'test error message'", fetched.StatusMessage)
+	}
+}
+
+func TestStatusMessage_ClearedOnDeploy(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name:   "clear-msg-team",
+		Agents: []CreateAgentInput{{Name: "a1", Role: "leader"}},
+	})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+
+	// Set an error status with a message.
+	srv.db.Model(&team).Updates(map[string]interface{}{
+		"status":         models.TeamStatusError,
+		"status_message": "previous error",
+	})
+
+	// Deploy again — status_message should be cleared to "".
+	// First reset to stopped so deploy is allowed.
+	srv.db.Model(&team).Update("status", models.TeamStatusStopped)
+
+	rec := doRequest(srv, "POST", "/api/teams/"+team.ID+"/deploy", nil)
+	if rec.Code != 200 {
+		t.Fatalf("status: got %d, want 200\nbody: %s", rec.Code, rec.Body.String())
+	}
+
+	var deployed models.Team
+	parseJSON(t, rec, &deployed)
+	if deployed.StatusMessage != "" {
+		t.Errorf("status_message should be cleared on deploy, got %q", deployed.StatusMessage)
+	}
+
+	// Also verify in DB.
+	var dbTeam models.Team
+	srv.db.First(&dbTeam, "id = ?", team.ID)
+	if dbTeam.StatusMessage != "" {
+		t.Errorf("status_message in DB should be cleared, got %q", dbTeam.StatusMessage)
+	}
+}
+
+func TestStatusMessage_PopulatedOnNoLeader(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name: "no-leader-msg-team",
+		Agents: []CreateAgentInput{
+			{Name: "worker-1", Role: "worker"},
+		},
+	})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+
+	// Call deployTeamAsync synchronously (no leader → error).
+	srv.deployTeamAsync(team)
+
+	var updated models.Team
+	srv.db.First(&updated, "id = ?", team.ID)
+	if updated.Status != models.TeamStatusError {
+		t.Errorf("status: got %q, want %q", updated.Status, models.TeamStatusError)
+	}
+	if updated.StatusMessage != "No leader agent found in team configuration" {
+		t.Errorf("status_message: got %q, want 'No leader agent found in team configuration'", updated.StatusMessage)
+	}
+}
+
+func TestStatusMessage_PopulatedOnInfraDeployFailure(t *testing.T) {
+	srv, mock := setupTestServer(t)
+
+	mock.deployInfraErr = errors.New("Docker daemon not reachable")
+
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name:   "infra-fail-msg-team",
+		Agents: []CreateAgentInput{{Name: "a1", Role: "leader"}},
+	})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+
+	srv.deployTeamAsync(team)
+
+	var updated models.Team
+	srv.db.First(&updated, "id = ?", team.ID)
+	if updated.Status != models.TeamStatusError {
+		t.Errorf("status: got %q, want %q", updated.Status, models.TeamStatusError)
+	}
+	want := "Failed to deploy infrastructure: Docker daemon not reachable"
+	if updated.StatusMessage != want {
+		t.Errorf("status_message: got %q, want %q", updated.StatusMessage, want)
+	}
+}
+
+func TestStatusMessage_PopulatedOnAgentDeployFailure(t *testing.T) {
+	srv, mock := setupTestServer(t)
+
+	mock.deployAgentErr = errors.New("no auth configured: set ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN in the Settings page")
+
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name:   "agent-fail-msg-team",
+		Agents: []CreateAgentInput{{Name: "the-leader", Role: "leader"}},
+	})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+
+	srv.deployTeamAsync(team)
+
+	var updated models.Team
+	srv.db.First(&updated, "id = ?", team.ID)
+	if updated.Status != models.TeamStatusError {
+		t.Errorf("status: got %q, want %q", updated.Status, models.TeamStatusError)
+	}
+	want := "no auth configured: set ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN in the Settings page"
+	if updated.StatusMessage != want {
+		t.Errorf("status_message: got %q, want %q", updated.StatusMessage, want)
+	}
+}
+
+func TestStatusMessage_ClearedOnStop(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name:   "stop-clear-msg-team",
+		Agents: []CreateAgentInput{{Name: "a1", Role: "leader"}},
+	})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+
+	// Set team to error with a message.
+	srv.db.Model(&team).Updates(map[string]interface{}{
+		"status":         models.TeamStatusError,
+		"status_message": "some deploy error",
+	})
+
+	// Stop the team — status_message should be cleared.
+	rec := doRequest(srv, "POST", "/api/teams/"+team.ID+"/stop", nil)
+	if rec.Code != 200 {
+		t.Fatalf("status: got %d, want 200\nbody: %s", rec.Code, rec.Body.String())
+	}
+
+	var stopped models.Team
+	parseJSON(t, rec, &stopped)
+	if stopped.StatusMessage != "" {
+		t.Errorf("status_message should be cleared on stop, got %q", stopped.StatusMessage)
+	}
+
+	// Verify in DB.
+	var dbTeam models.Team
+	srv.db.First(&dbTeam, "id = ?", team.ID)
+	if dbTeam.StatusMessage != "" {
+		t.Errorf("status_message in DB should be cleared on stop, got %q", dbTeam.StatusMessage)
+	}
+}
+
+func TestStatusMessage_ReturnedInListTeams(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name:   "list-msg-team",
+		Agents: []CreateAgentInput{{Name: "a1", Role: "leader"}},
+	})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+
+	srv.db.Model(&team).Updates(map[string]interface{}{
+		"status":         models.TeamStatusError,
+		"status_message": "deploy failed: missing key",
+	})
+
+	rec := doRequest(srv, "GET", "/api/teams", nil)
+	if rec.Code != 200 {
+		t.Fatalf("status: got %d, want 200", rec.Code)
+	}
+
+	var teams []models.Team
+	parseJSON(t, rec, &teams)
+	if len(teams) != 1 {
+		t.Fatalf("teams: got %d, want 1", len(teams))
+	}
+	if teams[0].StatusMessage != "deploy failed: missing key" {
+		t.Errorf("status_message in list: got %q, want 'deploy failed: missing key'", teams[0].StatusMessage)
+	}
 }

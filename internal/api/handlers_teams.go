@@ -217,8 +217,11 @@ func (s *Server) DeployTeam(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusConflict, "team is already running")
 	}
 
-	// Update status to deploying.
-	s.db.Model(&team).Update("status", models.TeamStatusDeploying)
+	// Update status to deploying and clear any previous error message.
+	s.db.Model(&team).Updates(map[string]interface{}{
+		"status":         models.TeamStatusDeploying,
+		"status_message": "",
+	})
 
 	// Deep copy agents for the background goroutine to avoid data races
 	// with the JSON serialization of the response below.
@@ -230,6 +233,7 @@ func (s *Server) DeployTeam(c *fiber.Ctx) error {
 	go s.deployTeamAsync(asyncTeam)
 
 	team.Status = models.TeamStatusDeploying
+	team.StatusMessage = ""
 	return c.JSON(team)
 }
 
@@ -237,7 +241,10 @@ func (s *Server) deployTeamAsync(team models.Team) {
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("panic in deployTeamAsync", "team", team.Name, "panic", r)
-			s.db.Model(&team).Update("status", models.TeamStatusError)
+			s.db.Model(&team).Updates(map[string]interface{}{
+				"status":         models.TeamStatusError,
+				"status_message": "Unexpected error during deployment",
+			})
 		}
 	}()
 
@@ -256,7 +263,10 @@ func (s *Server) deployTeamAsync(team models.Team) {
 
 	if err := s.runtime.DeployInfra(ctx, infraCfg); err != nil {
 		slog.Error("failed to deploy infrastructure", "team", team.Name, "error", err)
-		s.db.Model(&team).Update("status", models.TeamStatusError)
+		s.db.Model(&team).Updates(map[string]interface{}{
+			"status":         models.TeamStatusError,
+			"status_message": "Failed to deploy infrastructure: " + err.Error(),
+		})
 		return
 	}
 
@@ -374,7 +384,10 @@ func (s *Server) deployTeamAsync(team models.Team) {
 
 	if leader == nil {
 		slog.Error("no leader agent found in team", "team", team.Name)
-		s.db.Model(&team).Update("status", models.TeamStatusError)
+		s.db.Model(&team).Updates(map[string]interface{}{
+			"status":         models.TeamStatusError,
+			"status_message": "No leader agent found in team configuration",
+		})
 		return
 	}
 
@@ -510,7 +523,10 @@ func (s *Server) deployTeamAsync(team models.Team) {
 		s.db.Model(leader).Updates(map[string]interface{}{
 			"container_status": models.ContainerStatusError,
 		})
-		s.db.Model(&team).Update("status", models.TeamStatusError)
+		s.db.Model(&team).Updates(map[string]interface{}{
+			"status":         models.TeamStatusError,
+			"status_message": err.Error(),
+		})
 		return
 	}
 
@@ -620,7 +636,11 @@ func (s *Server) StopTeam(c *fiber.Ctx) error {
 	// Stop the relay goroutine for this team.
 	s.stopTeamRelay(team.ID)
 
-	s.db.Model(&team).Update("status", models.TeamStatusStopped)
+	s.db.Model(&team).Updates(map[string]interface{}{
+		"status":         models.TeamStatusStopped,
+		"status_message": "",
+	})
 	team.Status = models.TeamStatusStopped
+	team.StatusMessage = ""
 	return c.JSON(team)
 }

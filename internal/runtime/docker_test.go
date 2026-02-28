@@ -421,17 +421,15 @@ func TestDockerRuntimeFields(t *testing.T) {
 }
 
 func TestValidateAgentFilePath_OpenCodePaths(t *testing.T) {
-	// ValidateAgentFilePath only allows /workspace/.claude/ paths.
-	// OpenCode paths (.opencode/) are NOT validated by this function
-	// because file operations through the API only target Claude paths.
+	// ValidateAgentFilePath allows both /workspace/.claude/ and /workspace/.opencode/ paths.
 	tests := []struct {
 		path    string
 		wantErr bool
 	}{
 		{"/workspace/.claude/CLAUDE.md", false},
 		{"/workspace/.claude/agents/worker.md", false},
-		{"/workspace/.opencode/AGENTS.MD", true},             // OpenCode paths not allowed
-		{"/workspace/.opencode/agents/worker.md", true},      // OpenCode paths not allowed
+		{"/workspace/.opencode/AGENTS.MD", false},             // OpenCode leader instructions
+		{"/workspace/.opencode/agents/worker.md", false},      // OpenCode worker instructions
 		{"/workspace/../etc/passwd", true},                    // Path traversal
 	}
 

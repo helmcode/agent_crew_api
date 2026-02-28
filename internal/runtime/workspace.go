@@ -466,14 +466,14 @@ func GenerateOpenCodeSubAgentContent(agent SubAgentInfo, globalSkills []protocol
 		b.WriteString("model: " + agent.Model + "\n")
 	}
 
-	// Standard tool set for OpenCode agents.
+	// Standard tool set for OpenCode agents (record format with boolean values).
 	b.WriteString("tools:\n")
-	b.WriteString("  - Bash\n")
-	b.WriteString("  - Read\n")
-	b.WriteString("  - Write\n")
-	b.WriteString("  - Glob\n")
-	b.WriteString("  - Grep\n")
-	b.WriteString("  - Edit\n")
+	b.WriteString("  bash: true\n")
+	b.WriteString("  read: true\n")
+	b.WriteString("  write: true\n")
+	b.WriteString("  glob: true\n")
+	b.WriteString("  grep: true\n")
+	b.WriteString("  edit: true\n")
 
 	// Permissions.
 	b.WriteString("permission:\n")

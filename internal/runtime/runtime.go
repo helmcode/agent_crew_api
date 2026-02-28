@@ -95,8 +95,9 @@ type AgentRuntime interface {
 
 // ValidateAgentFilePath checks that the given path is safe for agent file
 // operations. It rejects path traversal attempts and only allows paths under
-// /workspace/.claude/. Specifically: /workspace/.claude/CLAUDE.md (leader
-// instructions) or /workspace/.claude/agents/<name>.md (worker instructions).
+// /workspace/.claude/ or /workspace/.opencode/. Specifically:
+//   - /workspace/.claude/CLAUDE.md or /workspace/.opencode/AGENTS.MD (leader instructions)
+//   - /workspace/.claude/agents/<name>.md or /workspace/.opencode/agents/<name>.md (worker instructions)
 func ValidateAgentFilePath(filePath string) error {
 	if strings.Contains(filePath, "..") {
 		return fmt.Errorf("path traversal not allowed: %s", filePath)
@@ -104,22 +105,30 @@ func ValidateAgentFilePath(filePath string) error {
 
 	cleaned := filepath.Clean(filePath)
 
-	const allowedPrefix = "/workspace/.claude/"
-	if !strings.HasPrefix(cleaned, allowedPrefix) {
-		return fmt.Errorf("path must be under /workspace/.claude/: %s", filePath)
+	// Check if path is under one of the allowed prefixes.
+	allowedPrefixes := []string{"/workspace/.claude/", "/workspace/.opencode/"}
+	hasAllowedPrefix := false
+	for _, prefix := range allowedPrefixes {
+		if strings.HasPrefix(cleaned, prefix) {
+			hasAllowedPrefix = true
+			break
+		}
+	}
+	if !hasAllowedPrefix {
+		return fmt.Errorf("path must be under /workspace/.claude/ or /workspace/.opencode/: %s", filePath)
 	}
 
-	// Allow /workspace/.claude/CLAUDE.md
-	if cleaned == "/workspace/.claude/CLAUDE.md" {
+	// Allow leader instruction files.
+	if cleaned == "/workspace/.claude/CLAUDE.md" || cleaned == "/workspace/.opencode/AGENTS.MD" {
 		return nil
 	}
 
-	// Allow /workspace/.claude/agents/<name>.md
+	// Allow agent files under agents/ subdirectory.
 	dir := filepath.Dir(cleaned)
 	base := filepath.Base(cleaned)
-	if dir == "/workspace/.claude/agents" && strings.HasSuffix(base, ".md") {
+	if (dir == "/workspace/.claude/agents" || dir == "/workspace/.opencode/agents") && strings.HasSuffix(base, ".md") {
 		return nil
 	}
 
-	return fmt.Errorf("path not allowed (must be /workspace/.claude/CLAUDE.md or /workspace/.claude/agents/<name>.md): %s", filePath)
+	return fmt.Errorf("path not allowed: %s", filePath)
 }

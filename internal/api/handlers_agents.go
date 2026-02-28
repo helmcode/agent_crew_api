@@ -345,7 +345,8 @@ func (s *Server) InstallAgentSkill(c *fiber.Ctx) error {
 		// Write via exec using base64 to avoid shell escaping issues.
 		encoded := base64.StdEncoding.EncodeToString([]byte(content))
 		filename := runtime.SubAgentFileName(agent.Name)
-		filePath := fmt.Sprintf("/workspace/.claude/agents/%s", filename)
+		agentsDir := agentsContainerDir(team.Provider)
+		filePath := agentsDir + "/" + filename
 		writeCmd := []string{"sh", "-c", fmt.Sprintf("printf '%%s' '%s' | base64 -d > %s", encoded, filePath)}
 
 		if _, err := s.runtime.ExecInContainer(c.Context(), leader.ContainerID, writeCmd); err != nil {
@@ -363,6 +364,7 @@ func (s *Server) InstallAgentSkill(c *fiber.Ctx) error {
 
 		// The freshly updated leader skills.
 		globalSkills := json.RawMessage(updatedSkillsJSON)
+		agentsDir := agentsContainerDir(team.Provider)
 
 		for _, w := range workers {
 			subInfo := runtime.SubAgentInfo{
@@ -376,7 +378,7 @@ func (s *Server) InstallAgentSkill(c *fiber.Ctx) error {
 			content := runtime.GenerateSubAgentContent(subInfo)
 			encoded := base64.StdEncoding.EncodeToString([]byte(content))
 			filename := runtime.SubAgentFileName(w.Name)
-			filePath := fmt.Sprintf("/workspace/.claude/agents/%s", filename)
+			filePath := agentsDir + "/" + filename
 			writeCmd := []string{"sh", "-c", fmt.Sprintf("printf '%%s' '%s' | base64 -d > %s", encoded, filePath)}
 
 			if _, err := s.runtime.ExecInContainer(c.Context(), leader.ContainerID, writeCmd); err != nil {
@@ -419,7 +421,7 @@ func (s *Server) GetInstructions(c *fiber.Ctx) error {
 		return err
 	}
 
-	absPath, relPath := agentInstructionsPath(agent)
+	absPath, relPath := agentInstructionsPath(agent, team.Provider)
 
 	content, err := s.runtime.ReadFile(c.Context(), containerID, absPath)
 	if err != nil {
@@ -467,7 +469,7 @@ func (s *Server) UpdateInstructions(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("content exceeds maximum size of %d bytes", maxInstructionsSize))
 	}
 
-	absPath, relPath := agentInstructionsPath(agent)
+	absPath, relPath := agentInstructionsPath(agent, team.Provider)
 
 	if err := s.runtime.WriteFile(c.Context(), containerID, absPath, []byte(req.Content)); err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "failed to write instructions: "+err.Error())
@@ -503,9 +505,27 @@ func (s *Server) resolveAgentContainerID(teamID string, agent models.Agent) (str
 	return leader.ContainerID, nil
 }
 
+// agentsContainerDir returns the absolute container path of the agents directory
+// based on the provider: /workspace/.claude/agents for Claude, /workspace/.opencode/agents for OpenCode.
+func agentsContainerDir(provider string) string {
+	if provider == models.ProviderOpenCode {
+		return "/workspace/.opencode/agents"
+	}
+	return "/workspace/.claude/agents"
+}
+
 // agentInstructionsPath returns the absolute container path and relative display
-// path for an agent's instructions file.
-func agentInstructionsPath(agent models.Agent) (absPath, relPath string) {
+// path for an agent's instructions file. The provider determines the directory
+// layout: Claude uses .claude/, OpenCode uses .opencode/.
+func agentInstructionsPath(agent models.Agent, provider string) (absPath, relPath string) {
+	if provider == models.ProviderOpenCode {
+		if agent.Role == models.AgentRoleLeader {
+			return "/workspace/.opencode/AGENTS.MD", ".opencode/AGENTS.MD"
+		}
+		filename := runtime.SubAgentFileName(agent.Name)
+		return "/workspace/.opencode/agents/" + filename, ".opencode/agents/" + filename
+	}
+	// Claude provider (default).
 	if agent.Role == models.AgentRoleLeader {
 		return "/workspace/.claude/CLAUDE.md", ".claude/CLAUDE.md"
 	}

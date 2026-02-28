@@ -32,6 +32,23 @@ func TestValidateAgentFilePath(t *testing.T) {
 			wantErr: false,
 		},
 
+		// Valid OpenCode paths.
+		{
+			name:    "opencode leader AGENTS.MD",
+			path:    "/workspace/.opencode/AGENTS.MD",
+			wantErr: false,
+		},
+		{
+			name:    "opencode worker agent file",
+			path:    "/workspace/.opencode/agents/researcher.md",
+			wantErr: false,
+		},
+		{
+			name:    "opencode worker with hyphens",
+			path:    "/workspace/.opencode/agents/backend-dev.md",
+			wantErr: false,
+		},
+
 		// Path traversal attacks.
 		{
 			name:    "path traversal with ..",

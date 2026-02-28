@@ -174,6 +174,8 @@ func ConvertSSEToProviderEvent(evt SSEEvent, sessionID string) *provider.StreamE
 	switch evt.Type {
 	case EventMessagePartUpdated:
 		return convertMessagePart(evt.Data, sessionID)
+	case EventMessageUpdated:
+		return convertMessageUpdated(evt.Data, sessionID)
 	case EventSessionError:
 		return convertSessionError(evt.Data, sessionID)
 	case EventSessionIdle:
@@ -313,6 +315,57 @@ func convertSessionError(data json.RawMessage, filterSessionID string) *provider
 		Result:    payload.Error,
 		ErrorCode: payload.Code,
 		SessionID: payload.SessionID,
+	}
+}
+
+// MessageUpdatedPayload represents the data of a message.updated SSE event.
+// This fires when the entire message object changes, e.g. when a message
+// completes with an error (info.error is set).
+type MessageUpdatedPayload struct {
+	Info struct {
+		Role      string `json:"role"`
+		SessionID string `json:"sessionID"`
+		Error     *struct {
+			Name string `json:"name"`
+			Data struct {
+				Message    string `json:"message"`
+				StatusCode int    `json:"statusCode"`
+			} `json:"data"`
+		} `json:"error,omitempty"`
+	} `json:"info"`
+}
+
+// convertMessageUpdated handles message.updated events. These fire when a
+// message's metadata changes, most importantly when an assistant message
+// completes with an error (e.g. invalid API key, rate limit, etc.).
+func convertMessageUpdated(data json.RawMessage, filterSessionID string) *provider.StreamEvent {
+	var payload MessageUpdatedPayload
+	if err := json.Unmarshal(data, &payload); err != nil {
+		slog.Debug("failed to parse message.updated", "error", err)
+		return nil
+	}
+
+	// Filter by session ID.
+	if filterSessionID != "" && payload.Info.SessionID != filterSessionID {
+		return nil
+	}
+
+	// Only emit an event if the message has an error.
+	if payload.Info.Error == nil {
+		return nil
+	}
+
+	errMsg := payload.Info.Error.Data.Message
+	if errMsg == "" {
+		errMsg = payload.Info.Error.Name
+	}
+
+	return &provider.StreamEvent{
+		Type:      "result",
+		IsError:   true,
+		Result:    errMsg,
+		ErrorCode: payload.Info.Error.Name,
+		SessionID: payload.Info.SessionID,
 	}
 }
 

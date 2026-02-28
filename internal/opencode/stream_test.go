@@ -397,6 +397,62 @@ func TestConvert_SessionErrorFiltered(t *testing.T) {
 	}
 }
 
+func TestConvert_MessageUpdatedWithError(t *testing.T) {
+	data := json.RawMessage(`{
+		"info": {
+			"role": "assistant",
+			"sessionID": "ses_abc",
+			"error": {
+				"name": "APIError",
+				"data": {"message": "invalid x-api-key", "statusCode": 401}
+			}
+		},
+		"parts": []
+	}`)
+
+	pe := ConvertSSEToProviderEvent(SSEEvent{Type: EventMessageUpdated, Data: data}, "ses_abc")
+	if pe == nil {
+		t.Fatal("expected non-nil event for message.updated with error")
+	}
+	if pe.Type != "result" {
+		t.Errorf("Type: got %q, want 'result'", pe.Type)
+	}
+	if !pe.IsError {
+		t.Error("expected IsError=true")
+	}
+	if pe.Result != "invalid x-api-key" {
+		t.Errorf("Result: got %q, want 'invalid x-api-key'", pe.Result)
+	}
+	if pe.ErrorCode != "APIError" {
+		t.Errorf("ErrorCode: got %q, want 'APIError'", pe.ErrorCode)
+	}
+}
+
+func TestConvert_MessageUpdatedNoError(t *testing.T) {
+	data := json.RawMessage(`{"info": {"role": "assistant", "sessionID": "ses_abc"}, "parts": []}`)
+
+	pe := ConvertSSEToProviderEvent(SSEEvent{Type: EventMessageUpdated, Data: data}, "ses_abc")
+	if pe != nil {
+		t.Errorf("expected nil for message.updated without error, got %+v", pe)
+	}
+}
+
+func TestConvert_MessageUpdatedFiltered(t *testing.T) {
+	data := json.RawMessage(`{
+		"info": {
+			"role": "assistant",
+			"sessionID": "other-session",
+			"error": {"name": "APIError", "data": {"message": "fail"}}
+		},
+		"parts": []
+	}`)
+
+	pe := ConvertSSEToProviderEvent(SSEEvent{Type: EventMessageUpdated, Data: data}, "ses_abc")
+	if pe != nil {
+		t.Errorf("expected nil for message.updated from different session, got %+v", pe)
+	}
+}
+
 func TestFormatSSEEventType(t *testing.T) {
 	tests := []struct {
 		input    string
