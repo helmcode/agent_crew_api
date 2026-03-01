@@ -285,13 +285,8 @@ func TestConvert_ReasoningEmpty(t *testing.T) {
 	}
 }
 
-func TestConvert_SessionError(t *testing.T) {
-	payload := SessionErrorPayload{
-		SessionID: "sess-1",
-		Error:     "rate limit exceeded",
-		Code:      "rate_limit",
-	}
-	data, _ := json.Marshal(payload)
+func TestConvert_SessionError_StringFormat(t *testing.T) {
+	data := json.RawMessage(`{"sessionID":"sess-1","error":"rate limit exceeded","code":"rate_limit"}`)
 
 	pe := ConvertSSEToProviderEvent(SSEEvent{Type: EventSessionError, Data: data}, "sess-1")
 
@@ -309,6 +304,29 @@ func TestConvert_SessionError(t *testing.T) {
 	}
 	if pe.ErrorCode != "rate_limit" {
 		t.Errorf("ErrorCode: got %q, want 'rate_limit'", pe.ErrorCode)
+	}
+}
+
+func TestConvert_SessionError_ObjectFormat(t *testing.T) {
+	// OpenCode sends error as an object: {"name":"APIError","data":{"message":"invalid x-api-key","statusCode":401}}
+	data := json.RawMessage(`{"sessionID":"sess-1","error":{"name":"APIError","data":{"message":"invalid x-api-key","statusCode":401}}}`)
+
+	pe := ConvertSSEToProviderEvent(SSEEvent{Type: EventSessionError, Data: data}, "sess-1")
+
+	if pe == nil {
+		t.Fatal("expected non-nil event")
+	}
+	if pe.Type != "error" {
+		t.Errorf("Type: got %q, want 'error'", pe.Type)
+	}
+	if !pe.IsError {
+		t.Error("IsError should be true")
+	}
+	if pe.Result != "invalid x-api-key" {
+		t.Errorf("Result: got %q, want 'invalid x-api-key'", pe.Result)
+	}
+	if pe.ErrorCode != "APIError" {
+		t.Errorf("ErrorCode: got %q, want 'APIError'", pe.ErrorCode)
 	}
 }
 
@@ -388,8 +406,7 @@ func TestConvert_SessionIdleFiltered(t *testing.T) {
 }
 
 func TestConvert_SessionErrorFiltered(t *testing.T) {
-	payload := SessionErrorPayload{SessionID: "other-session", Error: "fail"}
-	data, _ := json.Marshal(payload)
+	data := json.RawMessage(`{"sessionID":"other-session","error":"fail"}`)
 
 	pe := ConvertSSEToProviderEvent(SSEEvent{Type: EventSessionError, Data: data}, "my-session")
 	if pe != nil {
@@ -470,6 +487,184 @@ func TestFormatSSEEventType(t *testing.T) {
 		if result != tt.expected {
 			t.Errorf("FormatSSEEventType(%q): got %q, want %q", tt.input, result, tt.expected)
 		}
+	}
+}
+
+// --- OpenCode flat format tests (sessionID/text inside part) ---
+
+func TestConvert_MessagePartText_FlatFormat(t *testing.T) {
+	// OpenCode SSE format: sessionID and text are inside the part object.
+	data := json.RawMessage(`{"part":{"id":"prt_1","sessionID":"sess-1","messageID":"msg-1","type":"text","text":"Hello world"}}`)
+
+	pe := ConvertSSEToProviderEvent(SSEEvent{Type: EventMessagePartUpdated, Data: data}, "sess-1")
+
+	if pe == nil {
+		t.Fatal("expected non-nil event")
+	}
+	if pe.Type != "assistant" {
+		t.Errorf("Type: got %q, want 'assistant'", pe.Type)
+	}
+	if pe.SessionID != "sess-1" {
+		t.Errorf("SessionID: got %q", pe.SessionID)
+	}
+	var msg map[string]string
+	if err := json.Unmarshal([]byte(pe.Message), &msg); err != nil {
+		t.Fatalf("failed to parse Message: %v", err)
+	}
+	if msg["text"] != "Hello world" {
+		t.Errorf("message text: got %q", msg["text"])
+	}
+}
+
+func TestConvert_MessagePartText_FlatFormat_Filtered(t *testing.T) {
+	data := json.RawMessage(`{"part":{"id":"prt_1","sessionID":"other-session","type":"text","text":"Hello"}}`)
+
+	pe := ConvertSSEToProviderEvent(SSEEvent{Type: EventMessagePartUpdated, Data: data}, "my-session")
+	if pe != nil {
+		t.Errorf("expected nil for flat format from different session, got %+v", pe)
+	}
+}
+
+func TestConvert_ToolRunning_FlatFormat(t *testing.T) {
+	data := json.RawMessage(`{"part":{"id":"prt_1","sessionID":"sess-1","type":"tool","state":"running","tool":"Bash","input":{"command":"ls"}}}`)
+
+	pe := ConvertSSEToProviderEvent(SSEEvent{Type: EventMessagePartUpdated, Data: data}, "sess-1")
+
+	if pe == nil {
+		t.Fatal("expected non-nil event")
+	}
+	if pe.Type != "tool_use" {
+		t.Errorf("Type: got %q, want 'tool_use'", pe.Type)
+	}
+	if pe.Name != "Bash" {
+		t.Errorf("Name: got %q, want 'Bash'", pe.Name)
+	}
+}
+
+func TestConvert_ToolCompleted_FlatFormat(t *testing.T) {
+	data := json.RawMessage(`{"part":{"id":"prt_1","sessionID":"sess-1","type":"tool","state":"completed","tool":"Read","output":"file contents"}}`)
+
+	pe := ConvertSSEToProviderEvent(SSEEvent{Type: EventMessagePartUpdated, Data: data}, "sess-1")
+
+	if pe == nil {
+		t.Fatal("expected non-nil event")
+	}
+	if pe.Type != "tool_result" {
+		t.Errorf("Type: got %q, want 'tool_result'", pe.Type)
+	}
+	if pe.Result != "file contents" {
+		t.Errorf("Result: got %q", pe.Result)
+	}
+}
+
+func TestConvert_Reasoning_FlatFormat(t *testing.T) {
+	data := json.RawMessage(`{"part":{"id":"prt_1","sessionID":"sess-1","type":"reasoning","text":"Let me think..."}}`)
+
+	pe := ConvertSSEToProviderEvent(SSEEvent{Type: EventMessagePartUpdated, Data: data}, "sess-1")
+
+	if pe == nil {
+		t.Fatal("expected non-nil event for reasoning")
+	}
+	if pe.Type != "assistant" {
+		t.Errorf("Type: got %q, want 'assistant'", pe.Type)
+	}
+}
+
+// --- unwrapSSEEvent tests ---
+
+func TestUnwrapSSEEvent_WithEnvelope(t *testing.T) {
+	raw := json.RawMessage(`{"type":"session.error","properties":{"sessionID":"ses_abc","error":"fail"}}`)
+	evt := unwrapSSEEvent(SSEEvent{Data: raw})
+
+	if evt.Type != "session.error" {
+		t.Errorf("Type: got %q, want 'session.error'", evt.Type)
+	}
+	if string(evt.Data) != `{"sessionID":"ses_abc","error":"fail"}` {
+		t.Errorf("Data: got %q", string(evt.Data))
+	}
+}
+
+func TestUnwrapSSEEvent_AlreadyTyped(t *testing.T) {
+	raw := json.RawMessage(`{"sessionID":"s1"}`)
+	evt := unwrapSSEEvent(SSEEvent{Type: "session.idle", Data: raw})
+
+	if evt.Type != "session.idle" {
+		t.Errorf("Type: got %q", evt.Type)
+	}
+	if string(evt.Data) != `{"sessionID":"s1"}` {
+		t.Errorf("Data should not change, got %q", string(evt.Data))
+	}
+}
+
+func TestUnwrapSSEEvent_NoType(t *testing.T) {
+	raw := json.RawMessage(`{"foo":"bar"}`)
+	evt := unwrapSSEEvent(SSEEvent{Data: raw})
+
+	// No type in envelope, should return as-is.
+	if evt.Type != "" {
+		t.Errorf("Type should be empty, got %q", evt.Type)
+	}
+}
+
+func TestUnwrapSSEEvent_EmptyData(t *testing.T) {
+	evt := unwrapSSEEvent(SSEEvent{Type: ""})
+	if evt.Type != "" {
+		t.Errorf("Type should be empty, got %q", evt.Type)
+	}
+}
+
+// --- Full OpenCode flow: envelope → unwrap → convert ---
+
+func TestFullFlow_EnvelopedSessionError(t *testing.T) {
+	// Simulates the real OpenCode SSE data line.
+	raw := json.RawMessage(`{"type":"session.error","properties":{"sessionID":"ses_abc","error":{"name":"APIError","data":{"message":"invalid x-api-key","statusCode":401}}}}`)
+	evt := unwrapSSEEvent(SSEEvent{Data: raw})
+
+	pe := ConvertSSEToProviderEvent(evt, "ses_abc")
+	if pe == nil {
+		t.Fatal("expected non-nil event")
+	}
+	if pe.Type != "error" {
+		t.Errorf("Type: got %q, want 'error'", pe.Type)
+	}
+	if pe.Result != "invalid x-api-key" {
+		t.Errorf("Result: got %q, want 'invalid x-api-key'", pe.Result)
+	}
+	if pe.ErrorCode != "APIError" {
+		t.Errorf("ErrorCode: got %q, want 'APIError'", pe.ErrorCode)
+	}
+}
+
+func TestFullFlow_EnvelopedMessagePartText(t *testing.T) {
+	raw := json.RawMessage(`{"type":"message.part.updated","properties":{"part":{"id":"prt_1","sessionID":"ses_abc","messageID":"msg_1","type":"text","text":"Hola!"}}}`)
+	evt := unwrapSSEEvent(SSEEvent{Data: raw})
+
+	pe := ConvertSSEToProviderEvent(evt, "ses_abc")
+	if pe == nil {
+		t.Fatal("expected non-nil event")
+	}
+	if pe.Type != "assistant" {
+		t.Errorf("Type: got %q, want 'assistant'", pe.Type)
+	}
+	var msg map[string]string
+	if err := json.Unmarshal([]byte(pe.Message), &msg); err != nil {
+		t.Fatalf("failed to parse Message: %v", err)
+	}
+	if msg["text"] != "Hola!" {
+		t.Errorf("text: got %q, want 'Hola!'", msg["text"])
+	}
+}
+
+func TestFullFlow_EnvelopedSessionIdle(t *testing.T) {
+	raw := json.RawMessage(`{"type":"session.idle","properties":{"sessionID":"ses_abc"}}`)
+	evt := unwrapSSEEvent(SSEEvent{Data: raw})
+
+	pe := ConvertSSEToProviderEvent(evt, "ses_abc")
+	if pe == nil {
+		t.Fatal("expected non-nil event")
+	}
+	if pe.Type != "result" {
+		t.Errorf("Type: got %q, want 'result'", pe.Type)
 	}
 }
 

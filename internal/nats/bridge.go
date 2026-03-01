@@ -219,6 +219,18 @@ func (b *Bridge) processEvent(event *provider.StreamEvent, currentResult *string
 		// intermediate thinking/responses in real time.
 		b.publishActivityEvent(claudeEvent, "assistant message")
 
+		// Accumulate assistant text for providers (like OpenCode) that deliver
+		// the response in streaming "assistant" parts rather than a single "result".
+		if event.Message != "" {
+			var msgContent struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			}
+			if err := json.Unmarshal([]byte(event.Message), &msgContent); err == nil && msgContent.Text != "" {
+				*currentResult += msgContent.Text
+			}
+		}
+
 	case "result":
 		// Check if the agent returned an error (billing, auth, etc.).
 		if event.IsError {
@@ -247,6 +259,11 @@ func (b *Bridge) processEvent(event *provider.StreamEvent, currentResult *string
 		// Also check Result field (stream-json sometimes uses it directly).
 		if *currentResult == "" && event.Result != "" {
 			*currentResult = event.Result
+		}
+
+		// Skip empty results (e.g. session.idle after an error was already reported).
+		if *currentResult == "" {
+			return
 		}
 
 		// Publish the result to the leader channel.

@@ -52,22 +52,36 @@ type SSEEvent struct {
 }
 
 // MessagePartPayload represents the properties of a message.part.updated event.
+// In OpenCode's SSE format, sessionID and messageID may be inside the part object.
 type MessagePartPayload struct {
-	SessionID string          `json:"sessionID"`
-	MessageID string          `json:"messageID"`
+	SessionID string          `json:"sessionID,omitempty"`
+	MessageID string          `json:"messageID,omitempty"`
 	Part      Part            `json:"part"`
 	Delta     json.RawMessage `json:"delta,omitempty"` // Incremental content fragment.
 }
 
 // Part represents a single part of an OpenCode message.
+// Content fields vary by type and may appear as flat fields on the part object
+// (OpenCode SSE format) or inside a structured Content field.
 type Part struct {
-	Type    string          `json:"type"` // "text", "tool", "file", "reasoning", "snapshot"
-	ID      string          `json:"id"`
-	Content json.RawMessage `json:"content"`
-	State   string          `json:"state"` // "pending", "running", "completed", "error"
+	Type      string `json:"type"`  // "text", "tool", "file", "reasoning", "snapshot"
+	ID        string `json:"id"`
+	SessionID string `json:"sessionID,omitempty"`
+	MessageID string `json:"messageID,omitempty"`
+	State     string `json:"state"` // "pending", "running", "completed", "error"
+
+	// Flat content fields (OpenCode SSE format).
+	Text   string          `json:"text,omitempty"`
+	Tool   string          `json:"tool,omitempty"`
+	Input  json.RawMessage `json:"input,omitempty"`
+	Output string          `json:"output,omitempty"`
+	Error  string          `json:"error,omitempty"`
+
+	// Structured content (alternative format).
+	Content json.RawMessage `json:"content,omitempty"`
 }
 
-// TextContent is the content structure for text parts.
+// TextContent is the content structure for text parts (structured format).
 type TextContent struct {
 	Text string `json:"text"`
 }
@@ -81,10 +95,21 @@ type ToolContent struct {
 }
 
 // SessionErrorPayload represents the properties of a session.error event.
+// The Error field is json.RawMessage because OpenCode sends it as an object
+// ({"name":"APIError","data":{"message":"..."}}) while other sources may send a string.
 type SessionErrorPayload struct {
-	SessionID string `json:"sessionID"`
-	Error     string `json:"error"`
-	Code      string `json:"code,omitempty"`
+	SessionID string          `json:"sessionID"`
+	Error     json.RawMessage `json:"error"`
+	Code      string          `json:"code,omitempty"`
+}
+
+// sessionErrorObject is the structured error format from OpenCode SSE.
+type sessionErrorObject struct {
+	Name string `json:"name"`
+	Data struct {
+		Message    string `json:"message"`
+		StatusCode int    `json:"statusCode"`
+	} `json:"data"`
 }
 
 // SessionIdlePayload represents the properties of a session.idle event.
@@ -192,50 +217,48 @@ func convertMessagePart(data json.RawMessage, filterSessionID string) *provider.
 		return nil
 	}
 
+	// SessionID may be at top level or inside the part object.
+	sessionID := payload.SessionID
+	if sessionID == "" {
+		sessionID = payload.Part.SessionID
+	}
+
 	// Filter by session ID.
-	if filterSessionID != "" && payload.SessionID != filterSessionID {
+	if filterSessionID != "" && sessionID != filterSessionID {
 		return nil
 	}
 
 	switch payload.Part.Type {
 	case "text":
-		var content TextContent
-		if err := json.Unmarshal(payload.Part.Content, &content); err != nil {
-			slog.Debug("failed to parse text content", "error", err)
+		text := resolveText(payload.Part)
+		if text == "" {
 			return nil
 		}
-		if content.Text == "" {
-			return nil
-		}
-		msgJSON, _ := json.Marshal(map[string]string{"type": "text", "text": content.Text})
+		msgJSON, _ := json.Marshal(map[string]string{"type": "text", "text": text})
 		return &provider.StreamEvent{
 			Type:      "assistant",
 			Message:   string(msgJSON),
-			SessionID: payload.SessionID,
+			SessionID: sessionID,
 		}
 
 	case "tool":
-		var content ToolContent
-		if err := json.Unmarshal(payload.Part.Content, &content); err != nil {
-			slog.Debug("failed to parse tool content", "error", err)
+		tc := resolveToolContent(payload.Part)
+		if tc.Tool == "" {
+			slog.Debug("tool part has no tool name")
 			return nil
 		}
-		return convertToolPart(payload, content)
+		return convertToolPart(sessionID, payload.Part.State, tc)
 
 	case "reasoning":
-		var content TextContent
-		if err := json.Unmarshal(payload.Part.Content, &content); err != nil {
-			slog.Debug("failed to parse reasoning content", "error", err)
+		text := resolveText(payload.Part)
+		if text == "" {
 			return nil
 		}
-		if content.Text == "" {
-			return nil
-		}
-		msgJSON, _ := json.Marshal(map[string]string{"type": "text", "text": content.Text})
+		msgJSON, _ := json.Marshal(map[string]string{"type": "text", "text": text})
 		return &provider.StreamEvent{
 			Type:      "assistant",
 			Message:   string(msgJSON),
-			SessionID: payload.SessionID,
+			SessionID: sessionID,
 		}
 
 	default:
@@ -244,12 +267,47 @@ func convertMessagePart(data json.RawMessage, filterSessionID string) *provider.
 	}
 }
 
+// resolveText extracts text from a Part, checking the flat Text field first,
+// then falling back to the structured Content field.
+func resolveText(p Part) string {
+	if p.Text != "" {
+		return p.Text
+	}
+	if len(p.Content) > 0 {
+		var content TextContent
+		if err := json.Unmarshal(p.Content, &content); err == nil {
+			return content.Text
+		}
+	}
+	return ""
+}
+
+// resolveToolContent extracts tool fields from a Part, checking flat fields first,
+// then falling back to the structured Content field.
+func resolveToolContent(p Part) ToolContent {
+	if p.Tool != "" {
+		return ToolContent{
+			Tool:   p.Tool,
+			Input:  p.Input,
+			Output: p.Output,
+			Error:  p.Error,
+		}
+	}
+	if len(p.Content) > 0 {
+		var tc ToolContent
+		if json.Unmarshal(p.Content, &tc) == nil {
+			return tc
+		}
+	}
+	return ToolContent{}
+}
+
 // convertToolPart maps tool parts using the state field:
 //   - state: "running" → tool_use
 //   - state: "completed" → tool_result
 //   - state: "error" → tool_result with IsError=true
-func convertToolPart(payload MessagePartPayload, content ToolContent) *provider.StreamEvent {
-	switch payload.Part.State {
+func convertToolPart(sessionID, state string, content ToolContent) *provider.StreamEvent {
+	switch state {
 	case "running", "pending":
 		inputStr := ""
 		if len(content.Input) > 0 {
@@ -259,7 +317,7 @@ func convertToolPart(payload MessagePartPayload, content ToolContent) *provider.
 			Type:      "tool_use",
 			Name:      content.Tool,
 			Input:     inputStr,
-			SessionID: payload.SessionID,
+			SessionID: sessionID,
 		}
 
 	case "completed":
@@ -267,7 +325,7 @@ func convertToolPart(payload MessagePartPayload, content ToolContent) *provider.
 			Type:      "tool_result",
 			Name:      content.Tool,
 			Result:    content.Output,
-			SessionID: payload.SessionID,
+			SessionID: sessionID,
 		}
 
 	case "error":
@@ -280,7 +338,7 @@ func convertToolPart(payload MessagePartPayload, content ToolContent) *provider.
 			Name:      content.Tool,
 			IsError:   true,
 			Result:    errMsg,
-			SessionID: payload.SessionID,
+			SessionID: sessionID,
 		}
 
 	default:
@@ -293,7 +351,7 @@ func convertToolPart(payload MessagePartPayload, content ToolContent) *provider.
 			Type:      "tool_use",
 			Name:      content.Tool,
 			Input:     inputStr,
-			SessionID: payload.SessionID,
+			SessionID: sessionID,
 		}
 	}
 }
@@ -309,11 +367,33 @@ func convertSessionError(data json.RawMessage, filterSessionID string) *provider
 		return nil
 	}
 
+	var errMsg, errCode string
+
+	// Try structured error object first (OpenCode format:
+	// {"name":"APIError","data":{"message":"invalid x-api-key","statusCode":401}}).
+	var errObj sessionErrorObject
+	if json.Unmarshal(payload.Error, &errObj) == nil && errObj.Name != "" {
+		errMsg = errObj.Data.Message
+		if errMsg == "" {
+			errMsg = errObj.Name
+		}
+		errCode = errObj.Name
+	} else {
+		// Fall back to plain string.
+		var errStr string
+		if json.Unmarshal(payload.Error, &errStr) == nil {
+			errMsg = errStr
+		} else {
+			errMsg = string(payload.Error)
+		}
+		errCode = payload.Code
+	}
+
 	return &provider.StreamEvent{
 		Type:      "error",
 		IsError:   true,
-		Result:    payload.Error,
-		ErrorCode: payload.Code,
+		Result:    errMsg,
+		ErrorCode: errCode,
 		SessionID: payload.SessionID,
 	}
 }
@@ -387,6 +467,34 @@ func convertSessionIdle(data json.RawMessage, filterSessionID string) *provider.
 		Type:      "result",
 		SessionID: payload.SessionID,
 	}
+}
+
+// unwrapSSEEvent handles the OpenCode SSE format where events are sent without
+// an `event:` line. Instead, the event type is embedded in the JSON data:
+//
+//	data: {"type":"session.error","properties":{"sessionID":"ses_xxx",...}}
+//
+// When evt.Type is empty and the data contains a "type" + "properties" envelope,
+// this function extracts the type and replaces Data with the properties object
+// so downstream converters work unchanged.
+func unwrapSSEEvent(evt SSEEvent) SSEEvent {
+	if evt.Type != "" || len(evt.Data) == 0 {
+		return evt
+	}
+
+	var envelope struct {
+		Type       string          `json:"type"`
+		Properties json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal(evt.Data, &envelope); err != nil || envelope.Type == "" {
+		return evt
+	}
+
+	evt.Type = envelope.Type
+	if len(envelope.Properties) > 0 {
+		evt.Data = envelope.Properties
+	}
+	return evt
 }
 
 // FormatSSEEventType returns a human-readable description of an SSE event type.

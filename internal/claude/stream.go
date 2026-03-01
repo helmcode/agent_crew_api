@@ -26,6 +26,11 @@ func (e *StreamEvent) FriendlyError() string {
 		return "Your API key has insufficient credits. Please add credits or update your key in Settings."
 	case "authentication_error":
 		return "API key is invalid or expired. Please update it in Settings."
+	case "APIError":
+		if e.Result != "" {
+			return "API error: " + e.Result
+		}
+		return "The AI provider returned an API error. Please check your API key in Settings."
 	default:
 		if e.Result != "" {
 			return "Claude returned an error: " + e.Result

@@ -591,5 +591,221 @@ func TestManager_ParseModel(t *testing.T) {
 	}
 }
 
+func TestManager_SendInputQueuesWhenBusy(t *testing.T) {
+	var mu sync.Mutex
+	promptCount := 0
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /global/health", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(HealthResponse{Healthy: true, Version: "1.0.0"})
+	})
+	mux.HandleFunc("POST /session", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(createSessionResponse{ID: "queue-session"})
+	})
+	mux.HandleFunc("POST /session/{id}/prompt_async", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		promptCount++
+		mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("POST /session/{id}/abort", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("GET /event", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		<-r.Context().Done()
+	})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	mgr := NewManager(Config{BaseURL: srv.URL})
+	if err := mgr.Start(context.Background()); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer mgr.Stop()
+
+	// First SendInput: should go through immediately (sets busy=true).
+	if err := mgr.SendInput("message A"); err != nil {
+		t.Fatalf("SendInput A failed: %v", err)
+	}
+
+	// Second and third: should be queued (busy=true).
+	if err := mgr.SendInput("message B"); err != nil {
+		t.Fatalf("SendInput B failed: %v", err)
+	}
+	if err := mgr.SendInput("message C"); err != nil {
+		t.Fatalf("SendInput C failed: %v", err)
+	}
+
+	// Only 1 prompt should have been sent to the server.
+	mu.Lock()
+	count := promptCount
+	mu.Unlock()
+	if count != 1 {
+		t.Errorf("expected 1 prompt sent, got %d", count)
+	}
+
+	// Queue should have 2 pending messages.
+	mgr.queueMu.Lock()
+	pending := len(mgr.pendingInputs)
+	mgr.queueMu.Unlock()
+	if pending != 2 {
+		t.Errorf("expected 2 pending messages, got %d", pending)
+	}
+}
+
+func TestManager_QueueDrainsOnResult(t *testing.T) {
+	var mu sync.Mutex
+	var prompts []string
+
+	// Channel to control SSE event delivery.
+	sendIdle := make(chan struct{}, 5)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /global/health", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(HealthResponse{Healthy: true, Version: "1.0.0"})
+	})
+	mux.HandleFunc("POST /session", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(createSessionResponse{ID: "drain-session"})
+	})
+	mux.HandleFunc("POST /session/{id}/prompt_async", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req promptAsyncRequest
+		json.Unmarshal(body, &req)
+		mu.Lock()
+		if len(req.Parts) > 0 {
+			prompts = append(prompts, req.Parts[0].Text)
+		}
+		mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("POST /session/{id}/abort", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("GET /event", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+
+		for {
+			select {
+			case <-sendIdle:
+				idle, _ := json.Marshal(SessionIdlePayload{SessionID: "drain-session"})
+				fmt.Fprintf(w, "event: session.idle\ndata: %s\n\n", idle)
+				flusher.Flush()
+			case <-r.Context().Done():
+				return
+			}
+		}
+	})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	mgr := NewManager(Config{BaseURL: srv.URL})
+	if err := mgr.Start(context.Background()); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer mgr.Stop()
+
+	// Drain the ReadEvents channel to prevent blocking.
+	go func() {
+		for range mgr.ReadEvents() {
+		}
+	}()
+
+	// Send message A (goes through), then B and C (queued).
+	mgr.SendInput("msg-A")
+	mgr.SendInput("msg-B")
+	mgr.SendInput("msg-C")
+
+	// Trigger session.idle → should drain msg-B.
+	sendIdle <- struct{}{}
+	time.Sleep(200 * time.Millisecond)
+
+	mu.Lock()
+	count := len(prompts)
+	mu.Unlock()
+	if count != 2 {
+		t.Fatalf("expected 2 prompts sent after first idle, got %d", count)
+	}
+
+	// Trigger session.idle → should drain msg-C.
+	sendIdle <- struct{}{}
+	time.Sleep(200 * time.Millisecond)
+
+	mu.Lock()
+	count = len(prompts)
+	mu.Unlock()
+	if count != 3 {
+		t.Fatalf("expected 3 prompts sent after second idle, got %d", count)
+	}
+
+	// Verify order.
+	mu.Lock()
+	defer mu.Unlock()
+	expected := []string{"msg-A", "msg-B", "msg-C"}
+	for i, want := range expected {
+		if i >= len(prompts) {
+			t.Errorf("missing prompt[%d]: want %q", i, want)
+			continue
+		}
+		if prompts[i] != want {
+			t.Errorf("prompt[%d]: got %q, want %q", i, prompts[i], want)
+		}
+	}
+}
+
+func TestManager_StopClearsQueue(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /global/health", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(HealthResponse{Healthy: true, Version: "1.0.0"})
+	})
+	mux.HandleFunc("POST /session", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(createSessionResponse{ID: "stop-session"})
+	})
+	mux.HandleFunc("POST /session/{id}/prompt_async", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("POST /session/{id}/abort", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("GET /event", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		<-r.Context().Done()
+	})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	mgr := NewManager(Config{BaseURL: srv.URL})
+	if err := mgr.Start(context.Background()); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	// Send first message and queue two more.
+	mgr.SendInput("msg-1")
+	mgr.SendInput("msg-2")
+	mgr.SendInput("msg-3")
+
+	// Stop should clear the queue.
+	mgr.Stop()
+
+	mgr.queueMu.Lock()
+	pending := len(mgr.pendingInputs)
+	busy := mgr.busy
+	mgr.queueMu.Unlock()
+
+	if pending != 0 {
+		t.Errorf("expected 0 pending messages after Stop, got %d", pending)
+	}
+	if busy {
+		t.Error("expected busy=false after Stop")
+	}
+}
+
 // Verify Manager implements provider.AgentManager at compile time.
 var _ provider.AgentManager = (*Manager)(nil)

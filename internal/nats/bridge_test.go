@@ -801,6 +801,102 @@ func TestProcessEvent_NilGateAllowsAll(t *testing.T) {
 	}
 }
 
+// --- processEvent: assistant text accumulation ---
+
+func TestProcessEvent_AssistantAccumulatesCurrentResult(t *testing.T) {
+	pub := &fakePublisher{}
+	bridge := &Bridge{
+		config: BridgeConfig{
+			AgentName: "leader",
+			TeamName:  "accumteam",
+			Role:      "leader",
+		},
+		client: pub,
+	}
+
+	// Simulate OpenCode flow: two assistant events followed by an empty result (session.idle).
+	msg1, _ := json.Marshal(map[string]string{"type": "text", "text": "Hello, "})
+	msg2, _ := json.Marshal(map[string]string{"type": "text", "text": "world!"})
+
+	assistant1 := toProviderEvent(claude.StreamEvent{Type: "assistant", Message: msg1})
+	assistant2 := toProviderEvent(claude.StreamEvent{Type: "assistant", Message: msg2})
+	result := toProviderEvent(claude.StreamEvent{Type: "result"}) // Empty result (session.idle)
+
+	var currentResult string
+	bridge.processEvent(&assistant1, &currentResult)
+	bridge.processEvent(&assistant2, &currentResult)
+
+	// currentResult should have accumulated text.
+	if currentResult != "Hello, world!" {
+		t.Errorf("accumulated text: got %q, want %q", currentResult, "Hello, world!")
+	}
+
+	bridge.processEvent(&result, &currentResult)
+
+	// Find the leader_response message (skip activity events).
+	msgs := pub.getMessages()
+	var leaderPayload protocol.LeaderResponsePayload
+	found := false
+	for _, m := range msgs {
+		if m.Msg.Type == protocol.TypeLeaderResponse {
+			if err := json.Unmarshal(m.Msg.Payload, &leaderPayload); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("no leader_response message found")
+	}
+
+	if leaderPayload.Status != "completed" {
+		t.Errorf("status: got %q, want 'completed'", leaderPayload.Status)
+	}
+	if leaderPayload.Result != "Hello, world!" {
+		t.Errorf("result: got %q, want 'Hello, world!'", leaderPayload.Result)
+	}
+}
+
+func TestProcessEvent_ResultOverridesAccumulatedText(t *testing.T) {
+	pub := &fakePublisher{}
+	bridge := &Bridge{
+		config: BridgeConfig{
+			AgentName: "leader",
+			TeamName:  "overrideteam",
+			Role:      "leader",
+		},
+		client: pub,
+	}
+
+	// Simulate Claude Code flow: assistant event followed by result WITH text.
+	assistantMsg, _ := json.Marshal(map[string]string{"type": "text", "text": "partial"})
+	resultMsg, _ := json.Marshal(map[string]string{"type": "text", "text": "Final answer"})
+
+	assistant := toProviderEvent(claude.StreamEvent{Type: "assistant", Message: assistantMsg})
+	result := toProviderEvent(claude.StreamEvent{Type: "result", Message: resultMsg})
+
+	var currentResult string
+	bridge.processEvent(&assistant, &currentResult)
+	bridge.processEvent(&result, &currentResult)
+
+	msgs := pub.getMessages()
+	var leaderPayload protocol.LeaderResponsePayload
+	for _, m := range msgs {
+		if m.Msg.Type == protocol.TypeLeaderResponse {
+			if err := json.Unmarshal(m.Msg.Payload, &leaderPayload); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			break
+		}
+	}
+
+	// Result event's text should override the accumulated assistant text.
+	if leaderPayload.Result != "Final answer" {
+		t.Errorf("result: got %q, want 'Final answer'", leaderPayload.Result)
+	}
+}
+
 // --- processEvent: result clears currentResult ---
 
 func TestProcessEvent_ResultClearsCurrentResult(t *testing.T) {
@@ -826,5 +922,76 @@ func TestProcessEvent_ResultClearsCurrentResult(t *testing.T) {
 	// After processing a result, currentResult should be reset to empty.
 	if currentResult != "" {
 		t.Errorf("currentResult should be empty after result event, got %q", currentResult)
+	}
+}
+
+// --- processEvent: empty result skipped ---
+
+func TestProcessEvent_EmptyResultSkipped(t *testing.T) {
+	pub := &fakePublisher{}
+	bridge := &Bridge{
+		config: BridgeConfig{
+			AgentName: "leader",
+			TeamName:  "emptyteam",
+			Role:      "leader",
+		},
+		client: pub,
+	}
+
+	// An empty result (e.g. session.idle after an error) should not publish a leader_response.
+	event := toProviderEvent(claude.StreamEvent{Type: "result"})
+
+	var currentResult string
+	bridge.processEvent(&event, &currentResult)
+
+	msgs := pub.getMessages()
+	for _, m := range msgs {
+		if m.Msg.Type == protocol.TypeLeaderResponse {
+			t.Error("should not publish leader_response for empty result")
+		}
+	}
+}
+
+func TestProcessEvent_EmptyResultAfterErrorSkipped(t *testing.T) {
+	pub := &fakePublisher{}
+	bridge := &Bridge{
+		config: BridgeConfig{
+			AgentName: "leader",
+			TeamName:  "errskipteam",
+			Role:      "leader",
+		},
+		client: pub,
+	}
+
+	// Simulate: error result followed by empty result (OpenCode session.idle after session.error).
+	errorEvent := toProviderEvent(claude.StreamEvent{
+		Type:      "result",
+		IsError:   true,
+		ErrorCode: "APIError",
+		Result:    "invalid key",
+	})
+	idleEvent := toProviderEvent(claude.StreamEvent{Type: "result"})
+
+	var currentResult string
+	bridge.processEvent(&errorEvent, &currentResult)
+	bridge.processEvent(&idleEvent, &currentResult)
+
+	msgs := pub.getMessages()
+	leaderCount := 0
+	for _, m := range msgs {
+		if m.Msg.Type == protocol.TypeLeaderResponse {
+			leaderCount++
+			var payload protocol.LeaderResponsePayload
+			if err := json.Unmarshal(m.Msg.Payload, &payload); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			// Only the error response should be published.
+			if payload.Status != "failed" {
+				t.Errorf("expected only 'failed' leader_response, got status %q", payload.Status)
+			}
+		}
+	}
+	if leaderCount != 1 {
+		t.Errorf("expected exactly 1 leader_response, got %d", leaderCount)
 	}
 }

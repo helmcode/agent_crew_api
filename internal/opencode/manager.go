@@ -87,6 +87,15 @@ type Manager struct {
 	cancel    context.CancelFunc
 	wg        sync.WaitGroup
 	mu        sync.RWMutex
+
+	// Message serialization: OpenCode's prompt_async returns immediately,
+	// but OpenCode only processes one prompt at a time per session.
+	// Concurrent prompts (e.g. two scheduled runs at the same time) cause
+	// only one result, leaving the second caller hanging. We queue messages
+	// and send the next one only after the current one produces a result.
+	queueMu       sync.Mutex
+	busy          bool
+	pendingInputs []string
 }
 
 // NewManager creates a new OpenCode Manager with the given config.
@@ -177,13 +186,35 @@ func (m *Manager) Start(ctx context.Context) error {
 }
 
 // SendInput sends a message to the active OpenCode session via prompt_async.
-// Returns immediately; events arrive via the SSE stream.
+// If a prompt is already being processed, the message is queued and sent
+// automatically when the current prompt completes (result event received).
 func (m *Manager) SendInput(input string) error {
 	m.mu.RLock()
 	if m.status != "running" {
 		m.mu.RUnlock()
 		return fmt.Errorf("manager is not running")
 	}
+	m.mu.RUnlock()
+
+	m.queueMu.Lock()
+	if m.busy {
+		m.pendingInputs = append(m.pendingInputs, input)
+		slog.Info("opencode busy, message queued",
+			"input_length", len(input),
+			"queue_length", len(m.pendingInputs),
+		)
+		m.queueMu.Unlock()
+		return nil
+	}
+	m.busy = true
+	m.queueMu.Unlock()
+
+	return m.sendPrompt(input)
+}
+
+// sendPrompt performs the actual HTTP POST to prompt_async.
+func (m *Manager) sendPrompt(input string) error {
+	m.mu.RLock()
 	sessionID := m.sessionID
 	m.mu.RUnlock()
 
@@ -226,6 +257,29 @@ func (m *Manager) SendInput(input string) error {
 
 	slog.Info("opencode prompt sent", "session_id", sessionID)
 	return nil
+}
+
+// drainNextPending sends the next queued message after the current prompt
+// completes. Called from listenSSE when a result event is received.
+func (m *Manager) drainNextPending() {
+	m.queueMu.Lock()
+	if len(m.pendingInputs) > 0 {
+		next := m.pendingInputs[0]
+		m.pendingInputs = m.pendingInputs[1:]
+		remaining := len(m.pendingInputs)
+		m.queueMu.Unlock()
+
+		slog.Info("opencode sending queued message", "remaining", remaining)
+		if err := m.sendPrompt(next); err != nil {
+			slog.Error("failed to send queued message", "error", err)
+			m.queueMu.Lock()
+			m.busy = false
+			m.queueMu.Unlock()
+		}
+	} else {
+		m.busy = false
+		m.queueMu.Unlock()
+	}
 }
 
 // ReadEvents returns a channel of provider.StreamEvent from the SSE stream.
@@ -283,6 +337,12 @@ func (m *Manager) Stop() error {
 
 	m.status = "stopped"
 	m.mu.Unlock()
+
+	// Clear any pending messages — they won't be processed.
+	m.queueMu.Lock()
+	m.pendingInputs = nil
+	m.busy = false
+	m.queueMu.Unlock()
 
 	// Wait for SSE goroutine to finish outside the lock to avoid
 	// potential deadlock if the goroutine needs to acquire the mutex.
@@ -447,6 +507,12 @@ func (m *Manager) listenSSE(ctx context.Context, sessionID string) {
 		close(sseEvents)
 	}()
 
+	// Track user message IDs to filter their parts. OpenCode emits
+	// message.part.updated for both user and assistant messages; we only
+	// want to convert assistant parts. Using message IDs (not "last role")
+	// because message.updated events can arrive in any order.
+	userMessageIDs := make(map[string]bool)
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -457,16 +523,65 @@ func (m *Manager) listenSSE(ctx context.Context, sessionID string) {
 				return
 			}
 
+			// OpenCode embeds the event type inside the JSON data field
+			// rather than using the SSE `event:` line. Unwrap it.
+			evt = unwrapSSEEvent(evt)
+
+			slog.Debug("opencode SSE event received", "type", evt.Type)
+
+			// Track user message IDs from message.updated events.
+			if evt.Type == EventMessageUpdated {
+				var msgInfo struct {
+					Info struct {
+						ID   string `json:"id"`
+						Role string `json:"role"`
+					} `json:"info"`
+					ID string `json:"id"`
+				}
+				if json.Unmarshal(evt.Data, &msgInfo) == nil {
+					msgID := msgInfo.Info.ID
+					if msgID == "" {
+						msgID = msgInfo.ID
+					}
+					if msgID != "" && msgInfo.Info.Role == "user" {
+						userMessageIDs[msgID] = true
+					}
+				}
+			}
+
+			// Skip parts belonging to user messages.
+			if evt.Type == EventMessagePartUpdated {
+				var partInfo struct {
+					Part struct {
+						MessageID string `json:"messageID"`
+					} `json:"part"`
+				}
+				if json.Unmarshal(evt.Data, &partInfo) == nil && partInfo.Part.MessageID != "" {
+					if userMessageIDs[partInfo.Part.MessageID] {
+						slog.Debug("skipping user message part", "messageID", partInfo.Part.MessageID)
+						continue
+					}
+				}
+			}
+
 			// Convert and filter by session ID.
 			pe := ConvertSSEToProviderEvent(evt, sessionID)
 			if pe == nil {
 				continue
 			}
 
+			slog.Info("opencode event converted", "type", pe.Type, "isError", pe.IsError)
+
 			select {
 			case m.events <- *pe:
 			default:
 				slog.Warn("provider event channel full, dropping event", "type", pe.Type)
+			}
+
+			// When a result event arrives the current prompt is done.
+			// Drain the next queued message (if any).
+			if pe.Type == "result" {
+				m.drainNextPending()
 			}
 		}
 	}
