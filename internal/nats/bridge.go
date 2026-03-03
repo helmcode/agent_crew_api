@@ -41,6 +41,7 @@ type Bridge struct {
 
 	mu              sync.Mutex
 	scheduledRunIDs []string // FIFO queue of correlation IDs from scheduled run requests
+	errorPublished  bool     // Guards against duplicate error leader_responses within one interaction.
 }
 
 // NewBridge creates a Bridge with the given components.
@@ -115,10 +116,9 @@ func (b *Bridge) handleUserMessage(msg *protocol.Message) {
 		return
 	}
 
-	// Enqueue the scheduled run ID for FIFO correlation with responses.
-	// Claude processes messages sequentially, so the Nth result corresponds
-	// to the Nth message we forwarded.
+	// Reset error dedup flag for new interaction.
 	b.mu.Lock()
+	b.errorPublished = false
 	b.scheduledRunIDs = append(b.scheduledRunIDs, payload.ScheduledRunID)
 	b.mu.Unlock()
 
@@ -234,6 +234,12 @@ func (b *Bridge) processEvent(event *provider.StreamEvent, currentResult *string
 	case "result":
 		// Check if the agent returned an error (billing, auth, etc.).
 		if event.IsError {
+			// Skip if an error was already published for this interaction
+			// (e.g. session.error followed by message.updated with error).
+			if b.errorPublished {
+				*currentResult = ""
+				return
+			}
 			friendlyMsg := claudeEvent.FriendlyError()
 			slog.Error("agent result is an error",
 				"agent", b.config.AgentName,
@@ -242,6 +248,7 @@ func (b *Bridge) processEvent(event *provider.StreamEvent, currentResult *string
 			)
 
 			b.publishLeaderResponse("", "failed", "", friendlyMsg)
+			b.errorPublished = true
 			*currentResult = ""
 			return
 		}
@@ -280,9 +287,10 @@ func (b *Bridge) processEvent(event *provider.StreamEvent, currentResult *string
 
 		// Publish as leader_response so the error appears in the chat UI
 		// with the Settings + Redeploy buttons (same as deploy errors).
-		if event.IsError {
+		if event.IsError && !b.errorPublished {
 			friendlyMsg := claudeEvent.FriendlyError()
 			b.publishLeaderResponse("", "failed", "", friendlyMsg)
+			b.errorPublished = true
 			*currentResult = ""
 		}
 	}

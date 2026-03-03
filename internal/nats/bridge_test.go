@@ -878,6 +878,7 @@ func TestProcessEvent_AssistantAccumulatesCurrentResult(t *testing.T) {
 	result := toProviderEvent(claude.StreamEvent{Type: "result"}) // Empty result (session.idle)
 
 	var currentResult string
+
 	bridge.processEvent(&assistant1, &currentResult)
 	bridge.processEvent(&assistant2, &currentResult)
 
@@ -932,6 +933,7 @@ func TestProcessEvent_ResultOverridesAccumulatedText(t *testing.T) {
 	result := toProviderEvent(claude.StreamEvent{Type: "result", Message: resultMsg})
 
 	var currentResult string
+
 	bridge.processEvent(&assistant, &currentResult)
 	bridge.processEvent(&result, &currentResult)
 
@@ -972,6 +974,7 @@ func TestProcessEvent_ResultClearsCurrentResult(t *testing.T) {
 	})
 
 	currentResult := "leftover from previous"
+
 	bridge.processEvent(&event, &currentResult)
 
 	// After processing a result, currentResult should be reset to empty.
@@ -1028,6 +1031,7 @@ func TestProcessEvent_EmptyResultAfterErrorSkipped(t *testing.T) {
 	idleEvent := toProviderEvent(claude.StreamEvent{Type: "result"})
 
 	var currentResult string
+
 	bridge.processEvent(&errorEvent, &currentResult)
 	bridge.processEvent(&idleEvent, &currentResult)
 
@@ -1048,5 +1052,100 @@ func TestProcessEvent_EmptyResultAfterErrorSkipped(t *testing.T) {
 	}
 	if leaderCount != 1 {
 		t.Errorf("expected exactly 1 leader_response, got %d", leaderCount)
+	}
+}
+
+// --- processEvent: duplicate error deduplication ---
+
+func TestProcessEvent_DuplicateErrorDedup(t *testing.T) {
+	pub := &fakePublisher{}
+	bridge := &Bridge{
+		config: BridgeConfig{
+			AgentName: "leader",
+			TeamName:  "dedup",
+			Role:      "leader",
+		},
+		client: pub,
+	}
+
+	// Simulate OpenCode sending session.error (Type:"error") followed by
+	// message.updated with error (Type:"result", IsError:true) for the same failure.
+	errorEvt := toProviderEvent(claude.StreamEvent{
+		Type:      "error",
+		IsError:   true,
+		ErrorCode: "APIError",
+		Result:    "Quota exceeded",
+	})
+	resultErrEvt := toProviderEvent(claude.StreamEvent{
+		Type:      "result",
+		IsError:   true,
+		ErrorCode: "APIError",
+		Result:    "Quota exceeded",
+	})
+
+	var currentResult string
+
+	bridge.processEvent(&errorEvt, &currentResult)
+	bridge.processEvent(&resultErrEvt, &currentResult)
+
+	// Count leader_response messages — should be exactly 1 (not 2).
+	msgs := pub.getMessages()
+	var leaderCount int
+	for _, m := range msgs {
+		if m.Msg.Type == protocol.TypeLeaderResponse {
+			leaderCount++
+		}
+	}
+	if leaderCount != 1 {
+		t.Errorf("expected exactly 1 leader_response (dedup), got %d", leaderCount)
+	}
+}
+
+// TestProcessEvent_ConsecutiveErrorsEachPublish verifies that the errorPublished
+// flag resets when a new user message arrives so the next error is not suppressed.
+func TestProcessEvent_ConsecutiveErrorsEachPublish(t *testing.T) {
+	pub := &fakePublisher{}
+	bridge := &Bridge{
+		config: BridgeConfig{
+			AgentName: "leader",
+			TeamName:  "consec",
+			Role:      "leader",
+		},
+		client: pub,
+	}
+
+	var currentResult string
+
+	// --- First interaction: error + idle ---
+	err1 := toProviderEvent(claude.StreamEvent{
+		Type: "error", IsError: true, ErrorCode: "APIError", Result: "Quota exceeded",
+	})
+	idle1 := toProviderEvent(claude.StreamEvent{Type: "result"}) // session.idle
+
+	bridge.processEvent(&err1, &currentResult)
+	bridge.processEvent(&idle1, &currentResult)
+
+	// Simulate new user message arriving (resets errorPublished).
+	bridge.errorPublished = false
+
+	// --- Second interaction: error + idle ---
+	err2 := toProviderEvent(claude.StreamEvent{
+		Type: "error", IsError: true, ErrorCode: "APIError", Result: "Quota exceeded",
+	})
+	idle2 := toProviderEvent(claude.StreamEvent{Type: "result"})
+
+	bridge.processEvent(&err2, &currentResult)
+	bridge.processEvent(&idle2, &currentResult)
+
+	// Should have exactly 2 leader_responses (one per interaction).
+	msgs := pub.getMessages()
+	var leaderCount int
+	for _, m := range msgs {
+		if m.Msg.Type == protocol.TypeLeaderResponse {
+			leaderCount++
+		}
+	}
+	if leaderCount != 2 {
+		t.Errorf("expected 2 leader_responses (one per interaction), got %d", leaderCount)
 	}
 }
