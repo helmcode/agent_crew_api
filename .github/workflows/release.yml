@@ -11,8 +11,10 @@ permissions:
   packages: write
 
 jobs:
-  release:
+  preflight:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -35,14 +37,26 @@ jobs:
       - name: Run tests
         run: go test -race ./...
 
-      - name: Build sidecar binary for Linux amd64
-        run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -trimpath -o bin/sidecar-linux-amd64 ./cmd/sidecar
+  build:
+    needs: preflight
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
 
-      - name: Build sidecar binary for Linux arm64
-        run: CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -trimpath -o bin/sidecar-linux-arm64 ./cmd/sidecar
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
 
-      - name: Set up QEMU for multi-arch builds
-        uses: docker/setup-qemu-action@v3
+      - name: Build sidecar binary
+        run: CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -trimpath -o bin/sidecar-linux ./cmd/sidecar
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -59,64 +73,100 @@ jobs:
         with:
           context: .
           file: build/api/Dockerfile
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/${{ matrix.arch }}
           push: true
           provenance: false
           tags: |
-            ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}
-            ghcr.io/${{ github.repository }}:latest
+            ghcr.io/${{ github.repository }}:${{ needs.preflight.outputs.version }}-${{ matrix.arch }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ matrix.arch }}-api
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}-api
 
       - name: Prepare agent build contexts
         run: |
-          cp bin/sidecar-linux-amd64 build/agent/sidecar-amd64
-          cp bin/sidecar-linux-arm64 build/agent/sidecar-arm64
-          cp bin/sidecar-linux-amd64 build/opencode-agent/sidecar-amd64
-          cp bin/sidecar-linux-arm64 build/opencode-agent/sidecar-arm64
+          cp bin/sidecar-linux build/agent/sidecar-${{ matrix.arch }}
+          cp bin/sidecar-linux build/opencode-agent/sidecar-${{ matrix.arch }}
 
       - name: Build and push Agent image
         uses: docker/build-push-action@v6
         with:
           context: build/agent
           file: build/agent/Dockerfile
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/${{ matrix.arch }}
           push: true
           provenance: false
           tags: |
-            ghcr.io/helmcode/agent_crew_agent:${{ steps.version.outputs.version }}
-            ghcr.io/helmcode/agent_crew_agent:latest
+            ghcr.io/helmcode/agent_crew_agent:${{ needs.preflight.outputs.version }}-${{ matrix.arch }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ matrix.arch }}-agent
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}-agent
 
       - name: Build and push OpenCode Agent image
         uses: docker/build-push-action@v6
         with:
           context: build/opencode-agent
           file: build/opencode-agent/Dockerfile
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/${{ matrix.arch }}
           push: true
           provenance: false
           tags: |
-            ghcr.io/helmcode/agent_crew_opencode_agent:${{ steps.version.outputs.version }}
-            ghcr.io/helmcode/agent_crew_opencode_agent:latest
+            ghcr.io/helmcode/agent_crew_opencode_agent:${{ needs.preflight.outputs.version }}-${{ matrix.arch }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ matrix.arch }}-opencode
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}-opencode
+
+  manifest:
+    needs: [build, preflight]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create API multi-arch manifest
+        run: |
+          docker buildx imagetools create \
+            -t ghcr.io/${{ github.repository }}:${{ needs.preflight.outputs.version }} \
+            -t ghcr.io/${{ github.repository }}:latest \
+            ghcr.io/${{ github.repository }}:${{ needs.preflight.outputs.version }}-amd64 \
+            ghcr.io/${{ github.repository }}:${{ needs.preflight.outputs.version }}-arm64
+
+      - name: Create Agent multi-arch manifest
+        run: |
+          docker buildx imagetools create \
+            -t ghcr.io/helmcode/agent_crew_agent:${{ needs.preflight.outputs.version }} \
+            -t ghcr.io/helmcode/agent_crew_agent:latest \
+            ghcr.io/helmcode/agent_crew_agent:${{ needs.preflight.outputs.version }}-amd64 \
+            ghcr.io/helmcode/agent_crew_agent:${{ needs.preflight.outputs.version }}-arm64
+
+      - name: Create OpenCode Agent multi-arch manifest
+        run: |
+          docker buildx imagetools create \
+            -t ghcr.io/helmcode/agent_crew_opencode_agent:${{ needs.preflight.outputs.version }} \
+            -t ghcr.io/helmcode/agent_crew_opencode_agent:latest \
+            ghcr.io/helmcode/agent_crew_opencode_agent:${{ needs.preflight.outputs.version }}-amd64 \
+            ghcr.io/helmcode/agent_crew_opencode_agent:${{ needs.preflight.outputs.version }}-arm64
+
+  release:
+    needs: [manifest, preflight]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
       - name: Create git tag
         run: |
-          git tag "v${{ steps.version.outputs.version }}"
-          git push origin "v${{ steps.version.outputs.version }}"
+          git tag "v${{ needs.preflight.outputs.version }}"
+          git push origin "v${{ needs.preflight.outputs.version }}"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ steps.version.outputs.version }}
-          name: v${{ steps.version.outputs.version }}
+          tag_name: v${{ needs.preflight.outputs.version }}
+          name: v${{ needs.preflight.outputs.version }}
           generate_release_notes: true
