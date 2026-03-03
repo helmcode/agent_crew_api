@@ -513,6 +513,61 @@ func TestProcessEvent_ErrorPublishesActivityEvent(t *testing.T) {
 	}
 }
 
+// --- processEvent: error with IsError publishes leader_response ---
+
+func TestProcessEvent_ErrorWithIsErrorPublishesLeaderResponse(t *testing.T) {
+	pub := &fakePublisher{}
+	bridge := &Bridge{
+		config: BridgeConfig{
+			AgentName: "leader",
+			TeamName:  "errteam3",
+			Role:      "leader",
+		},
+		client: pub,
+	}
+
+	event := toProviderEvent(claude.StreamEvent{
+		Type:      "error",
+		IsError:   true,
+		ErrorCode: "UnknownError",
+		Result:    "Model not found: openai/gpt-4o.",
+	})
+
+	var currentResult string
+	bridge.processEvent(&event, &currentResult)
+
+	msgs := pub.getMessages()
+	// Should publish 2 messages: activity_event + leader_response.
+	if len(msgs) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(msgs))
+	}
+
+	// First message: activity_event.
+	if msgs[0].Msg.Type != protocol.TypeActivityEvent {
+		t.Errorf("msg[0] Type: got %q, want %q", msgs[0].Msg.Type, protocol.TypeActivityEvent)
+	}
+
+	// Second message: leader_response with failed status.
+	if msgs[1].Msg.Type != protocol.TypeLeaderResponse {
+		t.Errorf("msg[1] Type: got %q, want %q", msgs[1].Msg.Type, protocol.TypeLeaderResponse)
+	}
+
+	var payload protocol.LeaderResponsePayload
+	if err := json.Unmarshal(msgs[1].Msg.Payload, &payload); err != nil {
+		t.Fatalf("unmarshal leader response: %v", err)
+	}
+	if payload.Status != "failed" {
+		t.Errorf("Status: got %q, want 'failed'", payload.Status)
+	}
+	if payload.Error == "" {
+		t.Error("Error: expected non-empty error message")
+	}
+	// Verify currentResult was cleared.
+	if currentResult != "" {
+		t.Errorf("currentResult: got %q, want empty", currentResult)
+	}
+}
+
 // --- processEvent: tool_use action format ---
 
 func TestProcessEvent_ToolUseActionFormat_WithCommand(t *testing.T) {

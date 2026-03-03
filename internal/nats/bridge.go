@@ -275,8 +275,16 @@ func (b *Bridge) processEvent(event *provider.StreamEvent, currentResult *string
 		b.publishActivityEvent(claudeEvent, "tool result")
 
 	case "error":
-		slog.Error("agent error event", "agent", b.config.AgentName)
+		slog.Error("agent error event", "agent", b.config.AgentName, "result", event.Result)
 		b.publishActivityEvent(claudeEvent, "error")
+
+		// Publish as leader_response so the error appears in the chat UI
+		// with the Settings + Redeploy buttons (same as deploy errors).
+		if event.IsError {
+			friendlyMsg := claudeEvent.FriendlyError()
+			b.publishLeaderResponse("", "failed", "", friendlyMsg)
+			*currentResult = ""
+		}
 	}
 }
 

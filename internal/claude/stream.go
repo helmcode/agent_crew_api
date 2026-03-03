@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"strings"
 )
 
 // StreamEvent represents a single event from Claude Code's stream-json output.
@@ -21,6 +22,11 @@ type StreamEvent struct {
 
 // FriendlyError returns a user-facing message for known Claude CLI error codes.
 func (e *StreamEvent) FriendlyError() string {
+	// Check for model-not-found errors first (any error code).
+	if strings.Contains(strings.ToLower(e.Result), "model not found") {
+		return e.Result + " Please check that the correct API key for this provider is configured in Settings."
+	}
+
 	switch e.ErrorCode {
 	case "billing_error":
 		return "Your API key has insufficient credits. Please add credits or update your key in Settings."
@@ -33,9 +39,9 @@ func (e *StreamEvent) FriendlyError() string {
 		return "The AI provider returned an API error. Please check your API key in Settings."
 	default:
 		if e.Result != "" {
-			return "Claude returned an error: " + e.Result
+			return e.Result
 		}
-		return "Claude returned an unknown error (code: " + e.ErrorCode + ")"
+		return "Unknown error (code: " + e.ErrorCode + ")"
 	}
 }
 

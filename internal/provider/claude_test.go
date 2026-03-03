@@ -2,6 +2,7 @@ package provider
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/helmcode/agent-crew/internal/claude"
@@ -79,6 +80,25 @@ func TestToClaudeStreamEvent_AuthError(t *testing.T) {
 	expected := "API key is invalid or expired. Please update it in Settings."
 	if friendly != expected {
 		t.Errorf("FriendlyError: got %q, want %q", friendly, expected)
+	}
+}
+
+func TestToClaudeStreamEvent_ModelNotFoundError(t *testing.T) {
+	pe := &StreamEvent{
+		Type:      "error",
+		IsError:   true,
+		ErrorCode: "UnknownError",
+		Result:    "Model not found: openai/gpt-4o.",
+	}
+
+	ce := ToClaudeStreamEvent(pe)
+
+	friendly := ce.FriendlyError()
+	if !strings.Contains(friendly, "Model not found") {
+		t.Errorf("FriendlyError should mention model not found, got %q", friendly)
+	}
+	if !strings.Contains(friendly, "Settings") {
+		t.Errorf("FriendlyError should mention Settings, got %q", friendly)
 	}
 }
 
