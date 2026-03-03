@@ -17,7 +17,7 @@ build-sidecar:
 	go build -o $(BIN_DIR)/sidecar ./cmd/sidecar
 
 build-sidecar-linux:
-	GOOS=linux GOARCH=$(DOCKER_ARCH) go build -o $(BIN_DIR)/sidecar-linux ./cmd/sidecar
+	GOOS=linux GOARCH=$(DOCKER_ARCH) go build -o $(BIN_DIR)/sidecar-linux-$(DOCKER_ARCH) ./cmd/sidecar
 
 build-all: build-api build-sidecar
 
@@ -35,14 +35,14 @@ build-api-image:
 	docker build -t agentcrew-api:$(IMAGE_TAG) -f build/api/Dockerfile .
 
 build-agent-image: build-sidecar-linux
-	cp $(BIN_DIR)/sidecar-linux build/agent/sidecar
+	cp $(BIN_DIR)/sidecar-linux-$(DOCKER_ARCH) build/agent/sidecar-$(DOCKER_ARCH)
 	docker build -t agentcrew-agent:$(IMAGE_TAG) -f build/agent/Dockerfile build/agent
-	rm -f build/agent/sidecar $(BIN_DIR)/sidecar-linux
+	rm -f build/agent/sidecar-$(DOCKER_ARCH) $(BIN_DIR)/sidecar-linux-$(DOCKER_ARCH)
 
 build-opencode-agent-image: build-sidecar-linux
-	cp $(BIN_DIR)/sidecar-linux build/opencode-agent/sidecar
+	cp $(BIN_DIR)/sidecar-linux-$(DOCKER_ARCH) build/opencode-agent/sidecar-$(DOCKER_ARCH)
 	docker build -t agentcrew-opencode-agent:$(IMAGE_TAG) -f build/opencode-agent/Dockerfile build/opencode-agent
-	rm -f build/opencode-agent/sidecar $(BIN_DIR)/sidecar-linux
+	rm -f build/opencode-agent/sidecar-$(DOCKER_ARCH) $(BIN_DIR)/sidecar-linux-$(DOCKER_ARCH)
 
 build-images: build-api-image build-agent-image build-opencode-agent-image
 
@@ -70,4 +70,4 @@ lint:
 clean:
 	rm -rf $(BIN_DIR)
 	go clean -testcache
-	rm -f build/agent/sidecar build/opencode-agent/sidecar
+	rm -f build/agent/sidecar-* build/opencode-agent/sidecar-*

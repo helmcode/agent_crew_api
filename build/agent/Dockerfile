@@ -15,8 +15,9 @@ RUN npm install -g @anthropic-ai/claude-code skills
 # Create non-root user for running the agent
 RUN groupadd -r agentcrew && useradd -r -g agentcrew -m agentcrew
 
-# Copy the sidecar binary (built externally with Go)
-COPY sidecar /usr/local/bin/agent-sidecar
+# Copy the sidecar binary for the target architecture (built externally with Go)
+ARG TARGETARCH
+COPY sidecar-${TARGETARCH} /usr/local/bin/agent-sidecar
 RUN chmod +x /usr/local/bin/agent-sidecar
 
 # Create workspace directory for agent operations

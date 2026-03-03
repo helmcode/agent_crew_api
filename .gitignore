@@ -40,3 +40,7 @@ Thumbs.db
 
 # Build artifacts
 dist/
+
+# Sidecar binaries copied into build contexts
+build/agent/sidecar-*
+build/opencode-agent/sidecar-*

@@ -36,7 +36,13 @@ jobs:
         run: go test -race ./...
 
       - name: Build sidecar binary for Linux amd64
-        run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -trimpath -o bin/sidecar-linux ./cmd/sidecar
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -trimpath -o bin/sidecar-linux-amd64 ./cmd/sidecar
+
+      - name: Build sidecar binary for Linux arm64
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -trimpath -o bin/sidecar-linux-arm64 ./cmd/sidecar
+
+      - name: Set up QEMU for multi-arch builds
+        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -53,6 +59,7 @@ jobs:
         with:
           context: .
           file: build/api/Dockerfile
+          platforms: linux/amd64,linux/arm64
           push: true
           provenance: false
           tags: |
@@ -65,14 +72,17 @@ jobs:
 
       - name: Prepare agent build contexts
         run: |
-          cp bin/sidecar-linux build/agent/sidecar
-          cp bin/sidecar-linux build/opencode-agent/sidecar
+          cp bin/sidecar-linux-amd64 build/agent/sidecar-amd64
+          cp bin/sidecar-linux-arm64 build/agent/sidecar-arm64
+          cp bin/sidecar-linux-amd64 build/opencode-agent/sidecar-amd64
+          cp bin/sidecar-linux-arm64 build/opencode-agent/sidecar-arm64
 
       - name: Build and push Agent image
         uses: docker/build-push-action@v6
         with:
           context: build/agent
           file: build/agent/Dockerfile
+          platforms: linux/amd64,linux/arm64
           push: true
           provenance: false
           tags: |
@@ -88,6 +98,7 @@ jobs:
         with:
           context: build/opencode-agent
           file: build/opencode-agent/Dockerfile
+          platforms: linux/amd64,linux/arm64
           push: true
           provenance: false
           tags: |
