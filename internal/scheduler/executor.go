@@ -226,7 +226,7 @@ func (e *Executor) deployTeam(ctx context.Context, team models.Team) error {
 	// Default: update status to deploying and call runtime.
 	e.DB.Model(&team).Update("status", models.TeamStatusDeploying)
 
-	// Simplified deployment — just deploy infrastructure and leader.
+	// Deploy infrastructure.
 	infraCfg := runtime.InfraConfig{
 		TeamName:      team.Name,
 		NATSEnabled:   true,
@@ -238,11 +238,30 @@ func (e *Executor) deployTeam(ctx context.Context, team models.Team) error {
 		return fmt.Errorf("deploying infrastructure: %w", err)
 	}
 
-	// Find the leader.
+	provider := team.Provider
+	if provider == "" {
+		provider = models.ProviderClaude
+	}
+
+	// Load settings from DB for environment variables.
+	env := map[string]string{}
+	if e.LoadSettingsEnvFunc != nil {
+		env = e.LoadSettingsEnvFunc()
+	}
+
+	natsURL := e.Runtime.GetNATSURL(team.Name)
+
+	// Find the leader and extract leader skills.
 	var leader *models.Agent
+	var leaderSkills json.RawMessage
+	var leaderSkillConfigs []protocol.SkillConfig
 	for i := range team.Agents {
 		if team.Agents[i].Role == models.AgentRoleLeader {
 			leader = &team.Agents[i]
+			if len(leader.SubAgentSkills) > 0 && string(leader.SubAgentSkills) != "null" {
+				leaderSkills = json.RawMessage(leader.SubAgentSkills)
+				_ = json.Unmarshal(leader.SubAgentSkills, &leaderSkillConfigs)
+			}
 			break
 		}
 	}
@@ -251,20 +270,200 @@ func (e *Executor) deployTeam(ctx context.Context, team models.Team) error {
 		return fmt.Errorf("no leader agent found in team")
 	}
 
-	env := map[string]string{}
-	if e.LoadSettingsEnvFunc != nil {
-		env = e.LoadSettingsEnvFunc()
+	// Build team member list for the leader's instructions.
+	var teamMembers []runtime.TeamMemberInfo
+	for _, a := range team.Agents {
+		teamMembers = append(teamMembers, runtime.TeamMemberInfo{
+			Name:      sanitizeTeamName(a.Name),
+			Role:      a.Role,
+			Specialty: a.Specialty,
+		})
 	}
 
-	natsURL := e.Runtime.GetNATSURL(team.Name)
+	// Generate sub-agent files for workers based on provider.
+	subAgentFiles := map[string]string{}
+	var openCodeWorkers []runtime.SubAgentInfo
+	for i := range team.Agents {
+		agent := &team.Agents[i]
+		if agent.Role == models.AgentRoleLeader {
+			continue
+		}
+
+		if provider == models.ProviderOpenCode {
+			subInfo := runtime.SubAgentInfo{
+				Name:        agent.Name,
+				Description: agent.SubAgentDescription,
+				Model:       agent.SubAgentModel,
+				Skills:      json.RawMessage(agent.SubAgentSkills),
+				ClaudeMD:    agent.InstructionsMD,
+			}
+			filename := runtime.SubAgentFileName(agent.Name)
+			subAgentFiles[filename] = runtime.GenerateOpenCodeSubAgentContent(subInfo, leaderSkillConfigs)
+			openCodeWorkers = append(openCodeWorkers, subInfo)
+		} else {
+			info := runtime.AgentWorkspaceInfo{
+				Name:         agent.Name,
+				Role:         agent.Role,
+				Specialty:    agent.Specialty,
+				SystemPrompt: agent.SystemPrompt,
+				ClaudeMD:     agent.InstructionsMD,
+				Skills:       json.RawMessage(agent.Skills),
+			}
+			subInfo := runtime.SubAgentInfo{
+				Name:         agent.Name,
+				Description:  agent.SubAgentDescription,
+				Model:        agent.SubAgentModel,
+				Skills:       json.RawMessage(agent.SubAgentSkills),
+				GlobalSkills: leaderSkills,
+				ClaudeMD:     agent.InstructionsMD,
+			}
+			if subInfo.ClaudeMD == "" {
+				subInfo.ClaudeMD = runtime.GenerateClaudeMD(info)
+			}
+			filename := runtime.SubAgentFileName(agent.Name)
+			subAgentFiles[filename] = runtime.GenerateSubAgentContent(subInfo)
+
+			if team.WorkspacePath != "" {
+				if _, err := runtime.SetupSubAgentFile(team.WorkspacePath, subInfo); err != nil {
+					slog.Error("executor: failed to setup sub-agent file", "agent", agent.Name, "error", err)
+				}
+			}
+		}
+	}
+
+	// Setup host workspace for the leader based on provider.
+	if team.WorkspacePath != "" {
+		if provider == models.ProviderOpenCode {
+			leaderSub := runtime.SubAgentInfo{
+				Name:        leader.Name,
+				Description: leader.Specialty,
+				Skills:      json.RawMessage(leader.Skills),
+				ClaudeMD:    leader.InstructionsMD,
+			}
+			if err := runtime.SetupOpenCodeWorkspace(team.WorkspacePath, team.Name, leaderSub, openCodeWorkers, leaderSkillConfigs); err != nil {
+				slog.Error("executor: failed to setup opencode workspace", "team", team.Name, "error", err)
+			}
+		} else {
+			info := runtime.AgentWorkspaceInfo{
+				Name:         leader.Name,
+				Role:         leader.Role,
+				Specialty:    leader.Specialty,
+				SystemPrompt: leader.SystemPrompt,
+				ClaudeMD:     leader.InstructionsMD,
+				Skills:       json.RawMessage(leader.Skills),
+				TeamMembers:  teamMembers,
+			}
+			if _, err := runtime.SetupAgentWorkspace(team.WorkspacePath, info); err != nil {
+				slog.Error("executor: failed to setup agent workspace", "agent", leader.Name, "error", err)
+			}
+		}
+	}
+
+	// Collect all unique skills from all agents for sidecar installation.
+	type skillKey struct{ RepoURL, SkillName string }
+	skillsSet := map[skillKey]struct{}{}
+	var allSkills []protocol.SkillConfig
+	for _, a := range team.Agents {
+		var agentSkills []protocol.SkillConfig
+		if err := json.Unmarshal(a.SubAgentSkills, &agentSkills); err == nil {
+			for _, s := range agentSkills {
+				key := skillKey{s.RepoURL, s.SkillName}
+				if s.RepoURL != "" && s.SkillName != "" {
+					if _, exists := skillsSet[key]; !exists {
+						skillsSet[key] = struct{}{}
+						allSkills = append(allSkills, s)
+					}
+				}
+			}
+		}
+	}
+	if len(allSkills) > 0 {
+		skillsJSON, _ := json.Marshal(allSkills)
+		env["AGENT_SKILLS_INSTALL"] = string(skillsJSON)
+	}
+
+	// Set model env var based on provider.
+	leaderModel := leader.SubAgentModel
+	if leaderModel != "" && leaderModel != "inherit" {
+		if provider == models.ProviderOpenCode {
+			env["OPENCODE_MODEL"] = leaderModel
+		} else {
+			if fullModel := schedulerClaudeModelID(leaderModel); fullModel != "" {
+				env["CLAUDE_MODEL"] = fullModel
+			}
+		}
+	} else if provider == models.ProviderOpenCode {
+		if m := env["OPENCODE_MODEL"]; m != "" {
+			env["OPENCODE_MODEL"] = m
+		}
+	}
+
+	// Validate OpenCode model credentials before deployment.
+	if provider == models.ProviderOpenCode {
+		effectiveModel := env["OPENCODE_MODEL"]
+		if err := schedulerValidateOpenCodeCredentials(effectiveModel, env); err != nil {
+			e.DB.Model(&team).Update("status", models.TeamStatusError)
+			return fmt.Errorf("credential validation: %w", err)
+		}
+		for _, a := range team.Agents {
+			if a.Role == models.AgentRoleWorker && a.SubAgentModel != "" && a.SubAgentModel != "inherit" {
+				if err := schedulerValidateOpenCodeCredentials(a.SubAgentModel, env); err != nil {
+					e.DB.Model(&team).Update("status", models.TeamStatusError)
+					return fmt.Errorf("credential validation for worker %s: %w", a.Name, err)
+				}
+			}
+		}
+	}
+
+	// Generate leader instructions content based on provider.
+	var instructionsMDContent string
+	if provider == models.ProviderOpenCode {
+		if leader.InstructionsMD != "" {
+			instructionsMDContent = leader.InstructionsMD
+		} else {
+			leaderSubInfo := runtime.SubAgentInfo{
+				Name:        leader.Name,
+				Description: leader.Specialty,
+				Skills:      json.RawMessage(leader.Skills),
+				ClaudeMD:    leader.InstructionsMD,
+			}
+			workers := make([]runtime.SubAgentInfo, 0)
+			for _, a := range team.Agents {
+				if a.Role != models.AgentRoleLeader {
+					workers = append(workers, runtime.SubAgentInfo{
+						Name:        a.Name,
+						Description: a.SubAgentDescription,
+					})
+				}
+			}
+			instructionsMDContent = runtime.GenerateOpenCodeAgentsMD(team.Name, leaderSubInfo, workers)
+		}
+	} else {
+		leaderInfo := runtime.AgentWorkspaceInfo{
+			Name:         leader.Name,
+			Role:         leader.Role,
+			Specialty:    leader.Specialty,
+			SystemPrompt: leader.SystemPrompt,
+			ClaudeMD:     leader.InstructionsMD,
+			Skills:       json.RawMessage(leader.Skills),
+			TeamMembers:  teamMembers,
+		}
+		instructionsMDContent = leader.InstructionsMD
+		if instructionsMDContent == "" {
+			instructionsMDContent = runtime.GenerateClaudeMD(leaderInfo)
+		}
+	}
+
 	agentCfg := runtime.AgentConfig{
 		Name:          leader.Name,
 		TeamName:      team.Name,
 		Role:          leader.Role,
+		Provider:      provider,
 		SystemPrompt:  leader.SystemPrompt,
-		ClaudeMD:      leader.InstructionsMD,
+		ClaudeMD:      instructionsMDContent,
 		NATSUrl:       natsURL,
 		WorkspacePath: team.WorkspacePath,
+		SubAgentFiles: subAgentFiles,
 		Env:           env,
 	}
 
@@ -280,6 +479,47 @@ func (e *Executor) deployTeam(ctx context.Context, team models.Team) error {
 	})
 	e.DB.Model(&team).Update("status", models.TeamStatusRunning)
 
+	return nil
+}
+
+// schedulerClaudeModelID maps short model names to full Claude model IDs.
+func schedulerClaudeModelID(short string) string {
+	switch short {
+	case "sonnet":
+		return "claude-sonnet-4-20250514"
+	case "opus":
+		return "claude-opus-4-20250514"
+	case "haiku":
+		return "claude-haiku-4-5-20251001"
+	default:
+		return ""
+	}
+}
+
+// schedulerValidateOpenCodeCredentials checks that the required API key for the
+// given OpenCode model is present in the environment.
+func schedulerValidateOpenCodeCredentials(model string, env map[string]string) error {
+	if model == "" || model == "inherit" {
+		return nil
+	}
+	parts := strings.SplitN(model, "/", 2)
+	if len(parts) < 2 {
+		return nil
+	}
+	required := map[string]string{
+		"anthropic": "ANTHROPIC_API_KEY",
+		"openai":    "OPENAI_API_KEY",
+		"google":    "GOOGLE_GENERATIVE_AI_API_KEY",
+		"ollama":    "OLLAMA_BASE_URL",
+		"lmstudio":  "LM_STUDIO_BASE_URL",
+	}
+	key, ok := required[parts[0]]
+	if !ok {
+		return nil
+	}
+	if env[key] == "" {
+		return fmt.Errorf("missing credential for model %q: set %s in the Settings page", model, key)
+	}
 	return nil
 }
 
