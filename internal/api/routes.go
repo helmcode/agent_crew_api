@@ -33,6 +33,12 @@ func (s *Server) registerRoutes() {
 	teams.Put("/:id/agents/:agentId/instructions", s.UpdateInstructions)
 	teams.Post("/:id/agents/:agentId/skills/install", s.InstallAgentSkill)
 
+	// MCP server management (team-level).
+	teams.Get("/:id/mcp", s.GetMcpConfig)
+	teams.Put("/:id/mcp", s.UpdateMcpConfig)
+	teams.Post("/:id/mcp/servers", s.AddMcpServer)
+	teams.Delete("/:id/mcp/servers/:serverName", s.RemoveMcpServer)
+
 	// Chat.
 	teams.Post("/:id/chat", s.SendChat)
 	teams.Get("/:id/messages", s.GetMessages)
@@ -49,6 +55,21 @@ func (s *Server) registerRoutes() {
 	schedules.Patch("/:id/toggle", s.ToggleSchedule)
 	schedules.Get("/:id/runs", s.ListScheduleRuns)
 	schedules.Get("/:id/runs/:runId", s.GetScheduleRun)
+
+	// Webhooks.
+	webhooks := api.Group("/webhooks")
+	webhooks.Get("/", s.ListWebhooks)
+	webhooks.Post("/", s.CreateWebhook)
+	webhooks.Get("/:id", s.GetWebhook)
+	webhooks.Put("/:id", s.UpdateWebhook)
+	webhooks.Delete("/:id", s.DeleteWebhook)
+	webhooks.Patch("/:id/toggle", s.ToggleWebhook)
+	webhooks.Post("/:id/regenerate", s.RegenerateWebhookToken)
+	webhooks.Get("/:id/runs", s.ListWebhookRuns)
+	webhooks.Get("/:id/runs/:runId", s.GetWebhookRun)
+
+	// Webhook trigger (outside /api, authenticated by token).
+	s.App.Post("/webhook/trigger/:token", s.TriggerWebhook)
 
 	// Settings.
 	api.Get("/settings", s.GetSettings)

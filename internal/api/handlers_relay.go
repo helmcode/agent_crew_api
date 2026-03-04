@@ -128,6 +128,8 @@ func (s *Server) processRelayMessage(teamID, teamName string, data []byte) error
 		messageType = "container_validation"
 	case protocol.TypeSkillStatus:
 		messageType = string(protocol.TypeSkillStatus)
+	case protocol.TypeMcpStatus:
+		messageType = string(protocol.TypeMcpStatus)
 	default:
 		return nil
 	}
@@ -151,6 +153,10 @@ func (s *Server) processRelayMessage(teamID, teamName string, data []byte) error
 	// GET /api/teams/:id returns skill_statuses for each agent.
 	if protoMsg.Type == protocol.TypeSkillStatus {
 		s.persistSkillStatuses(teamID, protoMsg)
+	}
+
+	if protoMsg.Type == protocol.TypeMcpStatus {
+		s.persistMcpStatuses(teamID, protoMsg)
 	}
 
 	return nil
@@ -248,5 +254,30 @@ func (s *Server) persistSkillStatuses(teamID string, msg protocol.Message) {
 		} else if result.RowsAffected > 0 {
 			slog.Info("relay: updated agent skill_statuses", "agent", agent.Name, "skills", len(statuses))
 		}
+	}
+}
+
+// persistMcpStatuses extracts MCP server statuses from an mcp_status message
+// and saves them on the team record.
+func (s *Server) persistMcpStatuses(teamID string, msg protocol.Message) {
+	var payload protocol.McpStatusPayload
+	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+		slog.Error("relay: failed to parse mcp_status payload", "error", err)
+		return
+	}
+
+	data, err := json.Marshal(payload.Servers)
+	if err != nil {
+		slog.Error("relay: failed to marshal mcp_statuses", "error", err)
+		return
+	}
+
+	result := s.db.Model(&models.Team{}).
+		Where("id = ?", teamID).
+		Update("mcp_statuses", models.JSON(data))
+	if result.Error != nil {
+		slog.Error("relay: failed to persist mcp_statuses", "team", teamID, "error", result.Error)
+	} else if result.RowsAffected > 0 {
+		slog.Info("relay: updated team mcp_statuses", "team", teamID, "servers", len(payload.Servers))
 	}
 }

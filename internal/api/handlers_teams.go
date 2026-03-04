@@ -72,6 +72,15 @@ func (s *Server) CreateTeam(c *fiber.Ctx) error {
 		WorkspacePath: req.WorkspacePath,
 	}
 
+	// Validate and serialize MCP servers.
+	if req.McpServers != nil {
+		if err := validateMcpServers(req.McpServers); err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, err.Error())
+		}
+		mcpData, _ := json.Marshal(req.McpServers)
+		team.McpServers = models.JSON(mcpData)
+	}
+
 	// Check for duplicate agent names in the request.
 	seen := map[string]struct{}{}
 	for _, a := range req.Agents {
@@ -174,6 +183,13 @@ func (s *Server) UpdateTeam(c *fiber.Ctx) error {
 			return fiber.NewError(fiber.StatusBadRequest, "provider must be 'claude' or 'opencode'")
 		}
 		updates["provider"] = *req.Provider
+	}
+	if req.McpServers != nil {
+		if err := validateMcpServers(req.McpServers); err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, err.Error())
+		}
+		mcpData, _ := json.Marshal(req.McpServers)
+		updates["mcp_servers"] = models.JSON(mcpData)
 	}
 
 	if len(updates) > 0 {
@@ -483,6 +499,12 @@ func (s *Server) deployTeamAsync(team models.Team) {
 	if len(allSkills) > 0 {
 		agentEnv["AGENT_SKILLS_INSTALL"] = string(skillsJSON)
 	}
+
+	// Collect MCP servers from team config.
+	if len(team.McpServers) > 0 && string(team.McpServers) != "null" && string(team.McpServers) != "[]" {
+		agentEnv["AGENT_MCP_SERVERS"] = string(team.McpServers)
+	}
+
 	// Pass the leader's model to the agent container.
 	leaderModel := leader.SubAgentModel
 	if leaderModel != "" && leaderModel != "inherit" {

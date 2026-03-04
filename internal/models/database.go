@@ -40,7 +40,7 @@ func InitDB(dbPath string) (*gorm.DB, error) {
 		}
 	}
 
-	if err := db.AutoMigrate(&Team{}, &Agent{}, &TaskLog{}, &Settings{}, &Schedule{}, &ScheduleRun{}); err != nil {
+	if err := db.AutoMigrate(&Team{}, &Agent{}, &TaskLog{}, &Settings{}, &Schedule{}, &ScheduleRun{}, &Webhook{}, &WebhookRun{}); err != nil {
 		return nil, fmt.Errorf("auto-migrating models: %w", err)
 	}
 

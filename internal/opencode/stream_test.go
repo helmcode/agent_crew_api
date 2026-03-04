@@ -267,8 +267,8 @@ func TestConvert_Reasoning(t *testing.T) {
 	if pe == nil {
 		t.Fatal("expected non-nil event for reasoning")
 	}
-	if pe.Type != "assistant" {
-		t.Errorf("Type: got %q, want 'assistant'", pe.Type)
+	if pe.Type != "reasoning" {
+		t.Errorf("Type: got %q, want 'reasoning'", pe.Type)
 	}
 }
 
@@ -565,8 +565,8 @@ func TestConvert_Reasoning_FlatFormat(t *testing.T) {
 	if pe == nil {
 		t.Fatal("expected non-nil event for reasoning")
 	}
-	if pe.Type != "assistant" {
-		t.Errorf("Type: got %q, want 'assistant'", pe.Type)
+	if pe.Type != "reasoning" {
+		t.Errorf("Type: got %q, want 'reasoning'", pe.Type)
 	}
 }
 

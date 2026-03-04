@@ -256,7 +256,7 @@ func convertMessagePart(data json.RawMessage, filterSessionID string) *provider.
 		}
 		msgJSON, _ := json.Marshal(map[string]string{"type": "text", "text": text})
 		return &provider.StreamEvent{
-			Type:      "assistant",
+			Type:      "reasoning",
 			Message:   string(msgJSON),
 			SessionID: sessionID,
 		}

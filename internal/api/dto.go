@@ -21,14 +21,16 @@ type CreateTeamRequest struct {
 	Provider      string              `json:"provider"`
 	WorkspacePath string              `json:"workspace_path"`
 	Agents        []CreateAgentInput  `json:"agents"`
+	McpServers    interface{}         `json:"mcp_servers"`
 }
 
 // UpdateTeamRequest is the payload for PUT /api/teams/:id.
 type UpdateTeamRequest struct {
-	Name          *string `json:"name"`
-	Description   *string `json:"description"`
-	Provider      *string `json:"provider"`
-	WorkspacePath *string `json:"workspace_path"`
+	Name          *string     `json:"name"`
+	Description   *string     `json:"description"`
+	Provider      *string     `json:"provider"`
+	WorkspacePath *string     `json:"workspace_path"`
+	McpServers    interface{} `json:"mcp_servers"`
 }
 
 // CreateAgentInput defines an agent to be created alongside a team.
@@ -117,6 +119,39 @@ type UpdateScheduleRequest struct {
 	Enabled        *bool   `json:"enabled"`
 }
 
+// CreateWebhookRequest is the payload for POST /api/webhooks.
+type CreateWebhookRequest struct {
+	Name           string `json:"name" validate:"required"`
+	TeamID         string `json:"team_id" validate:"required"`
+	PromptTemplate string `json:"prompt_template" validate:"required"`
+	TimeoutSeconds *int   `json:"timeout_seconds"`
+	MaxConcurrent  *int   `json:"max_concurrent"`
+	Enabled        *bool  `json:"enabled"`
+}
+
+// UpdateWebhookRequest is the payload for PUT /api/webhooks/:id.
+type UpdateWebhookRequest struct {
+	Name           *string `json:"name"`
+	PromptTemplate *string `json:"prompt_template"`
+	TimeoutSeconds *int    `json:"timeout_seconds"`
+	MaxConcurrent  *int    `json:"max_concurrent"`
+	Enabled        *bool   `json:"enabled"`
+}
+
+// TriggerWebhookRequest is the payload for POST /webhook/trigger/:token.
+type TriggerWebhookRequest struct {
+	Variables map[string]string `json:"variables"`
+}
+
+// TriggerWebhookResponse is the response for a webhook trigger.
+type TriggerWebhookResponse struct {
+	RunID      string `json:"run_id"`
+	Status     string `json:"status"`
+	Response   string `json:"response,omitempty"`
+	Error      string `json:"error,omitempty"`
+	DurationMs int64  `json:"duration_ms,omitempty"`
+}
+
 // InstallSkillRequest is the payload for POST /api/teams/:id/agents/:agentId/skills/install.
 type InstallSkillRequest struct {
 	RepoURL   string `json:"repo_url"`
@@ -128,6 +163,29 @@ type InstallSkillResponse struct {
 	Output        string              `json:"output"`
 	Error         string              `json:"error,omitempty"`
 	UpdatedSkills []map[string]string `json:"updated_skills,omitempty"`
+}
+
+// McpConfigResponse returns the raw MCP config file from a running container.
+type McpConfigResponse struct {
+	Content  string `json:"content"`
+	Path     string `json:"path"`
+	Provider string `json:"provider"`
+}
+
+// UpdateMcpConfigRequest is the payload for PUT /api/teams/:id/mcp.
+type UpdateMcpConfigRequest struct {
+	Content string `json:"content"`
+}
+
+// AddMcpServerRequest is the payload for POST /api/teams/:id/mcp/servers.
+type AddMcpServerRequest struct {
+	Name      string            `json:"name" validate:"required"`
+	Transport string            `json:"transport" validate:"required"`
+	Command   string            `json:"command,omitempty"`
+	Args      []string          `json:"args,omitempty"`
+	Env       map[string]string `json:"env,omitempty"`
+	URL       string            `json:"url,omitempty"`
+	Headers   map[string]string `json:"headers,omitempty"`
 }
 
 // InstructionsResponse is the response for GET/PUT agent instructions.
@@ -281,6 +339,96 @@ func validateSingleSkillConfig(repoURL, skillName string) error {
 
 	if !validSkillNameRe.MatchString(skillName) {
 		return fmt.Errorf("skill_name contains invalid characters")
+	}
+
+	return nil
+}
+
+// validMcpNameRe matches safe MCP server names: alphanumeric, hyphens, underscores.
+var validMcpNameRe = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+
+// shellMetaChars contains characters that could enable shell injection.
+const shellMetaChars = ";|&$`\\\"'<>(){}!"
+
+// validateMcpServers validates the McpServers field on a team request.
+func validateMcpServers(raw interface{}) error {
+	if raw == nil {
+		return nil
+	}
+
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return fmt.Errorf("invalid mcp_servers: %w", err)
+	}
+
+	s := strings.TrimSpace(string(data))
+	if s == "null" || s == "[]" {
+		return nil
+	}
+
+	var servers []struct {
+		Name      string            `json:"name"`
+		Transport string            `json:"transport"`
+		Command   string            `json:"command"`
+		Args      []string          `json:"args"`
+		Env       map[string]string `json:"env"`
+		URL       string            `json:"url"`
+		Headers   map[string]string `json:"headers"`
+	}
+	if err := json.Unmarshal(data, &servers); err != nil {
+		return fmt.Errorf("mcp_servers must be an array of MCP server objects: %w", err)
+	}
+
+	if len(servers) > 50 {
+		return fmt.Errorf("mcp_servers: maximum 50 servers allowed, got %d", len(servers))
+	}
+
+	seen := map[string]struct{}{}
+	for i, srv := range servers {
+		// Name validation.
+		if srv.Name == "" {
+			return fmt.Errorf("mcp_servers[%d]: name is required", i)
+		}
+		if len(srv.Name) > 64 {
+			return fmt.Errorf("mcp_servers[%d]: name must be at most 64 characters", i)
+		}
+		if !validMcpNameRe.MatchString(srv.Name) {
+			return fmt.Errorf("mcp_servers[%d]: name contains invalid characters (use alphanumeric, hyphens, underscores)", i)
+		}
+		lower := strings.ToLower(srv.Name)
+		if _, exists := seen[lower]; exists {
+			return fmt.Errorf("mcp_servers[%d]: duplicate server name %q", i, srv.Name)
+		}
+		seen[lower] = struct{}{}
+
+		// Transport validation.
+		switch srv.Transport {
+		case "stdio":
+			if srv.Command == "" {
+				return fmt.Errorf("mcp_servers[%d]: command is required for stdio transport", i)
+			}
+			if strings.ContainsAny(srv.Command, shellMetaChars) {
+				return fmt.Errorf("mcp_servers[%d]: command contains unsafe shell characters", i)
+			}
+			for j, arg := range srv.Args {
+				if strings.ContainsAny(arg, shellMetaChars) {
+					return fmt.Errorf("mcp_servers[%d].args[%d]: argument contains unsafe shell characters", i, j)
+				}
+			}
+		case "http", "sse":
+			if srv.URL == "" {
+				return fmt.Errorf("mcp_servers[%d]: url is required for %s transport", i, srv.Transport)
+			}
+			u, err := url.Parse(srv.URL)
+			if err != nil {
+				return fmt.Errorf("mcp_servers[%d]: invalid url: %w", i, err)
+			}
+			if u.Scheme != "http" && u.Scheme != "https" {
+				return fmt.Errorf("mcp_servers[%d]: url must use http or https scheme", i)
+			}
+		default:
+			return fmt.Errorf("mcp_servers[%d]: transport must be stdio, http, or sse", i)
+		}
 	}
 
 	return nil

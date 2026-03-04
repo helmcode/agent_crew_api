@@ -20,7 +20,7 @@ type AgentManager interface {
 // StreamEvent represents a single event from an agent's output stream.
 // This is the provider-agnostic version of claude.StreamEvent.
 type StreamEvent struct {
-	Type      string // "assistant", "tool_use", "tool_result", "result", "error"
+	Type      string // "assistant", "reasoning", "tool_use", "tool_result", "result", "error"
 	Message   string
 	Name      string // Tool name (for tool_use events)
 	Input     string // Tool input (for tool_use events)

@@ -25,6 +25,9 @@ type Server struct {
 	// The cancel function stops the relay when the team is stopped.
 	relaysMu sync.Mutex
 	relays   map[string]context.CancelFunc
+
+	// webhookMaxConcurrent is the global limit of concurrent webhook runs.
+	webhookMaxConcurrent int
 }
 
 // NewServer creates a Fiber app with middleware and registers all routes.
@@ -45,10 +48,11 @@ func NewServer(db *gorm.DB, rt runtime.AgentRuntime) *Server {
 	app.Use(requestLogger())
 
 	s := &Server{
-		App:     app,
-		db:      db,
-		runtime: rt,
-		relays:  make(map[string]context.CancelFunc),
+		App:                  app,
+		db:                   db,
+		runtime:              rt,
+		relays:               make(map[string]context.CancelFunc),
+		webhookMaxConcurrent: 20,
 	}
 
 	s.registerRoutes()
@@ -65,6 +69,11 @@ func (s *Server) Listen(addr string) error {
 func (s *Server) Shutdown() error {
 	slog.Info("shutting down HTTP server")
 	return s.App.Shutdown()
+}
+
+// SetWebhookMaxConcurrent sets the global limit for concurrent webhook runs.
+func (s *Server) SetWebhookMaxConcurrent(n int) {
+	s.webhookMaxConcurrent = n
 }
 
 // ReconnectRelays restarts NATS relay goroutines for all teams that are

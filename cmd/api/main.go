@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 
 	"github.com/helmcode/agent-crew/internal/api"
@@ -60,6 +61,13 @@ func main() {
 	}
 
 	srv := api.NewServer(db, rt)
+
+	// Configure webhook concurrency limit.
+	if v := os.Getenv("WEBHOOK_MAX_CONCURRENT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			srv.SetWebhookMaxConcurrent(n)
+		}
+	}
 
 	// Reconnect NATS relays for teams that were running before this restart.
 	srv.ReconnectRelays()

@@ -16,6 +16,7 @@ const (
 	TypeActivityEvent        MessageType = "activity_event"
 	TypeContainerValidation  MessageType = "container_validation"
 	TypeSkillStatus          MessageType = "skill_status"
+	TypeMcpStatus            MessageType = "mcp_status"
 )
 
 // MessageContext carries optional conversation context.
@@ -39,8 +40,9 @@ type Message struct {
 // UserMessagePayload carries a free-form user message.
 type UserMessagePayload struct {
 	Content        string `json:"content"`
-	Source         string `json:"source,omitempty"`          // "chat" or "scheduler"
+	Source         string `json:"source,omitempty"`           // "chat", "scheduler", or "webhook"
 	ScheduledRunID string `json:"scheduled_run_id,omitempty"` // Set when source is "scheduler"
+	WebhookRunID   string `json:"webhook_run_id,omitempty"`   // Set when source is "webhook"
 }
 
 // LeaderResponsePayload carries the leader's response back to the user.
@@ -49,6 +51,7 @@ type LeaderResponsePayload struct {
 	Result         string `json:"result"`
 	Error          string `json:"error,omitempty"`
 	ScheduledRunID string `json:"scheduled_run_id,omitempty"` // Correlation ID for scheduled runs
+	WebhookRunID   string `json:"webhook_run_id,omitempty"`   // Correlation ID for webhook runs
 }
 
 // SystemCommandPayload carries a system-level command.
@@ -108,4 +111,29 @@ type SkillStatusPayload struct {
 	AgentName string               `json:"agent_name"`
 	Skills    []SkillInstallResult `json:"skills"`
 	Summary   string               `json:"summary"` // e.g., "2 installed, 1 failed"
+}
+
+// McpServerConfig describes a single MCP server for agent tooling.
+type McpServerConfig struct {
+	Name      string            `json:"name"`
+	Transport string            `json:"transport"` // "stdio", "http", "sse"
+	Command   string            `json:"command,omitempty"`
+	Args      []string          `json:"args,omitempty"`
+	Env       map[string]string `json:"env,omitempty"`
+	URL       string            `json:"url,omitempty"`
+	Headers   map[string]string `json:"headers,omitempty"`
+}
+
+// McpServerStatus tracks the status of a single MCP server.
+type McpServerStatus struct {
+	Name   string `json:"name"`
+	Status string `json:"status"` // "configured", "error"
+	Error  string `json:"error,omitempty"`
+}
+
+// McpStatusPayload carries MCP server status from the sidecar.
+type McpStatusPayload struct {
+	AgentName string            `json:"agent_name"`
+	Servers   []McpServerStatus `json:"servers"`
+	Summary   string            `json:"summary"`
 }

@@ -56,6 +56,8 @@ type Team struct {
 	Runtime       string    `gorm:"not null;size:50;default:docker" json:"runtime"`
 	Provider      string    `gorm:"type:varchar(50);default:'claude'" json:"provider"`
 	WorkspacePath string    `gorm:"size:512" json:"workspace_path"`
+	McpServers    JSON      `gorm:"type:text" json:"mcp_servers"`
+	McpStatuses   JSON      `gorm:"type:text" json:"mcp_statuses"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
 	Agents        []Agent   `gorm:"foreignKey:TeamID;constraint:OnDelete:CASCADE" json:"agents,omitempty"`
@@ -178,6 +180,53 @@ const (
 	ScheduleRunStatusSuccess = "success"
 	ScheduleRunStatusFailed  = "failed"
 	ScheduleRunStatusTimeout = "timeout"
+)
+
+// Webhook represents an HTTP webhook endpoint that triggers a team execution.
+type Webhook struct {
+	ID              string       `gorm:"primaryKey;size:36" json:"id"`
+	Name            string       `gorm:"not null;size:255" json:"name"`
+	TeamID          string       `gorm:"not null;size:36" json:"team_id"`
+	PromptTemplate  string       `gorm:"type:text;not null" json:"prompt_template"`
+	SecretTokenHash string       `gorm:"not null;size:64" json:"-"`
+	SecretPrefix    string       `gorm:"size:12" json:"secret_prefix"`
+	Enabled         bool         `gorm:"default:true" json:"enabled"`
+	TimeoutSeconds  int          `gorm:"default:3600" json:"timeout_seconds"`
+	MaxConcurrent   int          `gorm:"default:1" json:"max_concurrent"`
+	LastTriggeredAt *time.Time   `json:"last_triggered_at"`
+	Status          string       `gorm:"size:20;default:'idle'" json:"status"`
+	CreatedAt       time.Time    `json:"created_at"`
+	UpdatedAt       time.Time    `json:"updated_at"`
+	Team            Team         `gorm:"foreignKey:TeamID;constraint:OnDelete:CASCADE" json:"team,omitempty"`
+	Runs            []WebhookRun `gorm:"foreignKey:WebhookID;constraint:OnDelete:CASCADE" json:"runs,omitempty"`
+}
+
+// WebhookRun records a single execution triggered by a webhook.
+type WebhookRun struct {
+	ID               string     `gorm:"primaryKey;size:36" json:"id"`
+	WebhookID        string     `gorm:"not null;size:36;index" json:"webhook_id"`
+	StartedAt        time.Time  `json:"started_at"`
+	FinishedAt       *time.Time `json:"finished_at"`
+	Status           string     `gorm:"size:20;default:'running'" json:"status"`
+	Error            string     `gorm:"type:text" json:"error"`
+	PromptSent       string     `gorm:"type:text" json:"prompt_sent"`
+	ResponseReceived string     `gorm:"type:text" json:"response_received"`
+	RequestPayload   string     `gorm:"type:text" json:"request_payload"`
+	CallerIP         string     `gorm:"size:45" json:"caller_ip"`
+}
+
+// Valid webhook statuses.
+const (
+	WebhookStatusIdle    = "idle"
+	WebhookStatusRunning = "running"
+)
+
+// Valid webhook run statuses.
+const (
+	WebhookRunStatusRunning = "running"
+	WebhookRunStatusSuccess = "success"
+	WebhookRunStatusFailed  = "failed"
+	WebhookRunStatusTimeout = "timeout"
 )
 
 // Valid providers.

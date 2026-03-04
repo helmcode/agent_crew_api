@@ -166,6 +166,9 @@ func startClaude(ctx context.Context, cfg *AgentConfig, workDir string, natsClie
 	// Install skills.
 	installSkillsFromEnv(natsClient, cfg)
 
+	// Write MCP config file.
+	writeMcpConfig(workDir, "claude", natsClient, cfg.Agent.Name, cfg.Agent.Team)
+
 	// Container validation.
 	checks := runContainerValidation(workDir, claudeDir, os.Getenv("AGENT_SKILLS_INSTALL") != "", os.Getenv("AGENT_SUB_AGENT_FILES") != "")
 	publishValidationResults(natsClient, cfg.Agent.Name, cfg.Agent.Team, checks)
@@ -200,6 +203,9 @@ func startOpenCode(ctx context.Context, cfg *AgentConfig, workDir string, natsCl
 
 	// Skills are always installed to .claude/skills/ — OpenCode reads them natively.
 	installSkillsFromEnv(natsClient, cfg)
+
+	// Write MCP config file.
+	writeMcpConfig(workDir, "opencode", natsClient, cfg.Agent.Name, cfg.Agent.Team)
 
 	// Container validation for OpenCode layout.
 	checks := runOpenCodeContainerValidation(workDir, claudeDir, os.Getenv("AGENT_SKILLS_INSTALL") != "", os.Getenv("AGENT_SUB_AGENT_FILES") != "")
@@ -413,6 +419,34 @@ func runContainerValidation(workDir, claudeDir string, skillsConfigured, subAgen
 		checks = append(checks, checkSkillsDir(claudeDir)...)
 	}
 
+	// Check 4: MCP config file exists (only if MCP servers were configured).
+	if os.Getenv("AGENT_MCP_SERVERS") != "" {
+		mcpPath := filepath.Join(workDir, ".mcp.json")
+		if _, err := os.Stat(mcpPath); err != nil {
+			checks = append(checks, protocol.ValidationCheck{
+				Name:    "mcp_config",
+				Status:  protocol.ValidationError,
+				Message: fmt.Sprintf("MCP config not found at %s", mcpPath),
+			})
+		} else {
+			// Verify it's valid JSON.
+			data, readErr := os.ReadFile(mcpPath)
+			if readErr != nil || !json.Valid(data) {
+				checks = append(checks, protocol.ValidationCheck{
+					Name:    "mcp_config",
+					Status:  protocol.ValidationError,
+					Message: "MCP config file exists but is not valid JSON",
+				})
+			} else {
+				checks = append(checks, protocol.ValidationCheck{
+					Name:    "mcp_config",
+					Status:  protocol.ValidationOK,
+					Message: "MCP config file exists and is valid JSON",
+				})
+			}
+		}
+	}
+
 	return checks
 }
 
@@ -460,6 +494,45 @@ func runOpenCodeContainerValidation(workDir, claudeDir string, skillsConfigured,
 	// Check 3: skills installed in .claude/skills/ (skills always go to .claude/).
 	if skillsConfigured {
 		checks = append(checks, checkSkillsDir(claudeDir)...)
+	}
+
+	// Check 4: MCP config in opencode.json (only if MCP servers were configured).
+	if os.Getenv("AGENT_MCP_SERVERS") != "" {
+		mcpPath := filepath.Join(workDir, "opencode.json")
+		if _, err := os.Stat(mcpPath); err != nil {
+			checks = append(checks, protocol.ValidationCheck{
+				Name:    "mcp_config",
+				Status:  protocol.ValidationError,
+				Message: fmt.Sprintf("OpenCode MCP config not found at %s", mcpPath),
+			})
+		} else {
+			data, readErr := os.ReadFile(mcpPath)
+			if readErr != nil || !json.Valid(data) {
+				checks = append(checks, protocol.ValidationCheck{
+					Name:    "mcp_config",
+					Status:  protocol.ValidationError,
+					Message: "OpenCode config file exists but is not valid JSON",
+				})
+			} else {
+				// Verify mcp section exists.
+				var cfg map[string]interface{}
+				if err := json.Unmarshal(data, &cfg); err == nil {
+					if _, hasMcp := cfg["mcp"]; hasMcp {
+						checks = append(checks, protocol.ValidationCheck{
+							Name:    "mcp_config",
+							Status:  protocol.ValidationOK,
+							Message: "OpenCode config has MCP section",
+						})
+					} else {
+						checks = append(checks, protocol.ValidationCheck{
+							Name:    "mcp_config",
+							Status:  protocol.ValidationWarning,
+							Message: "OpenCode config exists but has no mcp section",
+						})
+					}
+				}
+			}
+		}
 	}
 
 	return checks

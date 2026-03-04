@@ -214,6 +214,11 @@ func (b *Bridge) processEvent(event *provider.StreamEvent, currentResult *string
 			}
 		}
 
+	case "reasoning":
+		// Publish reasoning (chain-of-thought) as activity events for visibility
+		// but do NOT accumulate into currentResult to prevent leaking into chat.
+		b.publishActivityEvent(claudeEvent, "reasoning")
+
 	case "assistant":
 		// Publish assistant messages as activity events so the UI shows
 		// intermediate thinking/responses in real time.
