@@ -234,3 +234,88 @@ const (
 	ProviderClaude   = "claude"
 	ProviderOpenCode = "opencode"
 )
+
+// PostAction defines a reusable HTTP action that fires after a trigger completes.
+type PostAction struct {
+	ID             string    `gorm:"primaryKey;size:36" json:"id"`
+	Name           string    `gorm:"not null;size:255" json:"name"`
+	Description    string    `gorm:"size:1024" json:"description"`
+	Method         string    `gorm:"not null;size:10" json:"method"`
+	URL            string    `gorm:"not null;type:text" json:"url"`
+	Headers        JSON      `gorm:"type:text" json:"headers"`
+	BodyTemplate   string    `gorm:"type:text" json:"body_template"`
+	AuthType       string    `gorm:"size:20;default:'none'" json:"auth_type"`
+	AuthConfig     JSON      `gorm:"type:text" json:"auth_config"`
+	TimeoutSeconds int       `gorm:"default:30" json:"timeout_seconds"`
+	RetryCount     int       `gorm:"default:0" json:"retry_count"`
+	Enabled        bool      `gorm:"default:true" json:"enabled"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+	Bindings       []PostActionBinding `gorm:"foreignKey:PostActionID;constraint:OnDelete:CASCADE" json:"bindings,omitempty"`
+}
+
+// PostActionBinding links a PostAction to a specific trigger (webhook or schedule).
+type PostActionBinding struct {
+	ID           string    `gorm:"primaryKey;size:36" json:"id"`
+	PostActionID string    `gorm:"not null;size:36;index;uniqueIndex:idx_binding_unique" json:"post_action_id"`
+	TriggerType  string    `gorm:"not null;size:20;uniqueIndex:idx_binding_unique" json:"trigger_type"`
+	TriggerID    string    `gorm:"not null;size:36;index;uniqueIndex:idx_binding_unique" json:"trigger_id"`
+	TriggerOn    string    `gorm:"not null;size:20;uniqueIndex:idx_binding_unique" json:"trigger_on"`
+	BodyOverride string    `gorm:"type:text" json:"body_override,omitempty"`
+	Enabled      bool      `gorm:"default:true" json:"enabled"`
+	CreatedAt    time.Time `json:"created_at"`
+	PostAction   PostAction `gorm:"foreignKey:PostActionID" json:"post_action,omitempty"`
+}
+
+// PostActionRun records a single execution of a post-action.
+type PostActionRun struct {
+	ID           string     `gorm:"primaryKey;size:36" json:"id"`
+	PostActionID string     `gorm:"not null;size:36;index" json:"post_action_id"`
+	BindingID    string     `gorm:"not null;size:36;index" json:"binding_id"`
+	SourceType   string     `gorm:"size:20" json:"source_type"`
+	SourceRunID  string     `gorm:"size:36" json:"source_run_id"`
+	TriggeredAt  time.Time  `json:"triggered_at"`
+	CompletedAt  *time.Time `json:"completed_at"`
+	Status       string     `gorm:"size:20" json:"status"`
+	StatusCode   int        `json:"status_code"`
+	ResponseBody string     `gorm:"type:text" json:"response_body"`
+	Error        string     `gorm:"type:text" json:"error"`
+	RequestSent  string     `gorm:"type:text" json:"request_sent"`
+}
+
+// Valid HTTP methods for PostAction.
+const (
+	PostActionMethodGET    = "GET"
+	PostActionMethodPOST   = "POST"
+	PostActionMethodPUT    = "PUT"
+	PostActionMethodPATCH  = "PATCH"
+	PostActionMethodDELETE = "DELETE"
+)
+
+// Valid auth types for PostAction.
+const (
+	PostActionAuthNone   = "none"
+	PostActionAuthBearer = "bearer"
+	PostActionAuthBasic  = "basic"
+	PostActionAuthHeader = "header"
+)
+
+// Valid trigger types for PostActionBinding.
+const (
+	PostActionTriggerWebhook  = "webhook"
+	PostActionTriggerSchedule = "schedule"
+)
+
+// Valid trigger-on conditions for PostActionBinding.
+const (
+	PostActionTriggerOnSuccess = "success"
+	PostActionTriggerOnFailure = "failure"
+	PostActionTriggerOnAny     = "any"
+)
+
+// Valid statuses for PostActionRun.
+const (
+	PostActionRunStatusSuccess  = "success"
+	PostActionRunStatusFailed   = "failed"
+	PostActionRunStatusRetrying = "retrying"
+)

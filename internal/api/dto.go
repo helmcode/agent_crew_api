@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+
+	"github.com/helmcode/agent-crew/internal/models"
 )
 
 // CreateTeamRequest is the payload for POST /api/teams.
@@ -342,6 +344,58 @@ func validateSingleSkillConfig(repoURL, skillName string) error {
 	}
 
 	return nil
+}
+
+// CreatePostActionRequest is the payload for POST /api/post-actions.
+type CreatePostActionRequest struct {
+	Name           string            `json:"name"`
+	Description    string            `json:"description"`
+	Method         string            `json:"method"`
+	URL            string            `json:"url"`
+	Headers        map[string]string `json:"headers"`
+	BodyTemplate   string            `json:"body_template"`
+	AuthType       string            `json:"auth_type"`
+	AuthConfig     map[string]string `json:"auth_config"`
+	TimeoutSeconds *int              `json:"timeout_seconds"`
+	RetryCount     *int              `json:"retry_count"`
+	Enabled        *bool             `json:"enabled"`
+}
+
+// UpdatePostActionRequest is the payload for PUT /api/post-actions/:id.
+type UpdatePostActionRequest struct {
+	Name           *string           `json:"name"`
+	Description    *string           `json:"description"`
+	Method         *string           `json:"method"`
+	URL            *string           `json:"url"`
+	Headers        map[string]string `json:"headers"`
+	BodyTemplate   *string           `json:"body_template"`
+	AuthType       *string           `json:"auth_type"`
+	AuthConfig     map[string]string `json:"auth_config"`
+	TimeoutSeconds *int              `json:"timeout_seconds"`
+	RetryCount     *int              `json:"retry_count"`
+	Enabled        *bool             `json:"enabled"`
+}
+
+// CreateBindingRequest is the payload for POST /api/post-actions/:id/bindings.
+type CreateBindingRequest struct {
+	TriggerType  string `json:"trigger_type"`
+	TriggerID    string `json:"trigger_id"`
+	TriggerOn    string `json:"trigger_on"`
+	BodyOverride string `json:"body_override"`
+	Enabled      *bool  `json:"enabled"`
+}
+
+// UpdateBindingRequest is the payload for PUT /api/post-actions/:id/bindings/:bid.
+type UpdateBindingRequest struct {
+	TriggerOn    *string `json:"trigger_on"`
+	BodyOverride *string `json:"body_override"`
+	Enabled      *bool   `json:"enabled"`
+}
+
+// PostActionBindingResponse enriches a binding with the trigger's display name.
+type PostActionBindingResponse struct {
+	models.PostActionBinding
+	TriggerName string `json:"trigger_name"`
 }
 
 // validMcpNameRe matches safe MCP server names: alphanumeric, hyphens, underscores.

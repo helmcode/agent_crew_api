@@ -18,6 +18,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/helmcode/agent-crew/internal/models"
+	"github.com/helmcode/agent-crew/internal/postaction"
 	"github.com/helmcode/agent-crew/internal/protocol"
 )
 
@@ -443,6 +444,24 @@ func (s *Server) TriggerWebhook(c *fiber.Ctx) error {
 		s.db.Model(&models.WebhookRun{}).Where("id = ?", run.ID).Updates(updates)
 		s.updateWebhookIdleStatus(webhook.ID)
 
+		// Fire post-actions (fire-and-forget, uses goroutine internally).
+		runStatus := updates["status"].(string)
+		runError, _ := updates["error"].(string)
+		runResponse, _ := updates["response_received"].(string)
+		s.postActionExec.ExecutePostActions(postaction.PostActionContext{
+			SourceType:  "webhook",
+			TriggerID:   webhook.ID,
+			RunID:       run.ID,
+			Status:      runStatus,
+			Response:    runResponse,
+			Error:       runError,
+			TriggerName: webhook.Name,
+			TeamName:    team.Name,
+			Prompt:      prompt,
+			StartedAt:   run.StartedAt.Format(time.RFC3339),
+			FinishedAt:  finished.Format(time.RFC3339),
+		})
+
 		return c.JSON(resp)
 	}
 
@@ -482,6 +501,24 @@ func (s *Server) executeWebhookAsync(webhook models.Webhook, run models.WebhookR
 
 		s.db.Model(&models.WebhookRun{}).Where("id = ?", run.ID).Updates(updates)
 		s.updateWebhookIdleStatus(webhook.ID)
+
+		// Fire post-actions (fire-and-forget).
+		runStatus := updates["status"].(string)
+		runError, _ := updates["error"].(string)
+		runResponse, _ := updates["response_received"].(string)
+		s.postActionExec.ExecutePostActions(postaction.PostActionContext{
+			SourceType:  "webhook",
+			TriggerID:   webhook.ID,
+			RunID:       run.ID,
+			Status:      runStatus,
+			Response:    runResponse,
+			Error:       runError,
+			TriggerName: webhook.Name,
+			TeamName:    team.Name,
+			Prompt:      prompt,
+			StartedAt:   run.StartedAt.Format(time.RFC3339),
+			FinishedAt:  finished.Format(time.RFC3339),
+		})
 	}()
 }
 

@@ -15,6 +15,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/helmcode/agent-crew/internal/models"
+	"github.com/helmcode/agent-crew/internal/postaction"
 	"github.com/helmcode/agent-crew/internal/protocol"
 	"github.com/helmcode/agent-crew/internal/runtime"
 )
@@ -56,6 +57,9 @@ type Executor struct {
 	// PollInterval controls how frequently the executor polls for state changes.
 	// Defaults to 10 seconds if zero.
 	PollInterval time.Duration
+
+	// PostActionExec fires post-actions after schedule runs complete.
+	PostActionExec *postaction.Executor
 }
 
 // NewExecutor creates an Executor with the given dependencies.
@@ -67,9 +71,10 @@ func NewExecutor(db *gorm.DB, rt runtime.AgentRuntime) *Executor {
 		}
 	}
 	return &Executor{
-		DB:      db,
-		Runtime: rt,
-		Timeout: timeout,
+		DB:             db,
+		Runtime:        rt,
+		Timeout:        timeout,
+		PostActionExec: postaction.NewExecutor(db),
 	}
 }
 
@@ -144,6 +149,40 @@ func (e *Executor) Execute(ctx context.Context, schedule models.Schedule) {
 		Updates(runUpdates).Error; dbErr != nil {
 		slog.Error("executor: failed to update run record",
 			"run_id", runID, "error", dbErr)
+	}
+
+	// Fire post-actions (fire-and-forget).
+	if e.PostActionExec != nil {
+		// Look up team name for the post-action context.
+		var team models.Team
+		teamName := ""
+		if dbErr := e.DB.First(&team, "id = ?", schedule.TeamID).Error; dbErr == nil {
+			teamName = team.Name
+		}
+
+		// Read the finalized run to get response_received.
+		var finalRun models.ScheduleRun
+		response := ""
+		if dbErr := e.DB.First(&finalRun, "id = ?", runID).Error; dbErr == nil {
+			response = finalRun.ResponseReceived
+		}
+
+		runStatus, _ := runUpdates["status"].(string)
+		runError, _ := runUpdates["error"].(string)
+
+		e.PostActionExec.ExecutePostActions(postaction.PostActionContext{
+			SourceType:  "schedule",
+			TriggerID:   schedule.ID,
+			RunID:       runID,
+			Status:      runStatus,
+			Response:    response,
+			Error:       runError,
+			TriggerName: schedule.Name,
+			TeamName:    teamName,
+			Prompt:      schedule.Prompt,
+			StartedAt:   now.Format(time.RFC3339),
+			FinishedAt:  finished.Format(time.RFC3339),
+		})
 	}
 }
 

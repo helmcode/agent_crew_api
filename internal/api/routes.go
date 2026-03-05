@@ -68,6 +68,22 @@ func (s *Server) registerRoutes() {
 	webhooks.Get("/:id/runs", s.ListWebhookRuns)
 	webhooks.Get("/:id/runs/:runId", s.GetWebhookRun)
 
+	// Reverse lookups: post-actions bound to a specific webhook or schedule.
+	webhooks.Get("/:id/post-actions", s.GetWebhookPostActions)
+	schedules.Get("/:id/post-actions", s.GetSchedulePostActions)
+
+	// Post-Actions.
+	postActions := api.Group("/post-actions")
+	postActions.Get("/", s.ListPostActions)
+	postActions.Post("/", s.CreatePostAction)
+	postActions.Get("/:id", s.GetPostAction)
+	postActions.Put("/:id", s.UpdatePostAction)
+	postActions.Delete("/:id", s.DeletePostAction)
+	postActions.Post("/:id/bindings", s.CreateBinding)
+	postActions.Put("/:id/bindings/:bid", s.UpdateBinding)
+	postActions.Delete("/:id/bindings/:bid", s.DeleteBinding)
+	postActions.Get("/:id/runs", s.ListPostActionRuns)
+
 	// Webhook trigger (outside /api, authenticated by token).
 	s.App.Post("/webhook/trigger/:token", s.TriggerWebhook)
 

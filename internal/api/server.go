@@ -12,6 +12,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/helmcode/agent-crew/internal/models"
+	"github.com/helmcode/agent-crew/internal/postaction"
 	"github.com/helmcode/agent-crew/internal/runtime"
 )
 
@@ -28,6 +29,9 @@ type Server struct {
 
 	// webhookMaxConcurrent is the global limit of concurrent webhook runs.
 	webhookMaxConcurrent int
+
+	// postActionExec fires post-actions after webhook/schedule runs complete.
+	postActionExec *postaction.Executor
 }
 
 // NewServer creates a Fiber app with middleware and registers all routes.
@@ -53,6 +57,7 @@ func NewServer(db *gorm.DB, rt runtime.AgentRuntime) *Server {
 		runtime:              rt,
 		relays:               make(map[string]context.CancelFunc),
 		webhookMaxConcurrent: 20,
+		postActionExec:       postaction.NewExecutor(db),
 	}
 
 	s.registerRoutes()
