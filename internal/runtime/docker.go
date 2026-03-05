@@ -361,7 +361,7 @@ func (d *DockerRuntime) startNATS(ctx context.Context, teamName, netName string)
 		&container.HostConfig{
 			PortBindings: nat.PortMap{
 				"4222/tcp": []nat.PortBinding{
-					{HostIP: "127.0.0.1", HostPort: "0"}, // random available port
+					{HostIP: "0.0.0.0", HostPort: "0"}, // all interfaces — API container reaches host via gateway IP
 				},
 			},
 			RestartPolicy: container.RestartPolicy{
