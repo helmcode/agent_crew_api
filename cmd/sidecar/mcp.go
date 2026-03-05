@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -251,22 +253,25 @@ func validateMcpServer(srv protocol.McpServerConfig) error {
 	return nil
 }
 
-// warmMcpServers pre-warms stdio MCP servers by running their commands once.
-// This triggers package downloads and compilation (e.g. uvx installs Python
-// packages, npx downloads npm packages) so they are cached before the agent
-// CLI starts. HTTP/SSE servers are skipped as they don't need local setup.
+// warmMcpServers pre-warms stdio MCP servers by running their commands once
+// and checks HTTP/SSE server reachability. Updates statuses to "error" when
+// a server is definitively broken (command not found, URL unreachable).
 func warmMcpServers(servers []protocol.McpServerConfig, statuses []protocol.McpServerStatus) {
 	for _, srv := range servers {
-		if srv.Transport != "stdio" {
-			continue
+		var err error
+		switch srv.Transport {
+		case "stdio":
+			err = warmStdioServer(srv)
+		case "http", "sse":
+			err = checkRemoteServer(srv)
 		}
-		if err := warmStdioServer(srv); err != nil {
-			slog.Warn("MCP server pre-warming failed (agent may timeout on first use)",
-				"name", srv.Name, "error", err)
-			// Update the corresponding status with a warning.
+		if err != nil {
+			slog.Warn("MCP server health check failed",
+				"name", srv.Name, "transport", srv.Transport, "error", err)
 			for i := range statuses {
 				if statuses[i].Name == srv.Name && statuses[i].Status == "configured" {
-					statuses[i].Error = "pre-warming failed: " + err.Error()
+					statuses[i].Status = "error"
+					statuses[i].Error = err.Error()
 				}
 			}
 		}
@@ -276,6 +281,13 @@ func warmMcpServers(servers []protocol.McpServerConfig, statuses []protocol.McpS
 // warmStdioServer runs a single stdio MCP server command with --help to trigger
 // package manager caching. Uses a 3-minute timeout to accommodate first-time
 // downloads and C extension compilation (e.g. pglast via uvx postgres-mcp).
+//
+// Returns an error only when the command definitively cannot run:
+//   - Command not found / permission denied (non-ExitError)
+//   - Timeout exceeded
+//   - Output contains known package-not-found indicators
+//
+// A non-zero exit code alone is acceptable (many servers don't support --help).
 func warmStdioServer(srv protocol.McpServerConfig) error {
 	args := make([]string, len(srv.Args))
 	copy(args, srv.Args)
@@ -300,9 +312,21 @@ func warmStdioServer(srv protocol.McpServerConfig) error {
 		return fmt.Errorf("timed out after %s (packages may not be fully cached)", elapsed)
 	}
 
-	// A non-zero exit code is acceptable — the goal is to trigger the
-	// download/compilation, not to run the server successfully.
 	if err != nil {
+		// Distinguish between "command not found" and "exited with non-zero".
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) {
+			// Not an ExitError → command could not be started at all
+			// (e.g. not found, permission denied).
+			return fmt.Errorf("command failed to execute: %v", err)
+		}
+
+		// Check output for known package-not-found patterns from npx/uvx.
+		outStr := strings.ToLower(string(output))
+		if containsPackageNotFound(outStr) {
+			return fmt.Errorf("package not found: %s", truncateTail(string(output), 300))
+		}
+
 		slog.Info("MCP server pre-warming finished with non-zero exit (expected for --help)",
 			"name", srv.Name, "elapsed", elapsed, "error", err,
 			"output_tail", truncateTail(string(output), 500))
@@ -310,6 +334,52 @@ func warmStdioServer(srv protocol.McpServerConfig) error {
 		slog.Info("MCP server pre-warming completed", "name", srv.Name, "elapsed", elapsed)
 	}
 
+	return nil
+}
+
+// containsPackageNotFound checks command output for known package-not-found
+// error patterns from npm/npx/uvx/pip.
+func containsPackageNotFound(output string) bool {
+	patterns := []string{
+		"err! 404",          // npm ERR! 404
+		"e404",              // npm error code E404
+		"not found",         // generic
+		"enoent",            // npm ENOENT
+		"no such package",   // uvx
+		"no matching",       // pip/uvx no matching distribution
+		"could not find",    // generic
+		"unknown command",   // uvx unknown command
+		"error: no such",    // various
+	}
+	for _, p := range patterns {
+		if strings.Contains(output, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// checkRemoteServer performs a basic HTTP connectivity check for http/sse MCP servers.
+func checkRemoteServer(srv protocol.McpServerConfig) error {
+	client := &http.Client{Timeout: 10 * time.Second}
+	req, err := http.NewRequest("HEAD", srv.URL, nil)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %v", err)
+	}
+	for k, v := range srv.Headers {
+		req.Header.Set(k, v)
+	}
+
+	slog.Info("checking remote MCP server", "name", srv.Name, "url", srv.URL)
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("server unreachable: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Accept any response (even 4xx/5xx) — the server is reachable.
+	// MCP endpoints may not support HEAD, so we only care about connectivity.
+	slog.Info("remote MCP server reachable", "name", srv.Name, "status", resp.StatusCode)
 	return nil
 }
 
