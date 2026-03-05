@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -156,13 +158,69 @@ func (d *DockerRuntime) GetNATSConnectURL(ctx context.Context, teamName string) 
 }
 
 // natsHostAddress returns the address to reach Docker host-mapped ports.
-// Inside a container it uses host.docker.internal; on the host it uses 127.0.0.1.
+// Inside a container it tries host.docker.internal first (works on Docker
+// Desktop and Linux with extra_hosts configured). If that hostname does not
+// resolve (common on bare Linux without extra_hosts), it falls back to the
+// default gateway IP which is the Docker host.
 func natsHostAddress() string {
-	// /.dockerenv exists inside Docker containers.
-	if _, err := os.Stat("/.dockerenv"); err == nil {
+	// Not inside a container — use localhost directly.
+	if _, err := os.Stat("/.dockerenv"); err != nil {
+		return "127.0.0.1"
+	}
+
+	// Inside a container: try host.docker.internal first.
+	if addrs, err := net.LookupHost("host.docker.internal"); err == nil && len(addrs) > 0 {
 		return "host.docker.internal"
 	}
-	return "127.0.0.1"
+
+	// Fallback: read the default gateway from /proc/net/route (Linux).
+	// The gateway is the Docker host IP on the bridge network.
+	if gw := defaultGateway(); gw != "" {
+		slog.Info("host.docker.internal not available, using default gateway", "gateway", gw)
+		return gw
+	}
+
+	// Last resort.
+	return "172.17.0.1"
+}
+
+// defaultGateway reads the default gateway IP from /proc/net/route.
+func defaultGateway() string {
+	data, err := os.ReadFile("/proc/net/route")
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n")[1:] {
+		fields := strings.Fields(line)
+		if len(fields) < 3 {
+			continue
+		}
+		// Destination 00000000 = default route; field[2] is the gateway in hex.
+		if fields[1] == "00000000" {
+			gw, err := hexToIP(fields[2])
+			if err == nil {
+				return gw
+			}
+		}
+	}
+	return ""
+}
+
+// hexToIP converts a little-endian hex IP (from /proc/net/route) to dotted notation.
+func hexToIP(hex string) (string, error) {
+	if len(hex) != 8 {
+		return "", fmt.Errorf("invalid hex IP: %s", hex)
+	}
+	var bytes [4]uint64
+	for i := 0; i < 4; i++ {
+		b, err := strconv.ParseUint(hex[i*2:i*2+2], 16, 8)
+		if err != nil {
+			return "", err
+		}
+		bytes[i] = b
+	}
+	// /proc/net/route uses little-endian on x86.
+	return fmt.Sprintf("%d.%d.%d.%d", bytes[0], bytes[1], bytes[2], bytes[3]), nil
 }
 
 // DockerRuntime implements AgentRuntime using the Docker Engine API.
