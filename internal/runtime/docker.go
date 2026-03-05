@@ -479,6 +479,19 @@ func (d *DockerRuntime) DeployAgent(ctx context.Context, config AgentConfig) (*A
 		resources.NanoCPUs = parseCPULimit(config.Resources.CPU)
 	}
 
+	// Ensure the workspace directory (and all files written by the API) is
+	// writable by the non-root agent user inside the container. The API runs
+	// as root but the agent container runs as uid 999 (agentcrew), so any
+	// files created on the host via SetupAgentWorkspace / SetupSubAgentFile
+	// would be owned by root with 0755/0644 permissions — unwritable by the
+	// container user. We fix this by making the entire workspace
+	// world-writable before mounting it.
+	if config.WorkspacePath != "" {
+		if err := makeWorkspaceWritable(config.WorkspacePath); err != nil {
+			slog.Warn("failed to make workspace writable", "path", config.WorkspacePath, "error", err)
+		}
+	}
+
 	// Determine workspace bind: use host path (bind mount) if provided,
 	// otherwise fall back to the shared Docker volume.
 	binds := []string{}
@@ -700,6 +713,22 @@ func (d *DockerRuntime) WriteFile(ctx context.Context, containerID string, path 
 	}
 
 	return nil
+}
+
+// makeWorkspaceWritable recursively sets permissions on the workspace directory
+// so that the non-root agent user (uid 999) inside the container can write to it.
+// The API creates workspace files as root, but the agent container runs as
+// agentcrew:999 — without this step, the sidecar gets "permission denied" errors.
+func makeWorkspaceWritable(workspacePath string) error {
+	return filepath.Walk(workspacePath, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return os.Chmod(path, 0777)
+		}
+		return os.Chmod(path, 0666)
+	})
 }
 
 // parseMemoryLimit converts a human-readable memory string (e.g. "512m", "1g")
