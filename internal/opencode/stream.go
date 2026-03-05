@@ -125,7 +125,8 @@ const maxDataLines = 1000
 // Blocks until the stream is closed or an error occurs.
 func ParseSSEStream(r io.Reader, ch chan<- SSEEvent) {
 	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
+	const maxTokenSize = 16 * 1024 * 1024
+	scanner.Buffer(make([]byte, 0, 64*1024), maxTokenSize)
 
 	var eventType string
 	var dataLines []string

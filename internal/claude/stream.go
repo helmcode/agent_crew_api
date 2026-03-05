@@ -101,8 +101,11 @@ func FormatToolResult(output string, isError bool) string {
 // Uses non-blocking sends to prevent goroutine leaks if the channel buffer is full.
 func ParseStreamOutput(r io.Reader, ch chan<- StreamEvent) string {
 	scanner := bufio.NewScanner(r)
-	// Allow large lines (Claude can produce verbose JSON).
-	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
+	// Allow large lines — Claude can produce verbose JSON when tool results
+	// contain bulk data (e.g. large SQL query outputs, file contents).
+	// 16MB should handle even very large tool results.
+	const maxTokenSize = 16 * 1024 * 1024
+	scanner.Buffer(make([]byte, 0, 64*1024), maxTokenSize)
 
 	var lastSessionID string
 
