@@ -224,6 +224,9 @@ func startOpenCode(ctx context.Context, cfg *AgentConfig, workDir string, natsCl
 	cmd.Dir = workDir
 	cmd.Env = append(os.Environ(),
 		"OPENCODE_SERVER_PASSWORD="+password,
+		// Explicitly point to the config file so OpenCode finds it even
+		// when the workspace is not a git repository.
+		"OPENCODE_CONFIG="+filepath.Join(workDir, "opencode.json"),
 	)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
