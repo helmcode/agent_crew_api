@@ -8,6 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     jq \
     ca-certificates \
     build-essential \
+    libffi-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Install OpenCode CLI and skills package manager
