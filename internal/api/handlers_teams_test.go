@@ -201,9 +201,9 @@ func TestLoadSettingsEnv_PrimaryKeys(t *testing.T) {
 	srv, _ := setupTestServer(t)
 
 	// Set API key in settings.
-	srv.db.Create(&models.Settings{Key: "ANTHROPIC_API_KEY", Value: "sk-test-123"})
+	srv.db.Create(&models.Settings{OrgID: "00000000-0000-0000-0000-000000000000", Key: "ANTHROPIC_API_KEY", Value: "sk-test-123"})
 
-	env := srv.LoadSettingsEnv()
+	env := srv.LoadSettingsEnv("00000000-0000-0000-0000-000000000000")
 
 	if env["ANTHROPIC_API_KEY"] != "sk-test-123" {
 		t.Errorf("ANTHROPIC_API_KEY: got %q, want 'sk-test-123'", env["ANTHROPIC_API_KEY"])
@@ -213,9 +213,9 @@ func TestLoadSettingsEnv_PrimaryKeys(t *testing.T) {
 func TestLoadSettingsEnv_OAuthToken(t *testing.T) {
 	srv, _ := setupTestServer(t)
 
-	srv.db.Create(&models.Settings{Key: "CLAUDE_CODE_OAUTH_TOKEN", Value: "oauth-abc"})
+	srv.db.Create(&models.Settings{OrgID: "00000000-0000-0000-0000-000000000000", Key: "CLAUDE_CODE_OAUTH_TOKEN", Value: "oauth-abc"})
 
-	env := srv.LoadSettingsEnv()
+	env := srv.LoadSettingsEnv("00000000-0000-0000-0000-000000000000")
 
 	if env["CLAUDE_CODE_OAUTH_TOKEN"] != "oauth-abc" {
 		t.Errorf("CLAUDE_CODE_OAUTH_TOKEN: got %q, want 'oauth-abc'", env["CLAUDE_CODE_OAUTH_TOKEN"])
@@ -226,9 +226,9 @@ func TestLoadSettingsEnv_AliasMapping(t *testing.T) {
 	srv, _ := setupTestServer(t)
 
 	// Set the alias key (ANTHROPIC_AUTH_TOKEN maps to CLAUDE_CODE_OAUTH_TOKEN).
-	srv.db.Create(&models.Settings{Key: "ANTHROPIC_AUTH_TOKEN", Value: "alias-token"})
+	srv.db.Create(&models.Settings{OrgID: "00000000-0000-0000-0000-000000000000", Key: "ANTHROPIC_AUTH_TOKEN", Value: "alias-token"})
 
-	env := srv.LoadSettingsEnv()
+	env := srv.LoadSettingsEnv("00000000-0000-0000-0000-000000000000")
 
 	// Should be mapped to the target key.
 	if env["CLAUDE_CODE_OAUTH_TOKEN"] != "alias-token" {
@@ -240,10 +240,10 @@ func TestLoadSettingsEnv_PrimaryOverridesAlias(t *testing.T) {
 	srv, _ := setupTestServer(t)
 
 	// Set both primary and alias keys.
-	srv.db.Create(&models.Settings{Key: "CLAUDE_CODE_OAUTH_TOKEN", Value: "primary-token"})
-	srv.db.Create(&models.Settings{Key: "ANTHROPIC_AUTH_TOKEN", Value: "alias-token"})
+	srv.db.Create(&models.Settings{OrgID: "00000000-0000-0000-0000-000000000000", Key: "CLAUDE_CODE_OAUTH_TOKEN", Value: "primary-token"})
+	srv.db.Create(&models.Settings{OrgID: "00000000-0000-0000-0000-000000000000", Key: "ANTHROPIC_AUTH_TOKEN", Value: "alias-token"})
 
-	env := srv.LoadSettingsEnv()
+	env := srv.LoadSettingsEnv("00000000-0000-0000-0000-000000000000")
 
 	// Primary key should take precedence.
 	if env["CLAUDE_CODE_OAUTH_TOKEN"] != "primary-token" {
@@ -254,7 +254,7 @@ func TestLoadSettingsEnv_PrimaryOverridesAlias(t *testing.T) {
 func TestLoadSettingsEnv_Empty(t *testing.T) {
 	srv, _ := setupTestServer(t)
 
-	env := srv.LoadSettingsEnv()
+	env := srv.LoadSettingsEnv("00000000-0000-0000-0000-000000000000")
 
 	if len(env) != 0 {
 		t.Errorf("expected empty map, got %v", env)
@@ -713,7 +713,7 @@ func TestDeployTeamAsync_OpenCodeProvider_GeneratesOpenCodeFiles(t *testing.T) {
 	srv, mock := setupTestServer(t)
 
 	// Set OpenCode-compatible API key in settings.
-	srv.db.Create(&models.Settings{Key: "OPENAI_API_KEY", Value: "sk-oai-test-123"})
+	srv.db.Create(&models.Settings{OrgID: "00000000-0000-0000-0000-000000000000", Key: "OPENAI_API_KEY", Value: "sk-oai-test-123"})
 
 	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
 		Name:     "opencode-deploy-team",
@@ -791,8 +791,8 @@ func TestDeployTeamAsync_OpenCodeProvider_ForwardsOpenCodeEnvVars(t *testing.T) 
 	srv, mock := setupTestServer(t)
 
 	// Set OpenCode-specific settings.
-	srv.db.Create(&models.Settings{Key: "OPENAI_API_KEY", Value: "sk-oai-test"})
-	srv.db.Create(&models.Settings{Key: "OPENCODE_MODEL", Value: "gpt-4o"})
+	srv.db.Create(&models.Settings{OrgID: "00000000-0000-0000-0000-000000000000", Key: "OPENAI_API_KEY", Value: "sk-oai-test"})
+	srv.db.Create(&models.Settings{OrgID: "00000000-0000-0000-0000-000000000000", Key: "OPENCODE_MODEL", Value: "gpt-4o"})
 
 	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
 		Name:     "opencode-env-team",
@@ -821,8 +821,8 @@ func TestDeployTeamAsync_ClaudeProvider_DoesNotForwardOpenCodeModel(t *testing.T
 	srv, mock := setupTestServer(t)
 
 	// Set settings that include OpenCode-specific keys.
-	srv.db.Create(&models.Settings{Key: "ANTHROPIC_API_KEY", Value: "sk-ant-test"})
-	srv.db.Create(&models.Settings{Key: "OPENCODE_MODEL", Value: "gpt-4o"})
+	srv.db.Create(&models.Settings{OrgID: "00000000-0000-0000-0000-000000000000", Key: "ANTHROPIC_API_KEY", Value: "sk-ant-test"})
+	srv.db.Create(&models.Settings{OrgID: "00000000-0000-0000-0000-000000000000", Key: "OPENCODE_MODEL", Value: "gpt-4o"})
 
 	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
 		Name:     "claude-no-opencode-env",
@@ -872,7 +872,7 @@ func TestCreateTeam_ProviderPersistedInDB(t *testing.T) {
 func TestDeployTeamAsync_OpenCodeProvider_WithInstructionsMD(t *testing.T) {
 	srv, mock := setupTestServer(t)
 
-	srv.db.Create(&models.Settings{Key: "ANTHROPIC_API_KEY", Value: "sk-ant-test"})
+	srv.db.Create(&models.Settings{OrgID: "00000000-0000-0000-0000-000000000000", Key: "ANTHROPIC_API_KEY", Value: "sk-ant-test"})
 
 	customInstructions := "# Custom Leader Instructions\n\nThese are custom OpenCode instructions.\n"
 	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
@@ -902,7 +902,7 @@ func TestDeployTeamAsync_OpenCodeProvider_WithInstructionsMD(t *testing.T) {
 func TestDeployTeamAsync_OpenCodeProvider_WithSkills(t *testing.T) {
 	srv, mock := setupTestServer(t)
 
-	srv.db.Create(&models.Settings{Key: "OPENAI_API_KEY", Value: "sk-oai-test"})
+	srv.db.Create(&models.Settings{OrgID: "00000000-0000-0000-0000-000000000000", Key: "OPENAI_API_KEY", Value: "sk-oai-test"})
 
 	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
 		Name:     "opencode-skills-team",
@@ -966,7 +966,7 @@ func TestDeployTeamAsync_OpenCodeProvider_WithSkills(t *testing.T) {
 func TestDeployTeamAsync_ClaudeProvider_GeneratesClaudeFiles(t *testing.T) {
 	srv, mock := setupTestServer(t)
 
-	srv.db.Create(&models.Settings{Key: "ANTHROPIC_API_KEY", Value: "sk-ant-test"})
+	srv.db.Create(&models.Settings{OrgID: "00000000-0000-0000-0000-000000000000", Key: "ANTHROPIC_API_KEY", Value: "sk-ant-test"})
 
 	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
 		Name:     "claude-files-team",
@@ -1018,7 +1018,7 @@ func TestDeployTeamAsync_ClaudeProvider_GeneratesClaudeFiles(t *testing.T) {
 func TestDeployTeamAsync_OpenCodeProvider_MultipleWorkers(t *testing.T) {
 	srv, mock := setupTestServer(t)
 
-	srv.db.Create(&models.Settings{Key: "OPENAI_API_KEY", Value: "sk-oai-test"})
+	srv.db.Create(&models.Settings{OrgID: "00000000-0000-0000-0000-000000000000", Key: "OPENAI_API_KEY", Value: "sk-oai-test"})
 
 	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
 		Name:     "opencode-multi-worker",
@@ -1089,7 +1089,7 @@ func TestDeployTeamAsync_ProviderForwardedInAgentConfig(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			srv, mock := setupTestServer(t)
 
-			srv.db.Create(&models.Settings{Key: tt.settingsKey, Value: tt.settingsVal})
+			srv.db.Create(&models.Settings{OrgID: "00000000-0000-0000-0000-000000000000", Key: tt.settingsKey, Value: tt.settingsVal})
 
 			teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
 				Name:     "provider-fwd-" + tt.name,
@@ -1117,7 +1117,7 @@ func TestDeployTeamAsync_ProviderForwardedInAgentConfig(t *testing.T) {
 func TestDeployTeamAsync_ClaudeProvider_DoesNotGenerateOpenCodeFormat(t *testing.T) {
 	srv, mock := setupTestServer(t)
 
-	srv.db.Create(&models.Settings{Key: "ANTHROPIC_API_KEY", Value: "sk-ant-test"})
+	srv.db.Create(&models.Settings{OrgID: "00000000-0000-0000-0000-000000000000", Key: "ANTHROPIC_API_KEY", Value: "sk-ant-test"})
 
 	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
 		Name:     "claude-no-opencode",
@@ -1156,7 +1156,7 @@ func TestDeployTeamAsync_ClaudeProvider_DoesNotGenerateOpenCodeFormat(t *testing
 func TestDeployTeamAsync_OpenCodeProvider_NoSubAgentNameField(t *testing.T) {
 	srv, mock := setupTestServer(t)
 
-	srv.db.Create(&models.Settings{Key: "OPENAI_API_KEY", Value: "sk-oai-test"})
+	srv.db.Create(&models.Settings{OrgID: "00000000-0000-0000-0000-000000000000", Key: "OPENAI_API_KEY", Value: "sk-oai-test"})
 
 	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
 		Name:     "opencode-no-name-field",
@@ -1187,11 +1187,11 @@ func TestLoadSettingsEnv_OpenCodeKeys(t *testing.T) {
 	srv, _ := setupTestServer(t)
 
 	// Set OpenCode-relevant keys.
-	srv.db.Create(&models.Settings{Key: "OPENAI_API_KEY", Value: "sk-oai-123"})
-	srv.db.Create(&models.Settings{Key: "GOOGLE_GENERATIVE_AI_API_KEY", Value: "goog-123"})
-	srv.db.Create(&models.Settings{Key: "OPENCODE_MODEL", Value: "gpt-4o"})
+	srv.db.Create(&models.Settings{OrgID: "00000000-0000-0000-0000-000000000000", Key: "OPENAI_API_KEY", Value: "sk-oai-123"})
+	srv.db.Create(&models.Settings{OrgID: "00000000-0000-0000-0000-000000000000", Key: "GOOGLE_GENERATIVE_AI_API_KEY", Value: "goog-123"})
+	srv.db.Create(&models.Settings{OrgID: "00000000-0000-0000-0000-000000000000", Key: "OPENCODE_MODEL", Value: "gpt-4o"})
 
-	env := srv.LoadSettingsEnv()
+	env := srv.LoadSettingsEnv("00000000-0000-0000-0000-000000000000")
 
 	if env["OPENAI_API_KEY"] != "sk-oai-123" {
 		t.Errorf("OPENAI_API_KEY: got %q", env["OPENAI_API_KEY"])
@@ -1207,7 +1207,7 @@ func TestLoadSettingsEnv_OpenCodeKeys(t *testing.T) {
 func TestDeployTeamAsync_ClaudeProvider_LeaderModelPassedAsEnvVar(t *testing.T) {
 	srv, mock := setupTestServer(t)
 
-	srv.db.Create(&models.Settings{Key: "ANTHROPIC_API_KEY", Value: "sk-ant-test"})
+	srv.db.Create(&models.Settings{OrgID: "00000000-0000-0000-0000-000000000000", Key: "ANTHROPIC_API_KEY", Value: "sk-ant-test"})
 
 	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
 		Name:     "claude-leader-model",
@@ -1235,7 +1235,7 @@ func TestDeployTeamAsync_ClaudeProvider_LeaderModelPassedAsEnvVar(t *testing.T) 
 func TestDeployTeamAsync_ClaudeProvider_LeaderModelOpus(t *testing.T) {
 	srv, mock := setupTestServer(t)
 
-	srv.db.Create(&models.Settings{Key: "ANTHROPIC_API_KEY", Value: "sk-ant-test"})
+	srv.db.Create(&models.Settings{OrgID: "00000000-0000-0000-0000-000000000000", Key: "ANTHROPIC_API_KEY", Value: "sk-ant-test"})
 
 	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
 		Name:     "claude-leader-opus",
@@ -1263,7 +1263,7 @@ func TestDeployTeamAsync_ClaudeProvider_LeaderModelOpus(t *testing.T) {
 func TestDeployTeamAsync_ClaudeProvider_LeaderModelHaiku(t *testing.T) {
 	srv, mock := setupTestServer(t)
 
-	srv.db.Create(&models.Settings{Key: "ANTHROPIC_API_KEY", Value: "sk-ant-test"})
+	srv.db.Create(&models.Settings{OrgID: "00000000-0000-0000-0000-000000000000", Key: "ANTHROPIC_API_KEY", Value: "sk-ant-test"})
 
 	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
 		Name:     "claude-leader-haiku",
@@ -1291,7 +1291,7 @@ func TestDeployTeamAsync_ClaudeProvider_LeaderModelHaiku(t *testing.T) {
 func TestDeployTeamAsync_ClaudeProvider_LeaderModelInherit_NoEnvVar(t *testing.T) {
 	srv, mock := setupTestServer(t)
 
-	srv.db.Create(&models.Settings{Key: "ANTHROPIC_API_KEY", Value: "sk-ant-test"})
+	srv.db.Create(&models.Settings{OrgID: "00000000-0000-0000-0000-000000000000", Key: "ANTHROPIC_API_KEY", Value: "sk-ant-test"})
 
 	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
 		Name:     "claude-leader-inherit",
@@ -1319,8 +1319,8 @@ func TestDeployTeamAsync_ClaudeProvider_LeaderModelInherit_NoEnvVar(t *testing.T
 func TestDeployTeamAsync_OpenCodeProvider_LeaderModelOverridesSettings(t *testing.T) {
 	srv, mock := setupTestServer(t)
 
-	srv.db.Create(&models.Settings{Key: "OPENAI_API_KEY", Value: "sk-oai-test"})
-	srv.db.Create(&models.Settings{Key: "OPENCODE_MODEL", Value: "gpt-4o"})
+	srv.db.Create(&models.Settings{OrgID: "00000000-0000-0000-0000-000000000000", Key: "OPENAI_API_KEY", Value: "sk-oai-test"})
+	srv.db.Create(&models.Settings{OrgID: "00000000-0000-0000-0000-000000000000", Key: "OPENCODE_MODEL", Value: "gpt-4o"})
 
 	// CreateTeam does not validate SubAgentModel, so OpenCode format is accepted.
 	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
@@ -1350,8 +1350,8 @@ func TestDeployTeamAsync_OpenCodeProvider_LeaderModelOverridesSettings(t *testin
 func TestDeployTeamAsync_OpenCodeProvider_LeaderModelInherit_FallsBackToSettings(t *testing.T) {
 	srv, mock := setupTestServer(t)
 
-	srv.db.Create(&models.Settings{Key: "OPENAI_API_KEY", Value: "sk-oai-test"})
-	srv.db.Create(&models.Settings{Key: "OPENCODE_MODEL", Value: "gpt-4o"})
+	srv.db.Create(&models.Settings{OrgID: "00000000-0000-0000-0000-000000000000", Key: "OPENAI_API_KEY", Value: "sk-oai-test"})
+	srv.db.Create(&models.Settings{OrgID: "00000000-0000-0000-0000-000000000000", Key: "OPENCODE_MODEL", Value: "gpt-4o"})
 
 	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
 		Name:     "opencode-leader-inherit",
@@ -1380,7 +1380,7 @@ func TestDeployTeamAsync_OpenCodeProvider_WritesWorkspaceToHost(t *testing.T) {
 	srv, mock := setupTestServer(t)
 
 	// Set OpenCode-compatible API key in settings.
-	srv.db.Create(&models.Settings{Key: "OPENAI_API_KEY", Value: "sk-oai-test-ws"})
+	srv.db.Create(&models.Settings{OrgID: "00000000-0000-0000-0000-000000000000", Key: "OPENAI_API_KEY", Value: "sk-oai-test-ws"})
 
 	// Use a temporary directory as the workspace path so the test can verify
 	// that deployTeamAsync writes .opencode/ files to the host filesystem.
@@ -1461,7 +1461,7 @@ func TestDeployTeamAsync_OpenCodeProvider_NoWorkspacePath_SkipsHostWrite(t *test
 	srv, mock := setupTestServer(t)
 
 	// Set OpenCode-compatible API key in settings.
-	srv.db.Create(&models.Settings{Key: "OPENAI_API_KEY", Value: "sk-oai-test-no-ws"})
+	srv.db.Create(&models.Settings{OrgID: "00000000-0000-0000-0000-000000000000", Key: "OPENAI_API_KEY", Value: "sk-oai-test-no-ws"})
 
 	// No WorkspacePath — should still deploy without errors.
 	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{

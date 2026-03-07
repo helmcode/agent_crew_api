@@ -19,7 +19,7 @@ import (
 func (s *Server) GetMcpConfig(c *fiber.Ctx) error {
 	id := c.Params("id")
 	var team models.Team
-	if err := s.db.Preload("Agents").First(&team, "id = ?", id).Error; err != nil {
+	if err := s.db.Scopes(OrgScope(c)).Preload("Agents").First(&team, "id = ?", id).Error; err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "team not found")
 	}
 
@@ -79,7 +79,7 @@ func (s *Server) GetMcpConfig(c *fiber.Ctx) error {
 func (s *Server) UpdateMcpConfig(c *fiber.Ctx) error {
 	id := c.Params("id")
 	var team models.Team
-	if err := s.db.Preload("Agents").First(&team, "id = ?", id).Error; err != nil {
+	if err := s.db.Scopes(OrgScope(c)).Preload("Agents").First(&team, "id = ?", id).Error; err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "team not found")
 	}
 
@@ -139,7 +139,7 @@ func (s *Server) UpdateMcpConfig(c *fiber.Ctx) error {
 func (s *Server) AddMcpServer(c *fiber.Ctx) error {
 	id := c.Params("id")
 	var team models.Team
-	if err := s.db.Preload("Agents").First(&team, "id = ?", id).Error; err != nil {
+	if err := s.db.Scopes(OrgScope(c)).Preload("Agents").First(&team, "id = ?", id).Error; err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "team not found")
 	}
 
@@ -193,7 +193,7 @@ func (s *Server) AddMcpServer(c *fiber.Ctx) error {
 	}
 
 	// Return updated team.
-	s.db.Preload("Agents").First(&team, "id = ?", id)
+	s.db.Scopes(OrgScope(c)).Preload("Agents").First(&team, "id = ?", id)
 	return c.Status(fiber.StatusCreated).JSON(team)
 }
 
@@ -203,7 +203,7 @@ func (s *Server) RemoveMcpServer(c *fiber.Ctx) error {
 	serverName := c.Params("serverName")
 
 	var team models.Team
-	if err := s.db.Preload("Agents").First(&team, "id = ?", id).Error; err != nil {
+	if err := s.db.Scopes(OrgScope(c)).Preload("Agents").First(&team, "id = ?", id).Error; err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "team not found")
 	}
 

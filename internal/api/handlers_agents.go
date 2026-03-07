@@ -18,9 +18,9 @@ import (
 func (s *Server) ListAgents(c *fiber.Ctx) error {
 	teamID := c.Params("id")
 
-	// Verify team exists.
+	// Verify team exists and belongs to org.
 	var team models.Team
-	if err := s.db.First(&team, "id = ?", teamID).Error; err != nil {
+	if err := s.db.Scopes(OrgScope(c)).First(&team, "id = ?", teamID).Error; err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "team not found")
 	}
 
@@ -36,6 +36,12 @@ func (s *Server) GetAgent(c *fiber.Ctx) error {
 	teamID := c.Params("id")
 	agentID := c.Params("agentId")
 
+	// Verify team belongs to org.
+	var team models.Team
+	if err := s.db.Scopes(OrgScope(c)).First(&team, "id = ?", teamID).Error; err != nil {
+		return fiber.NewError(fiber.StatusNotFound, "team not found")
+	}
+
 	var agent models.Agent
 	if err := s.db.Where("id = ? AND team_id = ?", agentID, teamID).First(&agent).Error; err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "agent not found")
@@ -48,7 +54,7 @@ func (s *Server) CreateAgent(c *fiber.Ctx) error {
 	teamID := c.Params("id")
 
 	var team models.Team
-	if err := s.db.First(&team, "id = ?", teamID).Error; err != nil {
+	if err := s.db.Scopes(OrgScope(c)).First(&team, "id = ?", teamID).Error; err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "team not found")
 	}
 
@@ -107,6 +113,7 @@ func (s *Server) CreateAgent(c *fiber.Ctx) error {
 
 	agent := models.Agent{
 		ID:                  uuid.New().String(),
+		OrgID:               GetOrgID(c),
 		TeamID:              teamID,
 		Name:                req.Name,
 		Role:                role,
@@ -132,6 +139,12 @@ func (s *Server) CreateAgent(c *fiber.Ctx) error {
 func (s *Server) UpdateAgent(c *fiber.Ctx) error {
 	teamID := c.Params("id")
 	agentID := c.Params("agentId")
+
+	// Verify team belongs to org.
+	var team models.Team
+	if err := s.db.Scopes(OrgScope(c)).First(&team, "id = ?", teamID).Error; err != nil {
+		return fiber.NewError(fiber.StatusNotFound, "team not found")
+	}
 
 	var agent models.Agent
 	if err := s.db.Where("id = ? AND team_id = ?", agentID, teamID).First(&agent).Error; err != nil {
@@ -228,7 +241,7 @@ func (s *Server) InstallAgentSkill(c *fiber.Ctx) error {
 
 	// Find team and verify it's running.
 	var team models.Team
-	if err := s.db.First(&team, "id = ?", teamID).Error; err != nil {
+	if err := s.db.Scopes(OrgScope(c)).First(&team, "id = ?", teamID).Error; err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "team not found")
 	}
 	if team.Status != models.TeamStatusRunning {
@@ -404,7 +417,7 @@ func (s *Server) GetInstructions(c *fiber.Ctx) error {
 	agentID := c.Params("agentId")
 
 	var team models.Team
-	if err := s.db.First(&team, "id = ?", teamID).Error; err != nil {
+	if err := s.db.Scopes(OrgScope(c)).First(&team, "id = ?", teamID).Error; err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "team not found")
 	}
 	if team.Status != models.TeamStatusRunning {
@@ -440,7 +453,7 @@ func (s *Server) UpdateInstructions(c *fiber.Ctx) error {
 	agentID := c.Params("agentId")
 
 	var team models.Team
-	if err := s.db.First(&team, "id = ?", teamID).Error; err != nil {
+	if err := s.db.Scopes(OrgScope(c)).First(&team, "id = ?", teamID).Error; err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "team not found")
 	}
 	if team.Status != models.TeamStatusRunning {
@@ -537,6 +550,12 @@ func agentInstructionsPath(agent models.Agent, provider string) (absPath, relPat
 func (s *Server) DeleteAgent(c *fiber.Ctx) error {
 	teamID := c.Params("id")
 	agentID := c.Params("agentId")
+
+	// Verify team belongs to org.
+	var team models.Team
+	if err := s.db.Scopes(OrgScope(c)).First(&team, "id = ?", teamID).Error; err != nil {
+		return fiber.NewError(fiber.StatusNotFound, "team not found")
+	}
 
 	var agent models.Agent
 	if err := s.db.Where("id = ? AND team_id = ?", agentID, teamID).First(&agent).Error; err != nil {

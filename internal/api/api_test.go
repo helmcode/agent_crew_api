@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/helmcode/agent-crew/internal/auth"
 	"github.com/helmcode/agent-crew/internal/models"
 	"github.com/helmcode/agent-crew/internal/runtime"
 )
@@ -94,7 +95,11 @@ func setupTestServer(t *testing.T) (*Server, *mockRuntime) {
 		t.Fatalf("InitDB: %v", err)
 	}
 	mock := &mockRuntime{}
-	srv := NewServer(db, mock)
+	noopAuth, err := auth.NewNoopProvider(db)
+	if err != nil {
+		t.Fatalf("NewNoopProvider: %v", err)
+	}
+	srv := NewServer(db, mock, noopAuth)
 	return srv, mock
 }
 

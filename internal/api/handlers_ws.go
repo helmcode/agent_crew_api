@@ -15,10 +15,11 @@ import (
 // StreamLogs streams container logs for a team's agents via WebSocket.
 func (s *Server) StreamLogs(c *websocket.Conn) {
 	teamID := c.Params("id")
+	orgID, _ := c.Locals("org_id").(string)
 	defer c.Close()
 
 	var team models.Team
-	if err := s.db.Preload("Agents").First(&team, "id = ?", teamID).Error; err != nil {
+	if err := s.db.Where("org_id = ?", orgID).Preload("Agents").First(&team, "id = ?", teamID).Error; err != nil {
 		_ = c.WriteMessage(websocket.TextMessage, []byte(`{"error":"team not found"}`))
 		return
 	}
@@ -70,10 +71,11 @@ func (s *Server) StreamLogs(c *websocket.Conn) {
 // StreamActivity streams team activity updates via WebSocket.
 func (s *Server) StreamActivity(c *websocket.Conn) {
 	teamID := c.Params("id")
+	orgID, _ := c.Locals("org_id").(string)
 	defer c.Close()
 
 	var team models.Team
-	if err := s.db.First(&team, "id = ?", teamID).Error; err != nil {
+	if err := s.db.Where("org_id = ?", orgID).First(&team, "id = ?", teamID).Error; err != nil {
 		_ = c.WriteMessage(websocket.TextMessage, []byte(`{"error":"team not found"}`))
 		return
 	}

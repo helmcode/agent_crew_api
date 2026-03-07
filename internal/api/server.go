@@ -11,6 +11,7 @@ import (
 	"github.com/gofiber/fiber/v2/middleware/requestid"
 	"gorm.io/gorm"
 
+	"github.com/helmcode/agent-crew/internal/auth"
 	"github.com/helmcode/agent-crew/internal/models"
 	"github.com/helmcode/agent-crew/internal/postaction"
 	"github.com/helmcode/agent-crew/internal/runtime"
@@ -21,6 +22,12 @@ type Server struct {
 	App     *fiber.App
 	db      *gorm.DB
 	runtime runtime.AgentRuntime
+
+	// authProvider is the pluggable authentication backend.
+	authProvider auth.AuthProvider
+
+	// multiTenant enables unlimited organizations and public registration.
+	multiTenant bool
 
 	// relays tracks active NATS relay goroutines per team ID.
 	// The cancel function stops the relay when the team is stopped.
@@ -35,7 +42,7 @@ type Server struct {
 }
 
 // NewServer creates a Fiber app with middleware and registers all routes.
-func NewServer(db *gorm.DB, rt runtime.AgentRuntime) *Server {
+func NewServer(db *gorm.DB, rt runtime.AgentRuntime, ap auth.AuthProvider) *Server {
 	app := fiber.New(fiber.Config{
 		AppName:      "AgentCrew API",
 		ErrorHandler: globalErrorHandler,
@@ -55,6 +62,7 @@ func NewServer(db *gorm.DB, rt runtime.AgentRuntime) *Server {
 		App:                  app,
 		db:                   db,
 		runtime:              rt,
+		authProvider:         ap,
 		relays:               make(map[string]context.CancelFunc),
 		webhookMaxConcurrent: 20,
 		postActionExec:       postaction.NewExecutor(db),
@@ -79,6 +87,11 @@ func (s *Server) Shutdown() error {
 // SetWebhookMaxConcurrent sets the global limit for concurrent webhook runs.
 func (s *Server) SetWebhookMaxConcurrent(n int) {
 	s.webhookMaxConcurrent = n
+}
+
+// SetMultiTenant enables or disables multi-tenant mode.
+func (s *Server) SetMultiTenant(enabled bool) {
+	s.multiTenant = enabled
 }
 
 // ReconnectRelays restarts NATS relay goroutines for all teams that are

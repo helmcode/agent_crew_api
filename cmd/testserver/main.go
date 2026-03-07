@@ -13,6 +13,7 @@ import (
 	"syscall"
 
 	"github.com/helmcode/agent-crew/internal/api"
+	"github.com/helmcode/agent-crew/internal/auth"
 	"github.com/helmcode/agent-crew/internal/models"
 	"github.com/helmcode/agent-crew/internal/runtime"
 )
@@ -89,7 +90,13 @@ func main() {
 		listenAddr = ":3333"
 	}
 
-	srv := api.NewServer(db, &mockRuntime{})
+	noopAuth, err := auth.NewNoopProvider(db)
+	if err != nil {
+		slog.Error("failed to initialize noop auth provider", "error", err)
+		os.Exit(1)
+	}
+
+	srv := api.NewServer(db, &mockRuntime{}, noopAuth)
 
 	go func() {
 		if err := srv.Listen(listenAddr); err != nil {

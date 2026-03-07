@@ -46,7 +46,7 @@ var validTriggerOnValues = map[string]bool{
 // ListPostActions returns all post-actions with a bindings count.
 func (s *Server) ListPostActions(c *fiber.Ctx) error {
 	var postActions []models.PostAction
-	if err := s.db.Find(&postActions).Error; err != nil {
+	if err := s.db.Scopes(OrgScope(c)).Find(&postActions).Error; err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "failed to list post-actions")
 	}
 
@@ -138,6 +138,7 @@ func (s *Server) CreatePostAction(c *fiber.Ctx) error {
 
 	postAction := models.PostAction{
 		ID:             uuid.New().String(),
+		OrgID:          GetOrgID(c),
 		Name:           req.Name,
 		Description:    req.Description,
 		Method:         req.Method,
@@ -162,7 +163,7 @@ func (s *Server) CreatePostAction(c *fiber.Ctx) error {
 func (s *Server) GetPostAction(c *fiber.Ctx) error {
 	id := c.Params("id")
 	var postAction models.PostAction
-	if err := s.db.Preload("Bindings").First(&postAction, "id = ?", id).Error; err != nil {
+	if err := s.db.Scopes(OrgScope(c)).Preload("Bindings").First(&postAction, "id = ?", id).Error; err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "post-action not found")
 	}
 
@@ -195,7 +196,7 @@ func (s *Server) GetPostAction(c *fiber.Ctx) error {
 func (s *Server) UpdatePostAction(c *fiber.Ctx) error {
 	id := c.Params("id")
 	var postAction models.PostAction
-	if err := s.db.First(&postAction, "id = ?", id).Error; err != nil {
+	if err := s.db.Scopes(OrgScope(c)).First(&postAction, "id = ?", id).Error; err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "post-action not found")
 	}
 
@@ -278,7 +279,7 @@ func (s *Server) UpdatePostAction(c *fiber.Ctx) error {
 		}
 	}
 
-	s.db.First(&postAction, "id = ?", id)
+	s.db.Scopes(OrgScope(c)).First(&postAction, "id = ?", id)
 	return c.JSON(postAction)
 }
 
@@ -286,7 +287,7 @@ func (s *Server) UpdatePostAction(c *fiber.Ctx) error {
 func (s *Server) DeletePostAction(c *fiber.Ctx) error {
 	id := c.Params("id")
 	var postAction models.PostAction
-	if err := s.db.First(&postAction, "id = ?", id).Error; err != nil {
+	if err := s.db.Scopes(OrgScope(c)).First(&postAction, "id = ?", id).Error; err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "post-action not found")
 	}
 
@@ -303,7 +304,7 @@ func (s *Server) CreateBinding(c *fiber.Ctx) error {
 
 	// Verify post-action exists.
 	var postAction models.PostAction
-	if err := s.db.First(&postAction, "id = ?", postActionID).Error; err != nil {
+	if err := s.db.Scopes(OrgScope(c)).First(&postAction, "id = ?", postActionID).Error; err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "post-action not found")
 	}
 
@@ -374,7 +375,7 @@ func (s *Server) UpdateBinding(c *fiber.Ctx) error {
 
 	// Verify post-action exists.
 	var postAction models.PostAction
-	if err := s.db.First(&postAction, "id = ?", postActionID).Error; err != nil {
+	if err := s.db.Scopes(OrgScope(c)).First(&postAction, "id = ?", postActionID).Error; err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "post-action not found")
 	}
 
@@ -420,7 +421,7 @@ func (s *Server) DeleteBinding(c *fiber.Ctx) error {
 
 	// Verify post-action exists.
 	var postAction models.PostAction
-	if err := s.db.First(&postAction, "id = ?", postActionID).Error; err != nil {
+	if err := s.db.Scopes(OrgScope(c)).First(&postAction, "id = ?", postActionID).Error; err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "post-action not found")
 	}
 
@@ -442,7 +443,7 @@ func (s *Server) ListPostActionRuns(c *fiber.Ctx) error {
 
 	// Verify post-action exists.
 	var postAction models.PostAction
-	if err := s.db.First(&postAction, "id = ?", id).Error; err != nil {
+	if err := s.db.Scopes(OrgScope(c)).First(&postAction, "id = ?", id).Error; err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "post-action not found")
 	}
 
@@ -480,9 +481,9 @@ func (s *Server) ListPostActionRuns(c *fiber.Ctx) error {
 func (s *Server) GetWebhookPostActions(c *fiber.Ctx) error {
 	webhookID := c.Params("id")
 
-	// Verify webhook exists.
+	// Verify webhook exists and belongs to org.
 	var webhook models.Webhook
-	if err := s.db.First(&webhook, "id = ?", webhookID).Error; err != nil {
+	if err := s.db.Scopes(OrgScope(c)).First(&webhook, "id = ?", webhookID).Error; err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "webhook not found")
 	}
 
@@ -500,9 +501,9 @@ func (s *Server) GetWebhookPostActions(c *fiber.Ctx) error {
 func (s *Server) GetSchedulePostActions(c *fiber.Ctx) error {
 	scheduleID := c.Params("id")
 
-	// Verify schedule exists.
+	// Verify schedule exists and belongs to org.
 	var schedule models.Schedule
-	if err := s.db.First(&schedule, "id = ?", scheduleID).Error; err != nil {
+	if err := s.db.Scopes(OrgScope(c)).First(&schedule, "id = ?", scheduleID).Error; err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "schedule not found")
 	}
 

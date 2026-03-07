@@ -46,10 +46,54 @@ func (j *JSON) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// Organization represents a tenant in the multi-tenant system.
+type Organization struct {
+	ID        string    `gorm:"primaryKey;size:36" json:"id"`
+	Name      string    `gorm:"not null;size:255" json:"name"`
+	Slug      string    `gorm:"uniqueIndex;not null;size:255" json:"slug"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// User represents a user belonging to an organization.
+type User struct {
+	ID                 string    `gorm:"primaryKey;size:36" json:"id"`
+	OrgID              string    `gorm:"not null;size:36;index" json:"org_id"`
+	Email              string    `gorm:"uniqueIndex;not null;size:255" json:"email"`
+	Name               string    `gorm:"not null;size:255" json:"name"`
+	PasswordHash       string    `gorm:"size:255" json:"-"`
+	IsOwner            bool      `gorm:"default:false" json:"is_owner"`
+	Role               string    `gorm:"not null;size:20;default:'member'" json:"role"`
+	MustChangePassword bool      `gorm:"default:false" json:"must_change_password"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
+	Organization       Organization `gorm:"foreignKey:OrgID;constraint:OnDelete:CASCADE" json:"-"`
+}
+
+// Valid user roles.
+const (
+	UserRoleAdmin  = "admin"
+	UserRoleMember = "member"
+)
+
+// Invite represents an invitation to join an organization.
+type Invite struct {
+	ID             string     `gorm:"primaryKey;size:36" json:"id"`
+	OrgID          string     `gorm:"not null;size:36;index" json:"org_id"`
+	Token          string     `gorm:"uniqueIndex;not null;size:64" json:"-"`
+	EncryptedToken string     `gorm:"type:text" json:"-"`
+	Email          string     `gorm:"size:255" json:"email,omitempty"`
+	ExpiresAt      time.Time  `json:"expires_at"`
+	UsedAt         *time.Time `json:"used_at,omitempty"`
+	CreatedAt      time.Time  `json:"created_at"`
+	Organization   Organization `gorm:"foreignKey:OrgID;constraint:OnDelete:CASCADE" json:"-"`
+}
+
 // Team represents an agent team managed by the orchestrator.
 type Team struct {
 	ID            string    `gorm:"primaryKey;size:36" json:"id"`
-	Name          string    `gorm:"uniqueIndex;not null;size:255" json:"name"`
+	OrgID         string    `gorm:"size:36;uniqueIndex:idx_team_org_name" json:"org_id"`
+	Name          string    `gorm:"not null;size:255;uniqueIndex:idx_team_org_name" json:"name"`
 	Description   string    `gorm:"size:1024" json:"description"`
 	Status        string    `gorm:"not null;size:50;default:stopped" json:"status"`
 	StatusMessage string    `gorm:"type:text" json:"status_message"`
@@ -66,6 +110,7 @@ type Team struct {
 // Agent represents a single AI agent within a team.
 type Agent struct {
 	ID              string    `gorm:"primaryKey;size:36" json:"id"`
+	OrgID           string    `gorm:"size:36;index" json:"org_id"`
 	TeamID          string    `gorm:"not null;size:36;index" json:"team_id"`
 	Name            string    `gorm:"not null;size:255" json:"name"`
 	Role            string    `gorm:"not null;size:50;default:worker" json:"role"`
@@ -106,7 +151,8 @@ type TaskLog struct {
 // Settings stores application-level key-value configuration.
 type Settings struct {
 	ID        uint      `gorm:"primaryKey;autoIncrement" json:"id"`
-	Key       string    `gorm:"uniqueIndex;not null;size:255" json:"key"`
+	OrgID     string    `gorm:"size:36;uniqueIndex:idx_settings_org_key" json:"org_id"`
+	Key       string    `gorm:"not null;size:255;uniqueIndex:idx_settings_org_key" json:"key"`
 	Value     string    `gorm:"type:text" json:"value"`
 	IsSecret  bool      `gorm:"default:false" json:"is_secret"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -115,6 +161,7 @@ type Settings struct {
 // Schedule represents a recurring task that deploys a team and sends a prompt on a cron schedule.
 type Schedule struct {
 	ID             string     `gorm:"primaryKey;size:36" json:"id"`
+	OrgID          string     `gorm:"size:36;index" json:"org_id"`
 	Name           string     `gorm:"not null;size:255" json:"name"`
 	TeamID         string     `gorm:"not null;size:36" json:"team_id"`
 	Prompt         string     `gorm:"type:text;not null" json:"prompt"`
@@ -185,6 +232,7 @@ const (
 // Webhook represents an HTTP webhook endpoint that triggers a team execution.
 type Webhook struct {
 	ID              string       `gorm:"primaryKey;size:36" json:"id"`
+	OrgID           string       `gorm:"size:36;index" json:"org_id"`
 	Name            string       `gorm:"not null;size:255" json:"name"`
 	TeamID          string       `gorm:"not null;size:36" json:"team_id"`
 	PromptTemplate  string       `gorm:"type:text;not null" json:"prompt_template"`
@@ -238,6 +286,7 @@ const (
 // PostAction defines a reusable HTTP action that fires after a trigger completes.
 type PostAction struct {
 	ID             string    `gorm:"primaryKey;size:36" json:"id"`
+	OrgID          string    `gorm:"size:36;index" json:"org_id"`
 	Name           string    `gorm:"not null;size:255" json:"name"`
 	Description    string    `gorm:"size:1024" json:"description"`
 	Method         string    `gorm:"not null;size:10" json:"method"`

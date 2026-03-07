@@ -8,6 +8,7 @@ import (
 	"syscall"
 
 	"github.com/helmcode/agent-crew/internal/api"
+	"github.com/helmcode/agent-crew/internal/auth"
 	"github.com/helmcode/agent-crew/internal/models"
 	"github.com/helmcode/agent-crew/internal/runtime"
 	"github.com/helmcode/agent-crew/internal/scheduler"
@@ -60,7 +61,27 @@ func main() {
 		listenAddr = ":" + port
 	}
 
-	srv := api.NewServer(db, rt)
+	// Auth provider.
+	authCfg := auth.Config{
+		JWTSecret:            os.Getenv("JWT_SECRET"),
+		JWTAccessExpiration:  os.Getenv("JWT_ACCESS_EXPIRATION"),
+		JWTRefreshExpiration: os.Getenv("JWT_REFRESH_EXPIRATION"),
+		MultiTenant:          os.Getenv("MULTI_TENANT") == "true",
+	}
+	authProvider, err := auth.NewProvider(os.Getenv("AUTH_PROVIDER"), db, authCfg)
+	if err != nil {
+		slog.Error("failed to initialize auth provider", "error", err)
+		os.Exit(1)
+	}
+	slog.Info("auth provider initialized", "provider", authProvider.ProviderName())
+
+	srv := api.NewServer(db, rt, authProvider)
+
+	// Configure multi-tenant mode.
+	if os.Getenv("MULTI_TENANT") == "true" {
+		srv.SetMultiTenant(true)
+		slog.Info("multi-tenant mode enabled")
+	}
 
 	// Configure webhook concurrency limit.
 	if v := os.Getenv("WEBHOOK_MAX_CONCURRENT"); v != "" {

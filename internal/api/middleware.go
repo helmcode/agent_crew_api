@@ -2,9 +2,12 @@ package api
 
 import (
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
+
+	"github.com/helmcode/agent-crew/internal/auth"
 )
 
 // requestLogger returns a middleware that logs each request.
@@ -20,6 +23,47 @@ func requestLogger() fiber.Handler {
 			"request_id", c.Locals("requestid"),
 		)
 		return err
+	}
+}
+
+// authMiddleware validates the JWT token and injects user/org claims into
+// the request context. For the noop provider, it injects default claims
+// without requiring an Authorization header.
+func authMiddleware(provider auth.AuthProvider) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		// Noop provider: inject default claims, no token required.
+		if provider.ProviderName() == "noop" {
+			claims, _ := provider.ValidateToken(c.Context(), "")
+			c.Locals("user_id", claims.UserID)
+			c.Locals("org_id", claims.OrgID)
+			c.Locals("email", claims.Email)
+			c.Locals("name", claims.Name)
+			c.Locals("role", claims.Role)
+			return c.Next()
+		}
+
+		// Extract Bearer token from Authorization header.
+		authHeader := c.Get("Authorization")
+		if authHeader == "" {
+			return fiber.NewError(fiber.StatusUnauthorized, "missing authorization header")
+		}
+
+		token := strings.TrimPrefix(authHeader, "Bearer ")
+		if token == authHeader {
+			return fiber.NewError(fiber.StatusUnauthorized, "invalid authorization format")
+		}
+
+		claims, err := provider.ValidateToken(c.Context(), token)
+		if err != nil {
+			return fiber.NewError(fiber.StatusUnauthorized, "invalid or expired token")
+		}
+
+		c.Locals("user_id", claims.UserID)
+		c.Locals("org_id", claims.OrgID)
+		c.Locals("email", claims.Email)
+		c.Locals("name", claims.Name)
+		c.Locals("role", claims.Role)
+		return c.Next()
 	}
 }
 

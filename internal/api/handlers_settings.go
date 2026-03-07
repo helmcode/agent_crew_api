@@ -39,7 +39,7 @@ func maskSetting(s models.Settings) settingsResponse {
 // GetSettings returns all settings with secret values masked.
 func (s *Server) GetSettings(c *fiber.Ctx) error {
 	var settings []models.Settings
-	if err := s.db.Find(&settings).Error; err != nil {
+	if err := s.db.Scopes(OrgScope(c)).Find(&settings).Error; err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "failed to list settings")
 	}
 
@@ -78,11 +78,12 @@ func (s *Server) UpdateSettings(c *fiber.Ctx) error {
 	}
 
 	var setting models.Settings
-	result := s.db.Where("key = ?", req.Key).First(&setting)
+	result := s.db.Scopes(OrgScope(c)).Where("key = ?", req.Key).First(&setting)
 
 	if result.Error != nil {
 		// Create new.
 		setting = models.Settings{
+			OrgID:    GetOrgID(c),
 			Key:      req.Key,
 			Value:    storedValue,
 			IsSecret: isSecret,
@@ -110,7 +111,7 @@ func (s *Server) UpdateSettings(c *fiber.Ctx) error {
 func (s *Server) DeleteSetting(c *fiber.Ctx) error {
 	key := c.Params("key")
 	var setting models.Settings
-	if err := s.db.Where("key = ?", key).First(&setting).Error; err != nil {
+	if err := s.db.Scopes(OrgScope(c)).Where("key = ?", key).First(&setting).Error; err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "setting not found")
 	}
 	if err := s.db.Delete(&setting).Error; err != nil {

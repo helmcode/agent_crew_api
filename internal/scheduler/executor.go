@@ -51,8 +51,8 @@ type Executor struct {
 	WaitForResponseFunc func(ctx context.Context, teamName string) error
 
 	// LoadSettingsEnvFunc loads settings from DB as env vars for agent containers.
-	// Required for deployment.
-	LoadSettingsEnvFunc func() map[string]string
+	// Required for deployment. Takes org_id to scope settings to the tenant.
+	LoadSettingsEnvFunc func(orgID string) map[string]string
 
 	// PollInterval controls how frequently the executor polls for state changes.
 	// Defaults to 10 seconds if zero.
@@ -282,10 +282,10 @@ func (e *Executor) deployTeam(ctx context.Context, team models.Team) error {
 		provider = models.ProviderClaude
 	}
 
-	// Load settings from DB for environment variables.
+	// Load settings from DB for environment variables, scoped to the team's org.
 	env := map[string]string{}
 	if e.LoadSettingsEnvFunc != nil {
-		env = e.LoadSettingsEnvFunc()
+		env = e.LoadSettingsEnvFunc(team.OrgID)
 	}
 
 	natsURL := e.Runtime.GetNATSURL(team.Name)

@@ -16,10 +16,10 @@ import (
 	"github.com/helmcode/agent-crew/internal/runtime"
 )
 
-// ListTeams returns all teams.
+// ListTeams returns all teams for the current organization.
 func (s *Server) ListTeams(c *fiber.Ctx) error {
 	var teams []models.Team
-	if err := s.db.Preload("Agents").Find(&teams).Error; err != nil {
+	if err := s.db.Scopes(OrgScope(c)).Preload("Agents").Find(&teams).Error; err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "failed to list teams")
 	}
 	return c.JSON(teams)
@@ -29,7 +29,7 @@ func (s *Server) ListTeams(c *fiber.Ctx) error {
 func (s *Server) GetTeam(c *fiber.Ctx) error {
 	id := c.Params("id")
 	var team models.Team
-	if err := s.db.Preload("Agents").First(&team, "id = ?", id).Error; err != nil {
+	if err := s.db.Scopes(OrgScope(c)).Preload("Agents").First(&team, "id = ?", id).Error; err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "team not found")
 	}
 	return c.JSON(team)
@@ -64,6 +64,7 @@ func (s *Server) CreateTeam(c *fiber.Ctx) error {
 
 	team := models.Team{
 		ID:            uuid.New().String(),
+		OrgID:         GetOrgID(c),
 		Name:          req.Name,
 		Description:   req.Description,
 		Status:        models.TeamStatusStopped,
@@ -156,7 +157,7 @@ func (s *Server) CreateTeam(c *fiber.Ctx) error {
 func (s *Server) UpdateTeam(c *fiber.Ctx) error {
 	id := c.Params("id")
 	var team models.Team
-	if err := s.db.First(&team, "id = ?", id).Error; err != nil {
+	if err := s.db.Scopes(OrgScope(c)).First(&team, "id = ?", id).Error; err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "team not found")
 	}
 
@@ -206,7 +207,7 @@ func (s *Server) UpdateTeam(c *fiber.Ctx) error {
 func (s *Server) DeleteTeam(c *fiber.Ctx) error {
 	id := c.Params("id")
 	var team models.Team
-	if err := s.db.First(&team, "id = ?", id).Error; err != nil {
+	if err := s.db.Scopes(OrgScope(c)).First(&team, "id = ?", id).Error; err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "team not found")
 	}
 
@@ -225,7 +226,7 @@ func (s *Server) DeleteTeam(c *fiber.Ctx) error {
 func (s *Server) DeployTeam(c *fiber.Ctx) error {
 	id := c.Params("id")
 	var team models.Team
-	if err := s.db.Preload("Agents").First(&team, "id = ?", id).Error; err != nil {
+	if err := s.db.Scopes(OrgScope(c)).Preload("Agents").First(&team, "id = ?", id).Error; err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "team not found")
 	}
 
@@ -268,7 +269,7 @@ func (s *Server) deployTeamAsync(team models.Team) {
 	defer cancel()
 
 	// Load settings from DB to pass as environment variables to agent containers.
-	envFromSettings := s.LoadSettingsEnv()
+	envFromSettings := s.LoadSettingsEnv(team.OrgID)
 
 	// Deploy infrastructure.
 	infraCfg := runtime.InfraConfig{
@@ -581,15 +582,15 @@ func claudeModelID(short string) string {
 	}
 }
 
-// LoadSettingsEnv reads all settings from the database and returns them as a
-// string map suitable for passing to AgentConfig.Env. Secret values are
-// decrypted so agent containers receive the real values.
-func (s *Server) LoadSettingsEnv() map[string]string {
+// LoadSettingsEnv reads settings from the database for the given org and returns
+// them as a string map suitable for passing to AgentConfig.Env. Secret values
+// are decrypted so agent containers receive the real values.
+func (s *Server) LoadSettingsEnv(orgID string) map[string]string {
 	env := make(map[string]string)
 
 	var settings []models.Settings
-	if err := s.db.Find(&settings).Error; err != nil {
-		slog.Error("failed to load settings for env", "error", err)
+	if err := s.db.Where("org_id = ?", orgID).Find(&settings).Error; err != nil {
+		slog.Error("failed to load settings for env", "org_id", orgID, "error", err)
 		return env
 	}
 
@@ -629,7 +630,7 @@ func (s *Server) LoadSettingsEnv() map[string]string {
 func (s *Server) StopTeam(c *fiber.Ctx) error {
 	id := c.Params("id")
 	var team models.Team
-	if err := s.db.Preload("Agents").First(&team, "id = ?", id).Error; err != nil {
+	if err := s.db.Scopes(OrgScope(c)).Preload("Agents").First(&team, "id = ?", id).Error; err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "team not found")
 	}
 

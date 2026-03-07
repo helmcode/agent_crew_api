@@ -48,7 +48,7 @@ func renderPromptTemplate(tmpl string, vars map[string]string) string {
 // ListWebhooks returns all webhooks with their associated team.
 func (s *Server) ListWebhooks(c *fiber.Ctx) error {
 	var webhooks []models.Webhook
-	if err := s.db.Preload("Team").Find(&webhooks).Error; err != nil {
+	if err := s.db.Scopes(OrgScope(c)).Preload("Team").Find(&webhooks).Error; err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "failed to list webhooks")
 	}
 	return c.JSON(webhooks)
@@ -58,7 +58,7 @@ func (s *Server) ListWebhooks(c *fiber.Ctx) error {
 func (s *Server) GetWebhook(c *fiber.Ctx) error {
 	id := c.Params("id")
 	var webhook models.Webhook
-	if err := s.db.Preload("Team").First(&webhook, "id = ?", id).Error; err != nil {
+	if err := s.db.Scopes(OrgScope(c)).Preload("Team").First(&webhook, "id = ?", id).Error; err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "webhook not found")
 	}
 	return c.JSON(webhook)
@@ -87,9 +87,9 @@ func (s *Server) CreateWebhook(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "prompt_template exceeds maximum length of 50000 characters")
 	}
 
-	// Validate team exists.
+	// Validate team exists and belongs to org.
 	var team models.Team
-	if err := s.db.First(&team, "id = ?", req.TeamID).Error; err != nil {
+	if err := s.db.Scopes(OrgScope(c)).First(&team, "id = ?", req.TeamID).Error; err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "team_id references a non-existent team")
 	}
 
@@ -114,6 +114,7 @@ func (s *Server) CreateWebhook(c *fiber.Ctx) error {
 
 	webhook := models.Webhook{
 		ID:              uuid.New().String(),
+		OrgID:           GetOrgID(c),
 		Name:            req.Name,
 		TeamID:          req.TeamID,
 		PromptTemplate:  req.PromptTemplate,
@@ -142,7 +143,7 @@ func (s *Server) CreateWebhook(c *fiber.Ctx) error {
 func (s *Server) UpdateWebhook(c *fiber.Ctx) error {
 	id := c.Params("id")
 	var webhook models.Webhook
-	if err := s.db.First(&webhook, "id = ?", id).Error; err != nil {
+	if err := s.db.Scopes(OrgScope(c)).First(&webhook, "id = ?", id).Error; err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "webhook not found")
 	}
 
@@ -195,7 +196,7 @@ func (s *Server) UpdateWebhook(c *fiber.Ctx) error {
 func (s *Server) DeleteWebhook(c *fiber.Ctx) error {
 	id := c.Params("id")
 	var webhook models.Webhook
-	if err := s.db.First(&webhook, "id = ?", id).Error; err != nil {
+	if err := s.db.Scopes(OrgScope(c)).First(&webhook, "id = ?", id).Error; err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "webhook not found")
 	}
 
@@ -210,7 +211,7 @@ func (s *Server) DeleteWebhook(c *fiber.Ctx) error {
 func (s *Server) ToggleWebhook(c *fiber.Ctx) error {
 	id := c.Params("id")
 	var webhook models.Webhook
-	if err := s.db.First(&webhook, "id = ?", id).Error; err != nil {
+	if err := s.db.Scopes(OrgScope(c)).First(&webhook, "id = ?", id).Error; err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "webhook not found")
 	}
 
@@ -227,7 +228,7 @@ func (s *Server) ToggleWebhook(c *fiber.Ctx) error {
 func (s *Server) RegenerateWebhookToken(c *fiber.Ctx) error {
 	id := c.Params("id")
 	var webhook models.Webhook
-	if err := s.db.First(&webhook, "id = ?", id).Error; err != nil {
+	if err := s.db.Scopes(OrgScope(c)).First(&webhook, "id = ?", id).Error; err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "webhook not found")
 	}
 
@@ -256,7 +257,7 @@ func (s *Server) ListWebhookRuns(c *fiber.Ctx) error {
 
 	// Verify webhook exists.
 	var webhook models.Webhook
-	if err := s.db.First(&webhook, "id = ?", id).Error; err != nil {
+	if err := s.db.Scopes(OrgScope(c)).First(&webhook, "id = ?", id).Error; err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "webhook not found")
 	}
 
@@ -297,7 +298,7 @@ func (s *Server) GetWebhookRun(c *fiber.Ctx) error {
 
 	// Verify webhook exists.
 	var webhook models.Webhook
-	if err := s.db.First(&webhook, "id = ?", webhookID).Error; err != nil {
+	if err := s.db.Scopes(OrgScope(c)).First(&webhook, "id = ?", webhookID).Error; err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "webhook not found")
 	}
 

@@ -22,7 +22,7 @@ func (s *Server) SendChat(c *fiber.Ctx) error {
 	teamID := c.Params("id")
 
 	var team models.Team
-	if err := s.db.First(&team, "id = ?", teamID).Error; err != nil {
+	if err := s.db.Scopes(OrgScope(c)).First(&team, "id = ?", teamID).Error; err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "team not found")
 	}
 
@@ -171,7 +171,7 @@ func (s *Server) GetMessages(c *fiber.Ctx) error {
 	teamID := c.Params("id")
 
 	var team models.Team
-	if err := s.db.First(&team, "id = ?", teamID).Error; err != nil {
+	if err := s.db.Scopes(OrgScope(c)).First(&team, "id = ?", teamID).Error; err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "team not found")
 	}
 
@@ -216,7 +216,7 @@ func (s *Server) GetActivity(c *fiber.Ctx) error {
 	teamID := c.Params("id")
 
 	var team models.Team
-	if err := s.db.First(&team, "id = ?", teamID).Error; err != nil {
+	if err := s.db.Scopes(OrgScope(c)).First(&team, "id = ?", teamID).Error; err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "team not found")
 	}
 

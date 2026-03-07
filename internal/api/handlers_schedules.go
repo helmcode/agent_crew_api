@@ -25,7 +25,7 @@ func (s *Server) GetScheduleConfig(c *fiber.Ctx) error {
 // ListSchedules returns all schedules with their associated team name.
 func (s *Server) ListSchedules(c *fiber.Ctx) error {
 	var schedules []models.Schedule
-	if err := s.db.Preload("Team").Find(&schedules).Error; err != nil {
+	if err := s.db.Scopes(OrgScope(c)).Preload("Team").Find(&schedules).Error; err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "failed to list schedules")
 	}
 	return c.JSON(schedules)
@@ -35,7 +35,7 @@ func (s *Server) ListSchedules(c *fiber.Ctx) error {
 func (s *Server) GetSchedule(c *fiber.Ctx) error {
 	id := c.Params("id")
 	var schedule models.Schedule
-	if err := s.db.Preload("Team").First(&schedule, "id = ?", id).Error; err != nil {
+	if err := s.db.Scopes(OrgScope(c)).Preload("Team").First(&schedule, "id = ?", id).Error; err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "schedule not found")
 	}
 	return c.JSON(schedule)
@@ -64,9 +64,9 @@ func (s *Server) CreateSchedule(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "cron_expression is required")
 	}
 
-	// Validate team exists.
+	// Validate team exists and belongs to org.
 	var team models.Team
-	if err := s.db.First(&team, "id = ?", req.TeamID).Error; err != nil {
+	if err := s.db.Scopes(OrgScope(c)).First(&team, "id = ?", req.TeamID).Error; err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "team_id references a non-existent team")
 	}
 
@@ -94,6 +94,7 @@ func (s *Server) CreateSchedule(c *fiber.Ctx) error {
 
 	schedule := models.Schedule{
 		ID:             uuid.New().String(),
+		OrgID:          GetOrgID(c),
 		Name:           req.Name,
 		TeamID:         req.TeamID,
 		Prompt:         req.Prompt,
@@ -117,7 +118,7 @@ func (s *Server) CreateSchedule(c *fiber.Ctx) error {
 func (s *Server) UpdateSchedule(c *fiber.Ctx) error {
 	id := c.Params("id")
 	var schedule models.Schedule
-	if err := s.db.First(&schedule, "id = ?", id).Error; err != nil {
+	if err := s.db.Scopes(OrgScope(c)).First(&schedule, "id = ?", id).Error; err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "schedule not found")
 	}
 
@@ -136,7 +137,7 @@ func (s *Server) UpdateSchedule(c *fiber.Ctx) error {
 	}
 	if req.TeamID != nil {
 		var team models.Team
-		if err := s.db.First(&team, "id = ?", *req.TeamID).Error; err != nil {
+		if err := s.db.Scopes(OrgScope(c)).First(&team, "id = ?", *req.TeamID).Error; err != nil {
 			return fiber.NewError(fiber.StatusBadRequest, "team_id references a non-existent team")
 		}
 		updates["team_id"] = *req.TeamID
@@ -194,7 +195,7 @@ func (s *Server) UpdateSchedule(c *fiber.Ctx) error {
 func (s *Server) DeleteSchedule(c *fiber.Ctx) error {
 	id := c.Params("id")
 	var schedule models.Schedule
-	if err := s.db.First(&schedule, "id = ?", id).Error; err != nil {
+	if err := s.db.Scopes(OrgScope(c)).First(&schedule, "id = ?", id).Error; err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "schedule not found")
 	}
 
@@ -209,7 +210,7 @@ func (s *Server) DeleteSchedule(c *fiber.Ctx) error {
 func (s *Server) ToggleSchedule(c *fiber.Ctx) error {
 	id := c.Params("id")
 	var schedule models.Schedule
-	if err := s.db.First(&schedule, "id = ?", id).Error; err != nil {
+	if err := s.db.Scopes(OrgScope(c)).First(&schedule, "id = ?", id).Error; err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "schedule not found")
 	}
 
@@ -237,7 +238,7 @@ func (s *Server) ListScheduleRuns(c *fiber.Ctx) error {
 
 	// Verify schedule exists.
 	var schedule models.Schedule
-	if err := s.db.First(&schedule, "id = ?", id).Error; err != nil {
+	if err := s.db.Scopes(OrgScope(c)).First(&schedule, "id = ?", id).Error; err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "schedule not found")
 	}
 
@@ -278,7 +279,7 @@ func (s *Server) GetScheduleRun(c *fiber.Ctx) error {
 
 	// Verify schedule exists.
 	var schedule models.Schedule
-	if err := s.db.First(&schedule, "id = ?", scheduleID).Error; err != nil {
+	if err := s.db.Scopes(OrgScope(c)).First(&schedule, "id = ?", scheduleID).Error; err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "schedule not found")
 	}
 
