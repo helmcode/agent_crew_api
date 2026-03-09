@@ -61,7 +61,7 @@ type AgentStatus struct {
 
 // Shared constants used by both Docker and Kubernetes runtimes.
 const (
-	DefaultAgentImage         = "ghcr.io/helmcode/agent-crew-agent:latest"
+	DefaultAgentImage         = "ghcr.io/helmcode/agent_crew_agent:latest"
 	DefaultOpenCodeAgentImage = "ghcr.io/helmcode/agent_crew_opencode_agent:latest"
 	NATSImage                 = "nats:2.10-alpine"
 	LabelTeam                 = "agentcrew.team"
