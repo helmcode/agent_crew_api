@@ -542,6 +542,7 @@ func (d *DockerRuntime) DeployAgent(ctx context.Context, config AgentConfig) (*A
 	resp, err := d.client.ContainerCreate(ctx,
 		&container.Config{
 			Image: img,
+			User:  "0:0", // Start as root so entrypoint.sh can fix workspace permissions and drop privileges via gosu.
 			Env:   env,
 			Labels: map[string]string{
 				LabelTeam:  config.TeamName,
