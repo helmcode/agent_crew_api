@@ -14,6 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpng-dev \
     libtiff-dev \
     libwebp-dev \
+    gosu \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Claude Code CLI and skills package manager
@@ -30,11 +31,15 @@ ARG TARGETARCH
 COPY sidecar-${TARGETARCH} /usr/local/bin/agent-sidecar
 RUN chmod +x /usr/local/bin/agent-sidecar
 
+# Copy entrypoint script (handles workspace permission fixing on Linux)
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
 # Create workspace directory for agent operations
 RUN mkdir -p /workspace && chown agentcrew:agentcrew /workspace
 
 WORKDIR /workspace
 
-USER agentcrew
-
-ENTRYPOINT ["agent-sidecar"]
+# Start as root so the entrypoint can fix workspace permissions,
+# then drop privileges to match the workspace directory owner.
+ENTRYPOINT ["entrypoint.sh"]
