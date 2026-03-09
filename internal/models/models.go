@@ -100,6 +100,7 @@ type Team struct {
 	Runtime       string    `gorm:"not null;size:50;default:docker" json:"runtime"`
 	Provider      string    `gorm:"type:varchar(50);default:'claude'" json:"provider"`
 	WorkspacePath string    `gorm:"size:512" json:"workspace_path"`
+	AgentImage    string    `gorm:"size:512" json:"agent_image"`
 	McpServers    JSON      `gorm:"type:text" json:"mcp_servers"`
 	McpStatuses   JSON      `gorm:"type:text" json:"mcp_statuses"`
 	CreatedAt     time.Time `json:"created_at"`

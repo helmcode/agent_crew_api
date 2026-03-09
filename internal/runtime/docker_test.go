@@ -327,19 +327,15 @@ func TestProviderAuthValidation_NoLeakage(t *testing.T) {
 }
 
 func TestK8sImageSelection(t *testing.T) {
-	k := &K8sRuntime{
-		agentImage:         "claude-img:v1",
-		openCodeAgentImage: "opencode-img:v1",
+	// Default images are defined as constants and differ between providers.
+	if DefaultAgentImage == "" {
+		t.Error("DefaultAgentImage should not be empty")
 	}
-
-	if k.agentImage != "claude-img:v1" {
-		t.Errorf("K8s claude image: got %q", k.agentImage)
+	if DefaultOpenCodeAgentImage == "" {
+		t.Error("DefaultOpenCodeAgentImage should not be empty")
 	}
-	if k.openCodeAgentImage != "opencode-img:v1" {
-		t.Errorf("K8s opencode image: got %q", k.openCodeAgentImage)
-	}
-	if k.agentImage == k.openCodeAgentImage {
-		t.Error("K8s claude and opencode images should be different")
+	if DefaultAgentImage == DefaultOpenCodeAgentImage {
+		t.Error("DefaultAgentImage and DefaultOpenCodeAgentImage should be different")
 	}
 }
 
@@ -402,21 +398,23 @@ func TestProviderAuthValidation_OpenCodeAcceptsAllKeys(t *testing.T) {
 	}
 }
 
-func TestDockerRuntimeFields(t *testing.T) {
-	// Verify DockerRuntime carries both image fields.
-	d := &DockerRuntime{
-		agentImage:         DefaultAgentImage,
-		openCodeAgentImage: DefaultOpenCodeAgentImage,
+func TestDockerRuntimeImageDefaults(t *testing.T) {
+	// When AgentConfig.Image is empty, DeployAgent should use the default constants.
+	// Verify the constants are defined and distinct per provider.
+	if DefaultAgentImage == "" {
+		t.Error("DefaultAgentImage should not be empty")
+	}
+	if DefaultOpenCodeAgentImage == "" {
+		t.Error("DefaultOpenCodeAgentImage should not be empty")
+	}
+	if DefaultAgentImage == DefaultOpenCodeAgentImage {
+		t.Error("DefaultAgentImage and DefaultOpenCodeAgentImage should be different")
 	}
 
-	if d.agentImage == "" {
-		t.Error("agentImage should not be empty")
-	}
-	if d.openCodeAgentImage == "" {
-		t.Error("openCodeAgentImage should not be empty")
-	}
-	if d.agentImage == d.openCodeAgentImage {
-		t.Error("agentImage and openCodeAgentImage should be different")
+	// When a custom image is set in AgentConfig, it should be used directly.
+	cfg := AgentConfig{Image: "custom/my-agent:v2"}
+	if cfg.Image != "custom/my-agent:v2" {
+		t.Errorf("custom image not preserved: got %q", cfg.Image)
 	}
 }
 

@@ -27,10 +27,8 @@ import (
 
 // K8sRuntime implements AgentRuntime using the Kubernetes API.
 type K8sRuntime struct {
-	clientset          kubernetes.Interface
-	restConfig         *rest.Config
-	agentImage         string
-	openCodeAgentImage string
+	clientset  kubernetes.Interface
+	restConfig *rest.Config
 }
 
 // NewK8sRuntime creates a K8sRuntime, trying in-cluster config first,
@@ -55,17 +53,7 @@ func NewK8sRuntime() (*K8sRuntime, error) {
 		return nil, fmt.Errorf("creating k8s clientset: %w", err)
 	}
 
-	agentImage := os.Getenv("AGENT_IMAGE")
-	if agentImage == "" {
-		agentImage = DefaultAgentImage
-	}
-
-	openCodeAgentImage := os.Getenv("OPENCODE_AGENT_IMAGE")
-	if openCodeAgentImage == "" {
-		openCodeAgentImage = DefaultOpenCodeAgentImage
-	}
-
-	return &K8sRuntime{clientset: clientset, restConfig: config, agentImage: agentImage, openCodeAgentImage: openCodeAgentImage}, nil
+	return &K8sRuntime{clientset: clientset, restConfig: config}, nil
 }
 
 // Naming conventions for Kubernetes resources.
@@ -307,9 +295,9 @@ func (k *K8sRuntime) DeployAgent(ctx context.Context, config AgentConfig) (*Agen
 	img := config.Image
 	if img == "" {
 		if config.Provider == "opencode" {
-			img = k.openCodeAgentImage
+			img = DefaultOpenCodeAgentImage
 		} else {
-			img = k.agentImage
+			img = DefaultAgentImage
 		}
 	}
 

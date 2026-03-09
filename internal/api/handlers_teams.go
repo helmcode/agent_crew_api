@@ -62,6 +62,10 @@ func (s *Server) CreateTeam(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "provider must be 'claude' or 'opencode'")
 	}
 
+	if err := validateAgentImage(req.AgentImage); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, err.Error())
+	}
+
 	team := models.Team{
 		ID:            uuid.New().String(),
 		OrgID:         GetOrgID(c),
@@ -71,6 +75,7 @@ func (s *Server) CreateTeam(c *fiber.Ctx) error {
 		Runtime:       rt,
 		Provider:      prov,
 		WorkspacePath: req.WorkspacePath,
+		AgentImage:    req.AgentImage,
 	}
 
 	// Validate and serialize MCP servers.
@@ -184,6 +189,12 @@ func (s *Server) UpdateTeam(c *fiber.Ctx) error {
 			return fiber.NewError(fiber.StatusBadRequest, "provider must be 'claude' or 'opencode'")
 		}
 		updates["provider"] = *req.Provider
+	}
+	if req.AgentImage != nil {
+		if err := validateAgentImage(*req.AgentImage); err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, err.Error())
+		}
+		updates["agent_image"] = *req.AgentImage
 	}
 	if req.McpServers != nil {
 		if err := validateMcpServers(req.McpServers); err != nil {
@@ -535,6 +546,7 @@ func (s *Server) deployTeamAsync(team models.Team) {
 		ClaudeMD:      instructionsMDContent,
 		Resources:     res,
 		NATSUrl:       natsURL,
+		Image:         team.AgentImage,
 		WorkspacePath: team.WorkspacePath,
 		SubAgentFiles: subAgentFiles,
 		Env:           agentEnv,

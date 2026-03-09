@@ -22,6 +22,7 @@ type CreateTeamRequest struct {
 	Runtime       string              `json:"runtime"`
 	Provider      string              `json:"provider"`
 	WorkspacePath string              `json:"workspace_path"`
+	AgentImage    string              `json:"agent_image"`
 	Agents        []CreateAgentInput  `json:"agents"`
 	McpServers    interface{}         `json:"mcp_servers"`
 }
@@ -32,6 +33,7 @@ type UpdateTeamRequest struct {
 	Description   *string     `json:"description"`
 	Provider      *string     `json:"provider"`
 	WorkspacePath *string     `json:"workspace_path"`
+	AgentImage    *string     `json:"agent_image"`
 	McpServers    interface{} `json:"mcp_servers"`
 }
 
@@ -396,6 +398,36 @@ type UpdateBindingRequest struct {
 type PostActionBindingResponse struct {
 	models.PostActionBinding
 	TriggerName string `json:"trigger_name"`
+}
+
+// validateAgentImage checks that a custom agent image string is safe for use.
+// An empty string is valid (means "use the default image").
+// The image must contain at least one '/' (rejecting bare names like "nginx"),
+// must not contain shell injection characters, control characters, spaces, or exceed 512 chars.
+func validateAgentImage(img string) error {
+	if img == "" {
+		return nil
+	}
+	if len(img) > 512 {
+		return fmt.Errorf("agent_image must be at most 512 characters")
+	}
+	// Reject control characters and non-printable ASCII (null bytes, newlines, tabs, etc.).
+	for _, r := range img {
+		if r < 0x20 || r > 0x7E {
+			return fmt.Errorf("agent_image contains invalid characters")
+		}
+	}
+	if strings.Contains(img, " ") {
+		return fmt.Errorf("agent_image must not contain spaces")
+	}
+	if !strings.Contains(img, "/") {
+		return fmt.Errorf("agent_image must include a registry or namespace (e.g. myregistry/myimage:tag)")
+	}
+	// Reuse shellMetaChars for consistency with other validators in this package.
+	if strings.ContainsAny(img, shellMetaChars) {
+		return fmt.Errorf("agent_image contains invalid characters")
+	}
+	return nil
 }
 
 // validMcpNameRe matches safe MCP server names: alphanumeric, hyphens, underscores.

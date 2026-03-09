@@ -225,9 +225,7 @@ func hexToIP(hex string) (string, error) {
 
 // DockerRuntime implements AgentRuntime using the Docker Engine API.
 type DockerRuntime struct {
-	client              *client.Client
-	agentImage          string
-	openCodeAgentImage  string
+	client *client.Client
 }
 
 // NewDockerRuntime creates a DockerRuntime using the default Docker client from env.
@@ -237,17 +235,7 @@ func NewDockerRuntime() (*DockerRuntime, error) {
 		return nil, fmt.Errorf("creating docker client: %w", err)
 	}
 
-	agentImage := os.Getenv("AGENT_IMAGE")
-	if agentImage == "" {
-		agentImage = DefaultAgentImage
-	}
-
-	openCodeAgentImage := os.Getenv("OPENCODE_AGENT_IMAGE")
-	if openCodeAgentImage == "" {
-		openCodeAgentImage = DefaultOpenCodeAgentImage
-	}
-
-	return &DockerRuntime{client: cli, agentImage: agentImage, openCodeAgentImage: openCodeAgentImage}, nil
+	return &DockerRuntime{client: cli}, nil
 }
 
 func teamNetworkName(teamName string) string { return "team-" + teamName }
@@ -408,9 +396,9 @@ func (d *DockerRuntime) DeployAgent(ctx context.Context, config AgentConfig) (*A
 	img := config.Image
 	if img == "" {
 		if config.Provider == "opencode" {
-			img = d.openCodeAgentImage
+			img = DefaultOpenCodeAgentImage
 		} else {
-			img = d.agentImage
+			img = DefaultAgentImage
 		}
 	}
 
