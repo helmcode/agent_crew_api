@@ -40,6 +40,16 @@ func InitDB(dbPath string) (*gorm.DB, error) {
 		}
 	}
 
+	// Migrate settings table from pre-auth schema (no org_id) to auth schema.
+	// GORM AutoMigrate can't drop the old single-column unique index on SQLite,
+	// so we handle it manually before AutoMigrate runs.
+	if db.Migrator().HasTable(&Settings{}) && !db.Migrator().HasColumn(&Settings{}, "org_id") {
+		slog.Info("migrating settings table: adding org_id column")
+		sqlDB.Exec("DROP INDEX IF EXISTS idx_settings_key")
+		sqlDB.Exec("ALTER TABLE settings ADD COLUMN org_id TEXT DEFAULT '' NOT NULL")
+		slog.Info("settings table migrated")
+	}
+
 	if err := db.AutoMigrate(&Organization{}, &User{}, &Invite{}, &Team{}, &Agent{}, &TaskLog{}, &Settings{}, &Schedule{}, &ScheduleRun{}, &Webhook{}, &WebhookRun{}, &PostAction{}, &PostActionBinding{}, &PostActionRun{}); err != nil {
 		return nil, fmt.Errorf("auto-migrating models: %w", err)
 	}
