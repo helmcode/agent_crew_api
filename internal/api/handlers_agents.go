@@ -488,6 +488,13 @@ func (s *Server) UpdateInstructions(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusInternalServerError, "failed to write instructions: "+err.Error())
 	}
 
+	// Persist to database so redeployments use the user's latest edits
+	// instead of regenerating from defaults.
+	if err := s.db.Model(&agent).Update("instructions_md", req.Content).Error; err != nil {
+		slog.Error("failed to persist instructions to database", "agent", agent.Name, "error", err)
+		// Non-fatal: the container file was updated successfully.
+	}
+
 	slog.Info("agent instructions updated", "agent", agent.Name, "team", teamID, "path", relPath)
 
 	return c.JSON(InstructionsResponse{
