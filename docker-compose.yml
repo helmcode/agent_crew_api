@@ -10,7 +10,6 @@ services:
       - DATABASE_PATH=/data/agentcrew.db
       - NATS_URL=nats://${NATS_AUTH_TOKEN:-agentcrew-dev-token}@nats:4222
       - DOCKER_HOST=unix:///var/run/docker.sock
-      - AGENT_IMAGE=agentcrew-agent:latest
       - AGENT_NETWORK=agentcrew-local
       - NATS_AUTH_TOKEN
     volumes:

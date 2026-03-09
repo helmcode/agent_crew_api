@@ -37,14 +37,15 @@ build-api-image:
 build-agent-image: build-sidecar-linux
 	cp $(BIN_DIR)/sidecar-linux-$(DOCKER_ARCH) build/agent/sidecar-$(DOCKER_ARCH)
 	docker build -t agentcrew-agent:$(IMAGE_TAG) -f build/agent/Dockerfile build/agent
-	rm -f build/agent/sidecar-$(DOCKER_ARCH) $(BIN_DIR)/sidecar-linux-$(DOCKER_ARCH)
+	rm -f build/agent/sidecar-$(DOCKER_ARCH)
 
 build-opencode-agent-image: build-sidecar-linux
 	cp $(BIN_DIR)/sidecar-linux-$(DOCKER_ARCH) build/opencode-agent/sidecar-$(DOCKER_ARCH)
 	docker build -t agentcrew-opencode-agent:$(IMAGE_TAG) -f build/opencode-agent/Dockerfile build/opencode-agent
-	rm -f build/opencode-agent/sidecar-$(DOCKER_ARCH) $(BIN_DIR)/sidecar-linux-$(DOCKER_ARCH)
+	rm -f build/opencode-agent/sidecar-$(DOCKER_ARCH)
 
-build-images: build-api-image build-agent-image build-opencode-agent-image
+build-images: build-api-image build-sidecar-linux build-agent-image build-opencode-agent-image
+	rm -f $(BIN_DIR)/sidecar-linux-$(DOCKER_ARCH)
 
 # ---------- Docker Compose ----------
 
