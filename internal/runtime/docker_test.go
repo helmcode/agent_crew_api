@@ -418,6 +418,33 @@ func TestDockerRuntimeImageDefaults(t *testing.T) {
 	}
 }
 
+func TestIsLatestTag(t *testing.T) {
+	tests := []struct {
+		image string
+		want  bool
+	}{
+		{"ghcr.io/helmcode/agent_crew_agent:latest", true},
+		{"ghcr.io/helmcode/agent_crew_agent:0.3.3", false},
+		{"ghcr.io/helmcode/agent_crew_agent", true},         // no tag defaults to latest
+		{"myimage:latest", true},
+		{"myimage:v1.0", false},
+		{"myimage", true},                                    // no tag defaults to latest
+		{"registry:5000/repo/image:latest", true},
+		{"registry:5000/repo/image:v2", false},
+		{"registry:5000/repo/image", true},                   // port + no tag
+		{"localhost:5000/myimage", true},                     // port + no tag
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.image, func(t *testing.T) {
+			got := isLatestTag(tt.image)
+			if got != tt.want {
+				t.Errorf("isLatestTag(%q) = %v, want %v", tt.image, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestValidateAgentFilePath_OpenCodePaths(t *testing.T) {
 	// ValidateAgentFilePath allows both /workspace/.claude/ and /workspace/.opencode/ paths.
 	tests := []struct {

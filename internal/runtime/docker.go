@@ -108,13 +108,16 @@ func registryAuth(imageName string) string {
 	return base64.URLEncoding.EncodeToString(authJSON)
 }
 
-// pullImageIfNeeded implements an IfNotPresent pull policy: it checks if the
-// image exists locally first and only pulls from the registry when it is missing.
+// pullImageIfNeeded pulls an image from the registry when it is missing locally.
+// For images tagged :latest (or with no tag, which defaults to :latest), it
+// always pulls to ensure the local copy is up-to-date, since :latest is a
+// moving target. For all other tags it uses an IfNotPresent policy.
 func (d *DockerRuntime) pullImageIfNeeded(ctx context.Context, img string) error {
-	_, _, err := d.client.ImageInspectWithRaw(ctx, img)
-	if err == nil {
-		slog.Info("image already present locally, skipping pull", "image", img)
-		return nil
+	if !isLatestTag(img) {
+		if _, _, err := d.client.ImageInspectWithRaw(ctx, img); err == nil {
+			slog.Info("image already present locally, skipping pull", "image", img)
+			return nil
+		}
 	}
 
 	slog.Info("pulling image", "image", img)
@@ -127,6 +130,22 @@ func (d *DockerRuntime) pullImageIfNeeded(ctx context.Context, img string) error
 	defer reader.Close()
 	_, _ = io.Copy(io.Discard, reader)
 	return nil
+}
+
+// isLatestTag returns true if the image reference uses the :latest tag
+// (explicitly or implicitly by having no tag at all).
+func isLatestTag(img string) bool {
+	// Strip registry/repo prefix — we only care about the tag part.
+	if i := strings.LastIndex(img, ":"); i != -1 {
+		tag := img[i+1:]
+		// A colon could also be part of a port (e.g. "registry:5000/repo").
+		// Tags never contain "/" so if there's a slash it's a port, not a tag.
+		if !strings.Contains(tag, "/") {
+			return tag == "latest"
+		}
+	}
+	// No tag specified → Docker defaults to :latest.
+	return true
 }
 
 // GetNATSURL returns the NATS URL for a team in Docker runtime (internal container network).
