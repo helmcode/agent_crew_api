@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/helmcode/agent-crew/internal/claude"
@@ -278,6 +280,11 @@ func (b *Bridge) processEvent(event *provider.StreamEvent, currentResult *string
 			return
 		}
 
+		// Decode any literal \uXXXX escape sequences that Claude Code's
+		// stream-json may produce when its JSON encoder double-encodes
+		// non-ASCII characters (e.g. "Descripci\u00f3n" instead of "Descripción").
+		*currentResult = decodeUnicodeEscapes(*currentResult)
+
 		// Publish the result to the leader channel.
 		b.publishLeaderResponse("", "completed", *currentResult, "")
 		*currentResult = ""
@@ -379,4 +386,46 @@ func (b *Bridge) publishLeaderResponse(refMsgID, status, result, errMsg string) 
 	if err := b.client.Publish(subject, msg); err != nil {
 		slog.Error("failed to publish leader response", "error", err)
 	}
+}
+
+// decodeUnicodeEscapes replaces literal \uXXXX escape sequences in a string
+// with their actual UTF-8 characters. This handles cases where an upstream
+// JSON encoder (e.g. Claude Code CLI) double-encodes non-ASCII characters,
+// producing text like "Descripci\u00f3n" instead of "Descripción".
+//
+// Surrogate pairs (\uD800-\uDFFF) are handled: a high surrogate followed
+// by a low surrogate is decoded into the correct supplementary code point.
+func decodeUnicodeEscapes(s string) string {
+	if !strings.Contains(s, `\u`) {
+		return s
+	}
+	var result strings.Builder
+	result.Grow(len(s))
+	i := 0
+	for i < len(s) {
+		if i+5 < len(s) && s[i] == '\\' && s[i+1] == 'u' {
+			hex := s[i+2 : i+6]
+			cp, err := strconv.ParseUint(hex, 16, 32)
+			if err == nil {
+				r := rune(cp)
+				// Handle surrogate pairs for characters outside BMP.
+				if r >= 0xD800 && r <= 0xDBFF && i+11 < len(s) && s[i+6] == '\\' && s[i+7] == 'u' {
+					hex2 := s[i+8 : i+12]
+					cp2, err2 := strconv.ParseUint(hex2, 16, 32)
+					if err2 == nil && cp2 >= 0xDC00 && cp2 <= 0xDFFF {
+						r = 0x10000 + (r-0xD800)*0x400 + (rune(cp2) - 0xDC00)
+						result.WriteRune(r)
+						i += 12
+						continue
+					}
+				}
+				result.WriteRune(r)
+				i += 6
+				continue
+			}
+		}
+		result.WriteByte(s[i])
+		i++
+	}
+	return result.String()
 }

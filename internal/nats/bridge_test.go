@@ -1103,6 +1103,124 @@ func TestProcessEvent_DuplicateErrorDedup(t *testing.T) {
 
 // TestProcessEvent_ConsecutiveErrorsEachPublish verifies that the errorPublished
 // flag resets when a new user message arrives so the next error is not suppressed.
+// --- decodeUnicodeEscapes tests ---
+
+func TestDecodeUnicodeEscapes_Basic(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "no escapes",
+			input: "Hello world",
+			want:  "Hello world",
+		},
+		{
+			name:  "single accent",
+			input: `Descripci\u00f3n`,
+			want:  "Descripción",
+		},
+		{
+			name:  "multiple escapes",
+			input: `\u00faltima moderaci\u00f3n`,
+			want:  "última moderación",
+		},
+		{
+			name:  "mixed UTF-8 and escapes",
+			input: "café con \u0000" + `leche \u00e9special`,
+			want:  "café con \u0000leche éspecial",
+		},
+		{
+			name:  "Spanish sentence with all escape types",
+			input: `Descripci\u00f3n de campos espec\u00edficos`,
+			want:  "Descripción de campos específicos",
+		},
+		{
+			name:  "uppercase hex",
+			input: `\u00C9xito`,
+			want:  "Éxito",
+		},
+		{
+			name:  "newlines preserved alongside escapes",
+			input: `L\u00ednea 1\nL\u00ednea 2`,
+			want:  "Línea 1\\nLínea 2",
+		},
+		{
+			name:  "empty string",
+			input: "",
+			want:  "",
+		},
+		{
+			name:  "backslash not followed by u",
+			input: `path\to\file`,
+			want:  `path\to\file`,
+		},
+		{
+			name:  "incomplete escape (only 3 hex digits)",
+			input: `\u00f`,
+			want:  `\u00f`,
+		},
+		{
+			name:  "CJK character",
+			input: `\u4e16\u754c`,
+			want:  "世界",
+		},
+		{
+			name:  "surrogate pair (emoji)",
+			input: `\uD83D\uDE00`,
+			want:  "😀",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := decodeUnicodeEscapes(tt.input)
+			if got != tt.want {
+				t.Errorf("decodeUnicodeEscapes(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestProcessEvent_ResultDecodesUnicodeEscapes(t *testing.T) {
+	pub := &fakePublisher{}
+	bridge := &Bridge{
+		config: BridgeConfig{
+			AgentName: "leader",
+			TeamName:  "unicodeteam",
+			Role:      "leader",
+		},
+		client: pub,
+	}
+
+	// Simulate Claude Code returning a result with literal \uXXXX escapes
+	// in the Result field (as observed in production).
+	event := toProviderEvent(claude.StreamEvent{
+		Type:   "result",
+		Result: `Descripci\u00f3n de la \u00faltima moderaci\u00f3n`,
+	})
+
+	var currentResult string
+	bridge.processEvent(&event, &currentResult)
+
+	msgs := pub.getMessages()
+	var leaderPayload protocol.LeaderResponsePayload
+	for _, m := range msgs {
+		if m.Msg.Type == protocol.TypeLeaderResponse {
+			if err := json.Unmarshal(m.Msg.Payload, &leaderPayload); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			break
+		}
+	}
+
+	want := "Descripción de la última moderación"
+	if leaderPayload.Result != want {
+		t.Errorf("result: got %q, want %q", leaderPayload.Result, want)
+	}
+}
+
 func TestProcessEvent_ConsecutiveErrorsEachPublish(t *testing.T) {
 	pub := &fakePublisher{}
 	bridge := &Bridge{
