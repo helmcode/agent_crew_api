@@ -10,14 +10,16 @@ import (
 
 // StreamEvent represents a single event from Claude Code's stream-json output.
 type StreamEvent struct {
-	Type      string          `json:"type"`                // assistant, tool_use, tool_result, result, error, system
-	Message   json.RawMessage `json:"message,omitempty"`   // The full message content
-	Name      string          `json:"name,omitempty"`      // Tool name (for tool_use events)
-	Input     json.RawMessage `json:"input,omitempty"`     // Tool input (for tool_use events)
-	IsError   bool            `json:"is_error,omitempty"`  // True when result is an error (billing, auth, etc.)
-	Result    string          `json:"result,omitempty"`    // Human-readable result/error text
-	ErrorCode string          `json:"error,omitempty"`     // Machine-readable error code (e.g. "billing_error")
-	SessionID string          `json:"session_id,omitempty"` // Session ID for conversation continuity (in result events)
+	Type       string          `json:"type"`                 // assistant, tool_use, tool_result, result, error, system
+	Subtype    string          `json:"subtype,omitempty"`    // Event subtype (e.g. "init" for system events)
+	Message    json.RawMessage `json:"message,omitempty"`    // The full message content
+	Name       string          `json:"name,omitempty"`       // Tool name (for tool_use events)
+	Input      json.RawMessage `json:"input,omitempty"`      // Tool input (for tool_use events)
+	IsError    bool            `json:"is_error,omitempty"`   // True when result is an error (billing, auth, etc.)
+	Result     string          `json:"result,omitempty"`     // Human-readable result/error text
+	ErrorCode  string          `json:"error,omitempty"`      // Machine-readable error code (e.g. "billing_error")
+	SessionID  string          `json:"session_id,omitempty"` // Session ID for conversation continuity (in result events)
+	MCPServers json.RawMessage `json:"mcp_servers,omitempty"` // MCP server statuses (for system/init events)
 }
 
 // FriendlyError returns a user-facing message for known Claude CLI error codes.

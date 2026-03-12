@@ -66,6 +66,7 @@ func (c *ClaudeManager) convertEvents() {
 	for ce := range c.inner.ReadEvents() {
 		pe := StreamEvent{
 			Type:      ce.Type,
+			Subtype:   ce.Subtype,
 			Name:      ce.Name,
 			IsError:   ce.IsError,
 			Result:    ce.Result,
@@ -79,6 +80,9 @@ func (c *ClaudeManager) convertEvents() {
 		}
 		if len(ce.Input) > 0 {
 			pe.Input = string(ce.Input)
+		}
+		if len(ce.MCPServers) > 0 {
+			pe.MCPServers = string(ce.MCPServers)
 		}
 
 		select {
@@ -96,6 +100,7 @@ func (c *ClaudeManager) convertEvents() {
 func ToClaudeStreamEvent(pe *StreamEvent) *claude.StreamEvent {
 	ce := &claude.StreamEvent{
 		Type:      pe.Type,
+		Subtype:   pe.Subtype,
 		Name:      pe.Name,
 		IsError:   pe.IsError,
 		Result:    pe.Result,
@@ -107,6 +112,9 @@ func ToClaudeStreamEvent(pe *StreamEvent) *claude.StreamEvent {
 	}
 	if pe.Input != "" {
 		ce.Input = json.RawMessage(pe.Input)
+	}
+	if pe.MCPServers != "" {
+		ce.MCPServers = json.RawMessage(pe.MCPServers)
 	}
 	return ce
 }

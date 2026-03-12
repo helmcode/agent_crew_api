@@ -138,6 +138,7 @@ func TestPublishLeaderResponse_ErrorPayload(t *testing.T) {
 func toProviderEvent(ce claude.StreamEvent) provider.StreamEvent {
 	pe := provider.StreamEvent{
 		Type:      ce.Type,
+		Subtype:   ce.Subtype,
 		Name:      ce.Name,
 		IsError:   ce.IsError,
 		Result:    ce.Result,
@@ -149,6 +150,9 @@ func toProviderEvent(ce claude.StreamEvent) provider.StreamEvent {
 	}
 	if len(ce.Input) > 0 {
 		pe.Input = string(ce.Input)
+	}
+	if len(ce.MCPServers) > 0 {
+		pe.MCPServers = string(ce.MCPServers)
 	}
 	return pe
 }
@@ -1265,5 +1269,168 @@ func TestProcessEvent_ConsecutiveErrorsEachPublish(t *testing.T) {
 	}
 	if leaderCount != 2 {
 		t.Errorf("expected 2 leader_responses (one per interaction), got %d", leaderCount)
+	}
+}
+
+// --- processEvent: system/init MCP runtime status tests ---
+
+func TestProcessEvent_SystemInitPublishesMcpStatus(t *testing.T) {
+	pub := &fakePublisher{}
+	bridge := &Bridge{
+		config: BridgeConfig{
+			AgentName: "leader",
+			TeamName:  "mcpteam",
+			Role:      "leader",
+		},
+		client: pub,
+	}
+
+	mcpServers := `[{"name":"postgres","status":"connected"},{"name":"redis","status":"failed","error":"Connection refused"}]`
+	event := toProviderEvent(claude.StreamEvent{
+		Type:       "system",
+		Subtype:    "init",
+		MCPServers: json.RawMessage(mcpServers),
+	})
+
+	var currentResult string
+	bridge.processEvent(&event, &currentResult)
+
+	msgs := pub.getMessages()
+	// Should produce 2 messages: mcp_status + activity_event.
+	if len(msgs) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(msgs))
+	}
+
+	// First message: mcp_status.
+	if msgs[0].Msg.Type != protocol.TypeMcpStatus {
+		t.Errorf("msg[0] Type: got %q, want %q", msgs[0].Msg.Type, protocol.TypeMcpStatus)
+	}
+	if msgs[0].Subject != "team.mcpteam.activity" {
+		t.Errorf("msg[0] Subject: got %q, want 'team.mcpteam.activity'", msgs[0].Subject)
+	}
+
+	var mcpPayload protocol.McpStatusPayload
+	if err := json.Unmarshal(msgs[0].Msg.Payload, &mcpPayload); err != nil {
+		t.Fatalf("unmarshal mcp_status: %v", err)
+	}
+	if mcpPayload.AgentName != "leader" {
+		t.Errorf("AgentName: got %q, want 'leader'", mcpPayload.AgentName)
+	}
+	if len(mcpPayload.Servers) != 2 {
+		t.Fatalf("Servers count: got %d, want 2", len(mcpPayload.Servers))
+	}
+	// Verify status mapping: connected → running.
+	if mcpPayload.Servers[0].Name != "postgres" || mcpPayload.Servers[0].Status != "running" {
+		t.Errorf("Server[0]: got name=%q status=%q, want name='postgres' status='running'",
+			mcpPayload.Servers[0].Name, mcpPayload.Servers[0].Status)
+	}
+	// Verify status mapping: failed → failed.
+	if mcpPayload.Servers[1].Name != "redis" || mcpPayload.Servers[1].Status != "failed" {
+		t.Errorf("Server[1]: got name=%q status=%q, want name='redis' status='failed'",
+			mcpPayload.Servers[1].Name, mcpPayload.Servers[1].Status)
+	}
+	if mcpPayload.Servers[1].Error != "Connection refused" {
+		t.Errorf("Server[1].Error: got %q, want 'Connection refused'", mcpPayload.Servers[1].Error)
+	}
+	if mcpPayload.Summary != "1 running, 1 failed" {
+		t.Errorf("Summary: got %q, want '1 running, 1 failed'", mcpPayload.Summary)
+	}
+
+	// Second message: activity_event.
+	if msgs[1].Msg.Type != protocol.TypeActivityEvent {
+		t.Errorf("msg[1] Type: got %q, want %q", msgs[1].Msg.Type, protocol.TypeActivityEvent)
+	}
+
+	var actPayload protocol.ActivityEventPayload
+	if err := json.Unmarshal(msgs[1].Msg.Payload, &actPayload); err != nil {
+		t.Fatalf("unmarshal activity: %v", err)
+	}
+	if actPayload.Action != "system: init" {
+		t.Errorf("Action: got %q, want 'system: init'", actPayload.Action)
+	}
+}
+
+func TestProcessEvent_SystemNonInitOnlyPublishesActivity(t *testing.T) {
+	pub := &fakePublisher{}
+	bridge := &Bridge{
+		config: BridgeConfig{
+			AgentName: "leader",
+			TeamName:  "mcpteam2",
+			Role:      "leader",
+		},
+		client: pub,
+	}
+
+	// System event with a non-init subtype should only publish activity, no mcp_status.
+	event := toProviderEvent(claude.StreamEvent{
+		Type:    "system",
+		Subtype: "heartbeat",
+	})
+
+	var currentResult string
+	bridge.processEvent(&event, &currentResult)
+
+	msgs := pub.getMessages()
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+	if msgs[0].Msg.Type != protocol.TypeActivityEvent {
+		t.Errorf("Type: got %q, want %q", msgs[0].Msg.Type, protocol.TypeActivityEvent)
+	}
+
+	var payload protocol.ActivityEventPayload
+	if err := json.Unmarshal(msgs[0].Msg.Payload, &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if payload.Action != "system: heartbeat" {
+		t.Errorf("Action: got %q, want 'system: heartbeat'", payload.Action)
+	}
+}
+
+func TestProcessEvent_SystemInitWithoutMcpServers(t *testing.T) {
+	pub := &fakePublisher{}
+	bridge := &Bridge{
+		config: BridgeConfig{
+			AgentName: "leader",
+			TeamName:  "mcpteam3",
+			Role:      "leader",
+		},
+		client: pub,
+	}
+
+	// System/init event without mcp_servers should only publish activity.
+	event := toProviderEvent(claude.StreamEvent{
+		Type:    "system",
+		Subtype: "init",
+	})
+
+	var currentResult string
+	bridge.processEvent(&event, &currentResult)
+
+	msgs := pub.getMessages()
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+	if msgs[0].Msg.Type != protocol.TypeActivityEvent {
+		t.Errorf("Type: got %q, want %q", msgs[0].Msg.Type, protocol.TypeActivityEvent)
+	}
+}
+
+func TestMapMcpRuntimeStatus(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"connected", "running"},
+		{"failed", "failed"},
+		{"unknown", "unknown"},
+		{"", ""},
+	}
+
+	for _, tt := range tests {
+		got := mapMcpRuntimeStatus(tt.input)
+		if got != tt.want {
+			t.Errorf("mapMcpRuntimeStatus(%q) = %q, want %q", tt.input, got, tt.want)
+		}
 	}
 }

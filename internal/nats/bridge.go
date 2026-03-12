@@ -293,6 +293,13 @@ func (b *Bridge) processEvent(event *provider.StreamEvent, currentResult *string
 		// Publish tool results as activity events for visibility.
 		b.publishActivityEvent(claudeEvent, "tool result")
 
+	case "system":
+		// Handle system events (e.g. init with MCP server statuses).
+		if event.Subtype == "init" && event.MCPServers != "" {
+			b.publishMcpRuntimeStatus(event.MCPServers)
+		}
+		b.publishActivityEvent(claudeEvent, "system: "+event.Subtype)
+
 	case "error":
 		slog.Error("agent error event", "agent", b.config.AgentName, "result", event.Result)
 		b.publishActivityEvent(claudeEvent, "error")
@@ -385,6 +392,78 @@ func (b *Bridge) publishLeaderResponse(refMsgID, status, result, errMsg string) 
 
 	if err := b.client.Publish(subject, msg); err != nil {
 		slog.Error("failed to publish leader response", "error", err)
+	}
+}
+
+// mcpInitServer represents a single MCP server entry from Claude Code's init event.
+type mcpInitServer struct {
+	Name   string `json:"name"`
+	Status string `json:"status"` // "connected", "failed", etc.
+	Error  string `json:"error,omitempty"`
+}
+
+// mapMcpRuntimeStatus maps Claude Code's MCP server status to the protocol status.
+// "connected" → "running", "failed" → "failed", anything else passes through.
+func mapMcpRuntimeStatus(claudeStatus string) string {
+	switch claudeStatus {
+	case "connected":
+		return "running"
+	case "failed":
+		return "failed"
+	default:
+		return claudeStatus
+	}
+}
+
+// publishMcpRuntimeStatus parses MCP server statuses from a system/init event
+// and publishes them as a TypeMcpStatus message via NATS.
+func (b *Bridge) publishMcpRuntimeStatus(rawServers string) {
+	var servers []mcpInitServer
+	if err := json.Unmarshal([]byte(rawServers), &servers); err != nil {
+		slog.Error("failed to parse MCP servers from init event", "error", err)
+		return
+	}
+
+	statuses := make([]protocol.McpServerStatus, 0, len(servers))
+	var running, failed int
+	for _, s := range servers {
+		mapped := mapMcpRuntimeStatus(s.Status)
+		statuses = append(statuses, protocol.McpServerStatus{
+			Name:   s.Name,
+			Status: mapped,
+			Error:  s.Error,
+		})
+		switch mapped {
+		case "running":
+			running++
+		case "failed":
+			failed++
+		}
+	}
+
+	summary := fmt.Sprintf("%d running, %d failed", running, failed)
+	slog.Info("MCP runtime status from init event", "agent", b.config.AgentName, "summary", summary)
+
+	payload := protocol.McpStatusPayload{
+		AgentName: b.config.AgentName,
+		Servers:   statuses,
+		Summary:   summary,
+	}
+
+	msg, err := protocol.NewMessage(b.config.AgentName, "system", protocol.TypeMcpStatus, payload)
+	if err != nil {
+		slog.Error("failed to create MCP runtime status message", "error", err)
+		return
+	}
+
+	subject, err := protocol.TeamActivityChannel(b.config.TeamName)
+	if err != nil {
+		slog.Error("failed to build activity channel for MCP runtime status", "error", err)
+		return
+	}
+
+	if err := b.client.Publish(subject, msg); err != nil {
+		slog.Error("failed to publish MCP runtime status", "error", err)
 	}
 }
 

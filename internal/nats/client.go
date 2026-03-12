@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -37,10 +38,11 @@ func DefaultConfig(url, name string) ClientConfig {
 
 // Client wraps a NATS connection with helpers for the AgentCrew protocol.
 type Client struct {
-	conn   *nats.Conn
-	js     jetstream.JetStream
-	config ClientConfig
-	subs   []*nats.Subscription
+	conn             *nats.Conn
+	js               jetstream.JetStream
+	config           ClientConfig
+	subs             []*nats.Subscription
+	consumerContexts []jetstream.ConsumeContext
 }
 
 // Connect establishes a connection to the NATS server.
@@ -123,8 +125,18 @@ func (c *Client) Publish(subject string, msg *protocol.Message) error {
 }
 
 // Subscribe registers a handler for messages on the given subject.
-// The handler receives parsed protocol messages.
+// When JetStream is enabled, it uses an ordered consumer with DeliverAll policy
+// so that messages published before the subscription are replayed. Falls back to
+// core NATS when JetStream is not available.
 func (c *Client) Subscribe(subject string, handler func(*protocol.Message)) error {
+	if c.js != nil {
+		return c.subscribeJetStream(subject, handler)
+	}
+	return c.subscribeCoreNATS(subject, handler)
+}
+
+// subscribeCoreNATS registers a plain NATS subscription (no replay).
+func (c *Client) subscribeCoreNATS(subject string, handler func(*protocol.Message)) error {
 	sub, err := c.conn.Subscribe(subject, func(natsMsg *nats.Msg) {
 		var msg protocol.Message
 		if err := json.Unmarshal(natsMsg.Data, &msg); err != nil {
@@ -138,7 +150,51 @@ func (c *Client) Subscribe(subject string, handler func(*protocol.Message)) erro
 	}
 
 	c.subs = append(c.subs, sub)
-	slog.Debug("subscribed", "subject", subject)
+	slog.Debug("subscribed (core nats)", "subject", subject)
+	return nil
+}
+
+// streamNameFromSubject derives the JetStream stream name from a subject.
+// Subjects follow the pattern "team.{teamName}.xxx" and the stream is "TEAM_{teamName}".
+func streamNameFromSubject(subject string) (string, error) {
+	parts := strings.Split(subject, ".")
+	if len(parts) < 2 || parts[0] != "team" {
+		return "", fmt.Errorf("cannot derive stream name from subject %q: expected team.<name>.<channel>", subject)
+	}
+	return "TEAM_" + parts[1], nil
+}
+
+// subscribeJetStream creates an ordered JetStream consumer with DeliverAll policy
+// to replay messages published before the subscription started.
+func (c *Client) subscribeJetStream(subject string, handler func(*protocol.Message)) error {
+	streamName, err := streamNameFromSubject(subject)
+	if err != nil {
+		return err
+	}
+
+	ctx := context.Background()
+
+	cons, err := c.js.OrderedConsumer(ctx, streamName, jetstream.OrderedConsumerConfig{
+		FilterSubjects: []string{subject},
+	})
+	if err != nil {
+		return fmt.Errorf("creating ordered consumer for %s on stream %s: %w", subject, streamName, err)
+	}
+
+	cc, err := cons.Consume(func(msg jetstream.Msg) {
+		var protoMsg protocol.Message
+		if err := json.Unmarshal(msg.Data(), &protoMsg); err != nil {
+			slog.Warn("failed to unmarshal jetstream message", "subject", subject, "error", err)
+			return
+		}
+		handler(&protoMsg)
+	})
+	if err != nil {
+		return fmt.Errorf("starting jetstream consume for %s: %w", subject, err)
+	}
+
+	c.consumerContexts = append(c.consumerContexts, cc)
+	slog.Debug("subscribed (jetstream ordered consumer)", "subject", subject, "stream", streamName)
 	return nil
 }
 
@@ -147,8 +203,11 @@ func (c *Client) Flush() error {
 	return c.conn.Flush()
 }
 
-// Close drains all subscriptions and closes the connection.
+// Close stops all JetStream consumers, drains core NATS subscriptions, and closes the connection.
 func (c *Client) Close() {
+	for _, cc := range c.consumerContexts {
+		cc.Stop()
+	}
 	for _, sub := range c.subs {
 		if err := sub.Drain(); err != nil {
 			slog.Debug("draining subscription", "subject", sub.Subject, "error", err)

@@ -20,12 +20,14 @@ type AgentManager interface {
 // StreamEvent represents a single event from an agent's output stream.
 // This is the provider-agnostic version of claude.StreamEvent.
 type StreamEvent struct {
-	Type      string // "assistant", "reasoning", "tool_use", "tool_result", "result", "error"
-	Message   string
-	Name      string // Tool name (for tool_use events)
-	Input     string // Tool input (for tool_use events)
-	IsError   bool
-	Result    string
-	ErrorCode string // Machine-readable error code (e.g. "billing_error")
-	SessionID string
+	Type       string // "assistant", "reasoning", "tool_use", "tool_result", "result", "error", "system"
+	Subtype    string // Event subtype (e.g. "init" for system events)
+	Message    string
+	Name       string // Tool name (for tool_use events)
+	Input      string // Tool input (for tool_use events)
+	IsError    bool
+	Result     string
+	ErrorCode  string // Machine-readable error code (e.g. "billing_error")
+	SessionID  string
+	MCPServers string // Raw JSON array of MCP server statuses (for system/init events)
 }

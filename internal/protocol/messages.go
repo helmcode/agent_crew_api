@@ -125,9 +125,14 @@ type McpServerConfig struct {
 }
 
 // McpServerStatus tracks the status of a single MCP server.
+// Status values:
+//   - "configured" — sidecar wrote config, pre-warming passed
+//   - "running"    — Claude Code successfully started the MCP server (runtime init)
+//   - "error"      — sidecar validation or pre-warming failed
+//   - "failed"     — MCP server failed at Claude Code runtime
 type McpServerStatus struct {
 	Name   string `json:"name"`
-	Status string `json:"status"` // "configured", "error"
+	Status string `json:"status"` // "configured", "running", "error", "failed"
 	Error  string `json:"error,omitempty"`
 }
 
