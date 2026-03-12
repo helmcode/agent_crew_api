@@ -253,6 +253,12 @@ func startOpenCode(ctx context.Context, cfg *AgentConfig, workDir string, natsCl
 		return nil, nil, fmt.Errorf("starting opencode manager: %w", err)
 	}
 
+	// Publish MCP runtime status for OpenCode. Unlike Claude Code, OpenCode
+	// does not emit an init event with MCP server statuses. We publish
+	// "configured" for all servers after a successful start — this is the
+	// best status we can report without runtime introspection.
+	publishInitialMcpStatus(natsClient, cfg.Agent.Name, cfg.Agent.Team)
+
 	return mgr, cmd, nil
 }
 
@@ -557,6 +563,70 @@ func checkSkillsDir(claudeDir string) []protocol.ValidationCheck {
 		Status:  protocol.ValidationOK,
 		Message: fmt.Sprintf("%d skill package(s) installed in %s", len(entries), skillsDir),
 	}}
+}
+
+// publishInitialMcpStatus reads the AGENT_MCP_SERVERS env var and publishes
+// an mcp_status message with "configured" status for each server. This is used
+// for providers like OpenCode that do not emit an init event with runtime MCP
+// status. Called after the agent manager starts successfully.
+func publishInitialMcpStatus(client *agentNats.Client, agentName, teamName string) {
+	mcpEnv := os.Getenv("AGENT_MCP_SERVERS")
+	payload, ok := buildInitialMcpStatus(mcpEnv, agentName)
+	if !ok {
+		return
+	}
+
+	slog.Info("publishing initial MCP status for OpenCode", "summary", payload.Summary)
+
+	msg, err := protocol.NewMessage(agentName, "system", protocol.TypeMcpStatus, payload)
+	if err != nil {
+		slog.Error("failed to create initial MCP status message", "error", err)
+		return
+	}
+
+	subject, err := protocol.TeamActivityChannel(teamName)
+	if err != nil {
+		slog.Error("failed to build activity channel for initial MCP status", "error", err)
+		return
+	}
+
+	if err := client.Publish(subject, msg); err != nil {
+		slog.Error("failed to publish initial MCP status", "error", err)
+	}
+}
+
+// buildInitialMcpStatus parses the MCP servers JSON string and builds an
+// McpStatusPayload with "configured" status for each server. Returns the
+// payload and true if there are servers to report, or zero value and false
+// if the input is empty, invalid, or contains no servers.
+func buildInitialMcpStatus(mcpServersJSON, agentName string) (protocol.McpStatusPayload, bool) {
+	if mcpServersJSON == "" {
+		return protocol.McpStatusPayload{}, false
+	}
+
+	var servers []protocol.McpServerConfig
+	if err := json.Unmarshal([]byte(mcpServersJSON), &servers); err != nil {
+		slog.Warn("failed to parse MCP servers JSON for initial status", "error", err)
+		return protocol.McpStatusPayload{}, false
+	}
+
+	if len(servers) == 0 {
+		return protocol.McpStatusPayload{}, false
+	}
+
+	statuses := make([]protocol.McpServerStatus, len(servers))
+	for i, s := range servers {
+		statuses[i] = protocol.McpServerStatus{
+			Name:   s.Name,
+			Status: "configured",
+		}
+	}
+
+	return protocol.McpStatusPayload{
+		AgentName: agentName,
+		Servers:   statuses,
+		Summary:   fmt.Sprintf("%d MCP server(s) configured", len(statuses)),
+	}, true
 }
 
 // publishValidationResults publishes validation check results to the team
