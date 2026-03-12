@@ -987,6 +987,103 @@ func TestProcessEvent_ResultClearsCurrentResult(t *testing.T) {
 	}
 }
 
+// --- processEvent: null message preserves accumulated assistant text ---
+
+func TestProcessEvent_ResultNullMessagePreservesAccumulated(t *testing.T) {
+	pub := &fakePublisher{}
+	bridge := &Bridge{
+		config: BridgeConfig{
+			AgentName: "leader",
+			TeamName:  "nullmsgteam",
+			Role:      "leader",
+		},
+		client:   pub,
+		userMsgs: make(chan pendingMessage, 16),
+	}
+
+	// Simulate Claude Code with --resume: response delivered via assistant
+	// events, result event has message: null (JSON null).
+	assistantMsg, _ := json.Marshal(map[string]string{"type": "text", "text": "Hello from resumed session"})
+	assistant := toProviderEvent(claude.StreamEvent{Type: "assistant", Message: assistantMsg})
+
+	// The provider adapter converts json.RawMessage("null") to the string "null".
+	result := provider.StreamEvent{Type: "result", Message: "null"}
+
+	var currentResult string
+	bridge.processEvent(&assistant, &currentResult)
+	bridge.processEvent(&result, &currentResult)
+
+	msgs := pub.getMessages()
+	var leaderPayload protocol.LeaderResponsePayload
+	found := false
+	for _, m := range msgs {
+		if m.Msg.Type == protocol.TypeLeaderResponse {
+			if err := json.Unmarshal(m.Msg.Payload, &leaderPayload); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		t.Fatal("expected leader_response to be published, but none was found")
+	}
+
+	// The accumulated text from assistant events should be preserved.
+	if leaderPayload.Result != "Hello from resumed session" {
+		t.Errorf("result: got %q, want 'Hello from resumed session'", leaderPayload.Result)
+	}
+}
+
+// --- processEvent: result with empty text preserves accumulated ---
+
+func TestProcessEvent_ResultEmptyTextPreservesAccumulated(t *testing.T) {
+	pub := &fakePublisher{}
+	bridge := &Bridge{
+		config: BridgeConfig{
+			AgentName: "leader",
+			TeamName:  "emptytextteam",
+			Role:      "leader",
+		},
+		client:   pub,
+		userMsgs: make(chan pendingMessage, 16),
+	}
+
+	// Assistant events accumulate text.
+	assistantMsg, _ := json.Marshal(map[string]string{"type": "text", "text": "Accumulated response"})
+	assistant := toProviderEvent(claude.StreamEvent{Type: "assistant", Message: assistantMsg})
+
+	// Result event with valid JSON message but empty text field.
+	resultMsg, _ := json.Marshal(map[string]string{"type": "text", "text": ""})
+	result := toProviderEvent(claude.StreamEvent{Type: "result", Message: resultMsg})
+
+	var currentResult string
+	bridge.processEvent(&assistant, &currentResult)
+	bridge.processEvent(&result, &currentResult)
+
+	msgs := pub.getMessages()
+	var leaderPayload protocol.LeaderResponsePayload
+	found := false
+	for _, m := range msgs {
+		if m.Msg.Type == protocol.TypeLeaderResponse {
+			if err := json.Unmarshal(m.Msg.Payload, &leaderPayload); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		t.Fatal("expected leader_response to be published, but none was found")
+	}
+
+	if leaderPayload.Result != "Accumulated response" {
+		t.Errorf("result: got %q, want 'Accumulated response'", leaderPayload.Result)
+	}
+}
+
 // --- processEvent: empty result skipped ---
 
 func TestProcessEvent_EmptyResultSkipped(t *testing.T) {

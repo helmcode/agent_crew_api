@@ -30,6 +30,12 @@ type publisher interface {
 	Subscribe(subject string, handler func(*protocol.Message)) error
 }
 
+// pendingMessage holds a queued user message with its correlation metadata.
+type pendingMessage struct {
+	content        string
+	scheduledRunID string
+}
+
 // Bridge connects NATS messaging with an AI agent process.
 // It receives user messages via the team leader NATS channel, forwards them
 // to the agent's input, reads the agent's output events, and publishes leader
@@ -41,6 +47,8 @@ type Bridge struct {
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
 
+	userMsgs chan pendingMessage // Queued user messages for serial processing.
+
 	mu              sync.Mutex
 	scheduledRunIDs []string // FIFO queue of correlation IDs from scheduled run requests
 	errorPublished  bool     // Guards against duplicate error leader_responses within one interaction.
@@ -49,9 +57,10 @@ type Bridge struct {
 // NewBridge creates a Bridge with the given components.
 func NewBridge(config BridgeConfig, client *Client, manager provider.AgentManager) *Bridge {
 	return &Bridge{
-		config:  config,
-		client:  client,
-		manager: manager,
+		config:   config,
+		client:   client,
+		manager:  manager,
+		userMsgs: make(chan pendingMessage, 16),
 	}
 }
 
@@ -68,6 +77,12 @@ func (b *Bridge) Start(ctx context.Context) error {
 	if err := b.client.Subscribe(leaderSubject, b.handleIncoming); err != nil {
 		return err
 	}
+
+	// Start goroutine to process queued user messages serially.
+	// This unblocks the NATS subscription callback (handleIncoming) so it
+	// can keep receiving messages while SendInput blocks.
+	b.wg.Add(1)
+	go b.processUserMessages(ctx)
 
 	// Start goroutine to forward Claude stdout events to NATS.
 	b.wg.Add(1)
@@ -108,7 +123,9 @@ func (b *Bridge) handleIncoming(msg *protocol.Message) {
 	}
 }
 
-// handleUserMessage forwards a free-form message to Claude.
+// handleUserMessage queues a user message for serial processing.
+// This returns immediately so the NATS subscription callback is not blocked
+// while SendInput waits for the Claude process to finish.
 func (b *Bridge) handleUserMessage(msg *protocol.Message) {
 	slog.Info("handling user message", "agent", b.config.AgentName, "from", msg.From)
 
@@ -118,15 +135,41 @@ func (b *Bridge) handleUserMessage(msg *protocol.Message) {
 		return
 	}
 
-	// Reset error dedup flag for new interaction.
-	b.mu.Lock()
-	b.errorPublished = false
-	b.scheduledRunIDs = append(b.scheduledRunIDs, payload.ScheduledRunID)
-	b.mu.Unlock()
+	pm := pendingMessage{
+		content:        payload.Content,
+		scheduledRunID: payload.ScheduledRunID,
+	}
 
-	slog.Info("forwarding user message to claude", "agent", b.config.AgentName, "content_length", len(payload.Content))
-	if err := b.manager.SendInput(payload.Content); err != nil {
-		slog.Error("failed to send user message to claude", "error", err)
+	select {
+	case b.userMsgs <- pm:
+		slog.Info("user message queued", "agent", b.config.AgentName, "content_length", len(payload.Content))
+	default:
+		slog.Warn("user message queue full, dropping message", "agent", b.config.AgentName)
+	}
+}
+
+// processUserMessages reads queued user messages and forwards them to the
+// agent serially. Each SendInput call blocks until the Claude process finishes,
+// ensuring conversation turns do not interleave.
+func (b *Bridge) processUserMessages(ctx context.Context) {
+	defer b.wg.Done()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case pm := <-b.userMsgs:
+			// Reset error dedup flag for new interaction.
+			b.mu.Lock()
+			b.errorPublished = false
+			b.scheduledRunIDs = append(b.scheduledRunIDs, pm.scheduledRunID)
+			b.mu.Unlock()
+
+			slog.Info("forwarding user message to claude", "agent", b.config.AgentName, "content_length", len(pm.content))
+			if err := b.manager.SendInput(pm.content); err != nil {
+				slog.Error("failed to send user message to claude", "error", err)
+			}
+		}
 	}
 }
 
@@ -261,12 +304,18 @@ func (b *Bridge) processEvent(event *provider.StreamEvent, currentResult *string
 		}
 
 		// Final result from agent — extract text and publish.
+		// Only overwrite the accumulated currentResult if the result event
+		// carries actual text. Claude Code with --resume often delivers the
+		// full response via streaming "assistant" events and sends the final
+		// "result" event with message: null (JSON null). The provider adapter
+		// converts null to the string "null", which json.Unmarshal accepts
+		// (producing zero-value fields), silently wiping the accumulated text.
 		var msgContent struct {
 			Type string `json:"type"`
 			Text string `json:"text"`
 		}
-		if event.Message != "" {
-			if err := json.Unmarshal([]byte(event.Message), &msgContent); err == nil {
+		if event.Message != "" && event.Message != "null" {
+			if err := json.Unmarshal([]byte(event.Message), &msgContent); err == nil && msgContent.Text != "" {
 				*currentResult = msgContent.Text
 			}
 		}
