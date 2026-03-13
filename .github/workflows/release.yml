@@ -158,6 +158,53 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate release notes
+        id: notes
+        run: |
+          VERSION="v${{ needs.preflight.outputs.version }}"
+          PREV_TAG=$(git tag --sort=-v:refname | head -1)
+
+          if [ -z "$PREV_TAG" ]; then
+            COMMITS=$(git log --oneline --no-merges)
+          else
+            COMMITS=$(git log --oneline --no-merges ${PREV_TAG}..HEAD)
+          fi
+
+          # Categorize commits
+          FEATURES=$(echo "$COMMITS" | grep -iE '^[a-f0-9]+ feat' | sed 's/^[a-f0-9]* /- /' || true)
+          FIXES=$(echo "$COMMITS" | grep -iE '^[a-f0-9]+ fix' | sed 's/^[a-f0-9]* /- /' || true)
+          OTHER=$(echo "$COMMITS" | grep -ivE '^[a-f0-9]+ (feat|fix|release)' | sed 's/^[a-f0-9]* /- /' || true)
+
+          {
+            echo "body<<RELEASE_EOF"
+            echo "## What's Changed"
+            echo ""
+            if [ -n "$FEATURES" ]; then
+              echo "### Features"
+              echo "$FEATURES"
+              echo ""
+            fi
+            if [ -n "$FIXES" ]; then
+              echo "### Bug Fixes"
+              echo "$FIXES"
+              echo ""
+            fi
+            if [ -n "$OTHER" ]; then
+              echo "### Other"
+              echo "$OTHER"
+              echo ""
+            fi
+            echo "### Docker Images"
+            echo "\`\`\`"
+            echo "ghcr.io/helmcode/agent_crew_api:${VERSION#v}"
+            echo "ghcr.io/helmcode/agent_crew_agent:${VERSION#v}"
+            echo "ghcr.io/helmcode/agent_crew_opencode_agent:${VERSION#v}"
+            echo "\`\`\`"
+            echo "RELEASE_EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Create git tag
         run: |
@@ -169,4 +216,62 @@ jobs:
         with:
           tag_name: v${{ needs.preflight.outputs.version }}
           name: v${{ needs.preflight.outputs.version }}
-          generate_release_notes: true
+          body: ${{ steps.notes.outputs.body }}
+
+      - name: Notify Slack
+        if: success()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_RELEASE_WEBHOOK_URL }}
+        run: |
+          VERSION="v${{ needs.preflight.outputs.version }}"
+          PREV_TAG=$(git tag --sort=-v:refname | grep -v "$VERSION" | head -1)
+
+          if [ -z "$PREV_TAG" ]; then
+            CHANGES=$(git log --oneline --no-merges | head -15)
+          else
+            CHANGES=$(git log --oneline --no-merges ${PREV_TAG}..HEAD~1)
+          fi
+
+          # Format changes as bullet list for Slack
+          BULLET_LIST=$(echo "$CHANGES" | grep -ivE '^[a-f0-9]+ release' | sed 's/^[a-f0-9]* /• /')
+          RELEASE_URL="https://github.com/${{ github.repository }}/releases/tag/${VERSION}"
+
+          # Build Slack payload
+          PAYLOAD=$(cat <<SLACK_EOF
+          {
+            "blocks": [
+              {
+                "type": "header",
+                "text": {
+                  "type": "plain_text",
+                  "text": ":rocket: AgentCrew API ${VERSION} Released"
+                }
+              },
+              {
+                "type": "section",
+                "text": {
+                  "type": "mrkdwn",
+                  "text": "*Changes:*\n${BULLET_LIST}"
+                }
+              },
+              {
+                "type": "actions",
+                "elements": [
+                  {
+                    "type": "button",
+                    "text": {
+                      "type": "plain_text",
+                      "text": ":github: View Release"
+                    },
+                    "url": "${RELEASE_URL}"
+                  }
+                ]
+              }
+            ]
+          }
+          SLACK_EOF
+          )
+
+          curl -s -X POST "$SLACK_WEBHOOK_URL" \
+            -H 'Content-Type: application/json' \
+            -d "$PAYLOAD"
