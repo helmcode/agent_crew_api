@@ -115,14 +115,12 @@ func (s *Server) StreamActivity(c *websocket.Conn) {
 			return
 		case <-ticker.C:
 			var logs []models.TaskLog
-			// Use ">=" instead of ">" to avoid skipping records that share the
-			// same created_at timestamp as the cursor (possible with SQLite).
-			// The frontend deduplicates by message ID, so re-sending a few
-			// records is harmless. Limit raised to 100 to prevent leader_response
-			// from being delayed behind large batches of activity events.
+			// Use ">" so the cursor advances past already-sent records.
+			// The seed query above initialises lastCreatedAt to the newest
+			// existing message, so only truly new records are streamed.
 			query := s.db.Where("team_id = ?", teamID).Order("created_at ASC").Limit(100)
 			if !lastCreatedAt.IsZero() {
-				query = query.Where("created_at >= ?", lastCreatedAt)
+				query = query.Where("created_at > ?", lastCreatedAt)
 			}
 			query.Find(&logs)
 

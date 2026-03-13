@@ -52,6 +52,8 @@ type Bridge struct {
 	mu              sync.Mutex
 	scheduledRunIDs []string // FIFO queue of correlation IDs from scheduled run requests
 	errorPublished  bool     // Guards against duplicate error leader_responses within one interaction.
+
+	mcpStatusPublished bool // Guards against re-publishing MCP status on every system/init event.
 }
 
 // NewBridge creates a Bridge with the given components.
@@ -344,8 +346,12 @@ func (b *Bridge) processEvent(event *provider.StreamEvent, currentResult *string
 
 	case "system":
 		// Handle system events (e.g. init with MCP server statuses).
-		if event.Subtype == "init" && event.MCPServers != "" {
+		// Only publish MCP runtime status once (on the first system/init event).
+		// JetStream replay or repeated init events should not re-trigger this,
+		// as it causes a status check on every message and degrades chat performance.
+		if event.Subtype == "init" && event.MCPServers != "" && !b.mcpStatusPublished {
 			b.publishMcpRuntimeStatus(event.MCPServers)
+			b.mcpStatusPublished = true
 		}
 		b.publishActivityEvent(claudeEvent, "system: "+event.Subtype)
 
