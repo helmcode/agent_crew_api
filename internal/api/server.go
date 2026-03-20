@@ -45,6 +45,7 @@ type Server struct {
 func NewServer(db *gorm.DB, rt runtime.AgentRuntime, ap auth.AuthProvider) *Server {
 	app := fiber.New(fiber.Config{
 		AppName:      "AgentCrew API",
+		BodyLimit:    51 * 1024 * 1024, // 5 files × 10MB + 1MB overhead
 		ErrorHandler: globalErrorHandler,
 	})
 

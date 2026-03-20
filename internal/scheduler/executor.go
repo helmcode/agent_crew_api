@@ -330,11 +330,12 @@ func (e *Executor) deployTeam(ctx context.Context, team models.Team) error {
 
 		if provider == models.ProviderOpenCode {
 			subInfo := runtime.SubAgentInfo{
-				Name:        agent.Name,
-				Description: agent.SubAgentDescription,
-				Model:       agent.SubAgentModel,
-				Skills:      json.RawMessage(agent.SubAgentSkills),
-				ClaudeMD:    agent.InstructionsMD,
+				Name:         agent.Name,
+				Description:  agent.SubAgentDescription,
+				Instructions: agent.SubAgentInstructions,
+				Model:        agent.SubAgentModel,
+				Skills:       json.RawMessage(agent.SubAgentSkills),
+				ClaudeMD:     agent.InstructionsMD,
 			}
 			filename := runtime.SubAgentFileName(agent.Name)
 			subAgentFiles[filename] = runtime.GenerateOpenCodeSubAgentContent(subInfo, leaderSkillConfigs)
@@ -351,6 +352,7 @@ func (e *Executor) deployTeam(ctx context.Context, team models.Team) error {
 			subInfo := runtime.SubAgentInfo{
 				Name:         agent.Name,
 				Description:  agent.SubAgentDescription,
+				Instructions: agent.SubAgentInstructions,
 				Model:        agent.SubAgentModel,
 				Skills:       json.RawMessage(agent.SubAgentSkills),
 				GlobalSkills: leaderSkills,

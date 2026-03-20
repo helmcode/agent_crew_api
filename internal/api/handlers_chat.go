@@ -2,10 +2,15 @@ package api
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
+	"mime"
 	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -17,7 +22,21 @@ import (
 	"github.com/helmcode/agent-crew/internal/protocol"
 )
 
+const (
+	// maxFileSize is the maximum allowed size per uploaded file (10 MB).
+	maxFileSize = 10 * 1024 * 1024
+	// maxFileCount is the maximum number of files per chat message.
+	maxFileCount = 5
+)
+
+// unsafeFilenameChars matches characters that are not safe in filenames.
+var unsafeFilenameChars = regexp.MustCompile(`[^a-zA-Z0-9._-]`)
+
+// allowedMIMEPrefixes lists the MIME type prefixes accepted for file uploads.
+var allowedMIMEPrefixes = []string{"text/", "image/", "application/pdf"}
+
 // SendChat sends a user message to the team leader via NATS.
+// It supports both JSON (backward compat) and multipart/form-data with file uploads.
 func (s *Server) SendChat(c *fiber.Ctx) error {
 	teamID := c.Params("id")
 
@@ -30,17 +49,111 @@ func (s *Server) SendChat(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusConflict, "team is not running")
 	}
 
-	var req ChatRequest
-	if err := c.BodyParser(&req); err != nil {
-		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
-	}
+	var message string
+	var fileRefs []protocol.FileRef
 
-	if req.Message == "" {
-		return fiber.NewError(fiber.StatusBadRequest, "message is required")
+	contentType := string(c.Request().Header.ContentType())
+	mediaType, _, _ := mime.ParseMediaType(contentType)
+
+	if mediaType == "multipart/form-data" {
+		// Parse multipart form.
+		message = c.FormValue("message")
+		if message == "" {
+			return fiber.NewError(fiber.StatusBadRequest, "message is required")
+		}
+
+		// Parse uploaded files.
+		form, err := c.MultipartForm()
+		if err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, "failed to parse multipart form")
+		}
+
+		files := form.File["files"]
+		if len(files) > maxFileCount {
+			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("maximum %d files allowed", maxFileCount))
+		}
+
+		if len(files) > 0 {
+			// Find the leader container to write files into.
+			var leader models.Agent
+			if err := s.db.Where("team_id = ? AND role = ? AND container_status = ?",
+				teamID, models.AgentRoleLeader, models.ContainerStatusRunning).First(&leader).Error; err != nil {
+				return fiber.NewError(fiber.StatusConflict, "no running leader agent found for file upload")
+			}
+
+			timestamp := time.Now().Unix()
+
+			for _, fh := range files {
+				// Validate file size.
+				if fh.Size > maxFileSize {
+					return fiber.NewError(fiber.StatusBadRequest,
+						fmt.Sprintf("file %q exceeds maximum size of %d bytes", fh.Filename, maxFileSize))
+				}
+
+				// Validate MIME type.
+				if !isAllowedMIME(fh.Header.Get("Content-Type")) {
+					return fiber.NewError(fiber.StatusBadRequest,
+						fmt.Sprintf("file %q has unsupported type %q; allowed: text/*, image/*, application/pdf",
+							fh.Filename, fh.Header.Get("Content-Type")))
+				}
+
+				// Sanitize filename.
+				safeName := sanitizeFilename(fh.Filename)
+				containerPath := fmt.Sprintf("/workspace/uploads/%d_%s", timestamp, safeName)
+
+				// Read file content.
+				f, err := fh.Open()
+				if err != nil {
+					return fiber.NewError(fiber.StatusInternalServerError, "failed to read uploaded file")
+				}
+				data, err := io.ReadAll(io.LimitReader(f, maxFileSize+1))
+				f.Close()
+				if err != nil {
+					return fiber.NewError(fiber.StatusInternalServerError, "failed to read uploaded file")
+				}
+				if int64(len(data)) > maxFileSize {
+					return fiber.NewError(fiber.StatusBadRequest,
+						fmt.Sprintf("file %q exceeds maximum size of %d bytes", fh.Filename, maxFileSize))
+				}
+
+				// Write file to leader container using base64 + exec.
+				encoded := base64.StdEncoding.EncodeToString(data)
+				writeCmd := []string{"sh", "-c",
+					fmt.Sprintf("mkdir -p /workspace/uploads && printf '%%s' '%s' | base64 -d > '%s'",
+						encoded, containerPath)}
+				if _, err := s.runtime.ExecInContainer(c.Context(), leader.ContainerID, writeCmd); err != nil {
+					slog.Error("failed to write uploaded file to container",
+						"file", safeName, "error", err)
+					return fiber.NewError(fiber.StatusInternalServerError,
+						fmt.Sprintf("failed to write file %q to container", fh.Filename))
+				}
+
+				fileRefs = append(fileRefs, protocol.FileRef{
+					Name: fh.Filename,
+					Path: containerPath,
+					Size: fh.Size,
+					Type: fh.Header.Get("Content-Type"),
+				})
+			}
+		}
+	} else {
+		// Fallback: JSON body (backward compatible).
+		var req ChatRequest
+		if err := c.BodyParser(&req); err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+		}
+		if req.Message == "" {
+			return fiber.NewError(fiber.StatusBadRequest, "message is required")
+		}
+		message = req.Message
 	}
 
 	// Log to task log for persistence and Activity panel.
-	content, _ := json.Marshal(map[string]string{"content": req.Message})
+	logPayload := map[string]interface{}{"content": message}
+	if len(fileRefs) > 0 {
+		logPayload["files"] = fileRefs
+	}
+	content, _ := json.Marshal(logPayload)
 	taskLog := models.TaskLog{
 		ID:          uuid.New().String(),
 		TeamID:      teamID,
@@ -53,7 +166,11 @@ func (s *Server) SendChat(c *fiber.Ctx) error {
 
 	// Publish to NATS leader channel so the agent actually receives the message.
 	sanitizedName := SanitizeName(team.Name)
-	if err := s.publishToTeamNATS(sanitizedName, req.Message); err != nil {
+	payload := protocol.UserMessagePayload{
+		Content: message,
+		Files:   fileRefs,
+	}
+	if err := s.publishToTeamNATS(sanitizedName, payload); err != nil {
 		slog.Error("failed to publish chat to NATS", "team", team.Name, "error", err)
 		return c.JSON(fiber.Map{
 			"status":  "queued",
@@ -72,7 +189,7 @@ func (s *Server) SendChat(c *fiber.Ctx) error {
 // to avoid managing per-team NATS connections in the API server.
 // It retries up to 3 times to handle cases where the NATS container was just
 // recreated (e.g. after port binding fix).
-func (s *Server) publishToTeamNATS(teamName, message string) error {
+func (s *Server) publishToTeamNATS(teamName string, payload protocol.UserMessagePayload) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
@@ -124,9 +241,7 @@ func (s *Server) publishToTeamNATS(teamName, message string) error {
 	defer nc.Close()
 
 	// Build the protocol message.
-	msg, err := protocol.NewMessage("user", "leader", protocol.TypeUserMessage, protocol.UserMessagePayload{
-		Content: message,
-	})
+	msg, err := protocol.NewMessage("user", "leader", protocol.TypeUserMessage, payload)
 	if err != nil {
 		return fmt.Errorf("building protocol message: %w", err)
 	}
@@ -255,4 +370,46 @@ func splitCSV(s string) []string {
 		}
 	}
 	return result
+}
+
+// sanitizeFilename strips path separators, null bytes, and special characters
+// from a filename to prevent path traversal and injection attacks.
+func sanitizeFilename(name string) string {
+	// Extract base name to strip any directory components.
+	name = filepath.Base(name)
+
+	// Remove null bytes.
+	name = strings.ReplaceAll(name, "\x00", "")
+
+	// Replace unsafe characters with underscores.
+	name = unsafeFilenameChars.ReplaceAllString(name, "_")
+
+	// Collapse consecutive underscores.
+	for strings.Contains(name, "__") {
+		name = strings.ReplaceAll(name, "__", "_")
+	}
+
+	name = strings.Trim(name, "_.")
+
+	if name == "" || name == "." || name == ".." {
+		name = "upload"
+	}
+
+	// Truncate to 255 characters.
+	if len(name) > 255 {
+		name = name[:255]
+	}
+
+	return name
+}
+
+// isAllowedMIME checks whether a MIME type is in the allowed list.
+func isAllowedMIME(mimeType string) bool {
+	mimeType = strings.ToLower(strings.TrimSpace(mimeType))
+	for _, prefix := range allowedMIMEPrefixes {
+		if strings.HasPrefix(mimeType, prefix) {
+			return true
+		}
+	}
+	return false
 }

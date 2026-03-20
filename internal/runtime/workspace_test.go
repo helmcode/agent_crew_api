@@ -1018,3 +1018,109 @@ func containsStr(s, substr string) bool {
 	}
 	return false
 }
+
+func TestGenerateSubAgentContent_WithInstructions(t *testing.T) {
+	agent := SubAgentInfo{
+		Name:         "instructions-agent",
+		Instructions: "You are a specialist in data analysis.\n",
+	}
+
+	content := GenerateSubAgentContent(agent)
+
+	parts := splitFrontmatter(content)
+	if len(parts) < 2 {
+		t.Fatal("expected frontmatter and body sections")
+	}
+	if !contains(parts[1], "You are a specialist in data analysis.") {
+		t.Errorf("body should contain Instructions content, got %q", parts[1])
+	}
+}
+
+func TestGenerateSubAgentContent_InstructionsAndClaudeMD(t *testing.T) {
+	agent := SubAgentInfo{
+		Name:         "both-agent",
+		Instructions: "Primary instructions here.\n",
+		ClaudeMD:     "Legacy instructions here.\n",
+	}
+
+	content := GenerateSubAgentContent(agent)
+
+	parts := splitFrontmatter(content)
+	if len(parts) < 2 {
+		t.Fatal("expected frontmatter and body sections")
+	}
+
+	body := parts[1]
+	instrIdx := indexOf(body, "Primary instructions here.")
+	claudeIdx := indexOf(body, "Legacy instructions here.")
+
+	if instrIdx < 0 {
+		t.Error("body should contain Instructions content")
+	}
+	if claudeIdx < 0 {
+		t.Error("body should contain ClaudeMD content")
+	}
+	if instrIdx >= 0 && claudeIdx >= 0 && instrIdx >= claudeIdx {
+		t.Error("Instructions should appear before ClaudeMD in body")
+	}
+}
+
+func TestGenerateSubAgentContent_InstructionsOnlyNoClaudeMD(t *testing.T) {
+	agent := SubAgentInfo{
+		Name:         "instr-only-agent",
+		Instructions: "Only instructions, no ClaudeMD.\n",
+	}
+
+	content := GenerateSubAgentContent(agent)
+
+	if !contains(content, "Only instructions, no ClaudeMD.") {
+		t.Error("body should contain Instructions")
+	}
+}
+
+func TestGenerateOpenCodeSubAgentContent_WithInstructions(t *testing.T) {
+	agent := SubAgentInfo{
+		Name:         "opencode-instr-agent",
+		Description:  "An OpenCode agent",
+		Instructions: "OpenCode specific instructions.\n",
+	}
+
+	content := GenerateOpenCodeSubAgentContent(agent, nil)
+
+	if !contains(content, "OpenCode specific instructions.") {
+		t.Errorf("body should contain Instructions content, got:\n%s", content)
+	}
+}
+
+func TestGenerateOpenCodeSubAgentContent_InstructionsAndClaudeMD(t *testing.T) {
+	agent := SubAgentInfo{
+		Name:         "opencode-both-agent",
+		Instructions: "Primary OpenCode instructions.\n",
+		ClaudeMD:     "Legacy OpenCode content.\n",
+	}
+
+	content := GenerateOpenCodeSubAgentContent(agent, nil)
+
+	instrIdx := indexOf(content, "Primary OpenCode instructions.")
+	claudeIdx := indexOf(content, "Legacy OpenCode content.")
+
+	if instrIdx < 0 {
+		t.Error("body should contain Instructions content")
+	}
+	if claudeIdx < 0 {
+		t.Error("body should contain ClaudeMD content")
+	}
+	if instrIdx >= 0 && claudeIdx >= 0 && instrIdx >= claudeIdx {
+		t.Error("Instructions should appear before ClaudeMD in body")
+	}
+}
+
+// indexOf returns the index of substr in s, or -1 if not found.
+func indexOf(s, substr string) int {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return i
+		}
+	}
+	return -1
+}

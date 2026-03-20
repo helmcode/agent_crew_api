@@ -15,10 +15,11 @@ import (
 type SubAgentInfo struct {
 	Name         string
 	Description  string
+	Instructions string          // Dedicated sub-agent instructions (markdown body after frontmatter).
 	Model        string
 	Skills       json.RawMessage
 	GlobalSkills json.RawMessage // Leader skills shared across all agents.
-	ClaudeMD     string          // Body content written after the YAML frontmatter.
+	ClaudeMD     string          // Legacy body content; if Instructions is set, it takes priority.
 }
 
 // TeamMemberInfo describes a teammate for inclusion in the leader's CLAUDE.md.
@@ -158,7 +159,7 @@ func GenerateSubAgentContent(agent SubAgentInfo) string {
 	var b strings.Builder
 
 	b.WriteString("---\n")
-	b.WriteString("name: " + agent.Name + "\n")
+	b.WriteString("name: " + yamlQuoteIfNeeded(agent.Name) + "\n")
 
 	if agent.Description != "" {
 		b.WriteString("description: " + yamlQuoteIfNeeded(agent.Description) + "\n")
@@ -182,10 +183,17 @@ func GenerateSubAgentContent(agent SubAgentInfo) string {
 
 	b.WriteString("---\n")
 
+	// Write body content: Instructions takes priority, ClaudeMD is appended if also present.
+	if agent.Instructions != "" {
+		b.WriteString("\n")
+		b.WriteString(agent.Instructions)
+		if !strings.HasSuffix(agent.Instructions, "\n") {
+			b.WriteString("\n")
+		}
+	}
 	if agent.ClaudeMD != "" {
 		b.WriteString("\n")
 		b.WriteString(agent.ClaudeMD)
-		// Ensure trailing newline.
 		if !strings.HasSuffix(agent.ClaudeMD, "\n") {
 			b.WriteString("\n")
 		}
@@ -330,7 +338,7 @@ func mergeSkillsRaw(a, b json.RawMessage) json.RawMessage {
 // yamlQuoteIfNeeded wraps a string in double quotes if it contains characters
 // that could be problematic in YAML (colons, brackets, newlines, etc.).
 func yamlQuoteIfNeeded(s string) string {
-	if strings.ContainsAny(s, ":{}[]&*#?|->!%@`,\n\r") {
+	if strings.ContainsAny(s, ":{}[]&*#?|>!%@`,\n\r\"'") {
 		escaped := strings.ReplaceAll(s, `\`, `\\`)
 		escaped = strings.ReplaceAll(escaped, `"`, `\"`)
 		escaped = strings.ReplaceAll(escaped, "\n", `\n`)
@@ -482,7 +490,14 @@ func GenerateOpenCodeSubAgentContent(agent SubAgentInfo, globalSkills []protocol
 
 	b.WriteString("---\n")
 
-	// Body: instructions + skills section.
+	// Body: Instructions takes priority, ClaudeMD is appended if also present.
+	if agent.Instructions != "" {
+		b.WriteString("\n")
+		b.WriteString(agent.Instructions)
+		if !strings.HasSuffix(agent.Instructions, "\n") {
+			b.WriteString("\n")
+		}
+	}
 	if agent.ClaudeMD != "" {
 		b.WriteString("\n")
 		b.WriteString(agent.ClaudeMD)

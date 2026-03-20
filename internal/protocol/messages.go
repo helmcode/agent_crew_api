@@ -37,12 +37,21 @@ type Message struct {
 	Timestamp    time.Time       `json:"timestamp"`
 }
 
+// FileRef describes a file uploaded alongside a chat message.
+type FileRef struct {
+	Name string `json:"name"`
+	Path string `json:"path"`
+	Size int64  `json:"size"`
+	Type string `json:"type"`
+}
+
 // UserMessagePayload carries a free-form user message.
 type UserMessagePayload struct {
-	Content        string `json:"content"`
-	Source         string `json:"source,omitempty"`           // "chat", "scheduler", or "webhook"
-	ScheduledRunID string `json:"scheduled_run_id,omitempty"` // Set when source is "scheduler"
-	WebhookRunID   string `json:"webhook_run_id,omitempty"`   // Set when source is "webhook"
+	Content        string    `json:"content"`
+	Files          []FileRef `json:"files,omitempty"`
+	Source         string    `json:"source,omitempty"`           // "chat", "scheduler", or "webhook"
+	ScheduledRunID string    `json:"scheduled_run_id,omitempty"` // Set when source is "scheduler"
+	WebhookRunID   string    `json:"webhook_run_id,omitempty"`   // Set when source is "webhook"
 }
 
 // LeaderResponsePayload carries the leader's response back to the user.

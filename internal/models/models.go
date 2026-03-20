@@ -126,9 +126,10 @@ type Agent struct {
 
 	// Sub-agent configuration fields for .claude/agents/{name}.md frontmatter.
 	// These are only used for non-leader agents in the native sub-agent architecture.
-	SubAgentDescription string `gorm:"type:text" json:"sub_agent_description"`
-	SubAgentModel       string `gorm:"size:255;default:inherit" json:"sub_agent_model"`
-	SubAgentSkills      JSON   `gorm:"type:text" json:"sub_agent_skills"`
+	SubAgentDescription  string `gorm:"type:text" json:"sub_agent_description"`
+	SubAgentInstructions string `gorm:"type:text" json:"sub_agent_instructions"`
+	SubAgentModel        string `gorm:"size:255;default:inherit" json:"sub_agent_model"`
+	SubAgentSkills       JSON   `gorm:"type:text" json:"sub_agent_skills"`
 
 	// SkillStatuses stores per-skill installation results reported by the sidecar.
 	SkillStatuses JSON `gorm:"type:text" json:"skill_statuses"`

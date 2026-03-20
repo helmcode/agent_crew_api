@@ -89,6 +89,13 @@ func (s *Server) CreateAgent(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "sub_agent_model must be one of: inherit, sonnet, opus, haiku")
 	}
 
+	if len(req.SubAgentDescription) > maxDescriptionSize {
+		return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("sub_agent_description exceeds maximum size of %d bytes", maxDescriptionSize))
+	}
+	if len(req.SubAgentInstructions) > maxInstructionsSize {
+		return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("sub_agent_instructions exceeds maximum size of %d bytes", maxInstructionsSize))
+	}
+
 	if req.SubAgentSkills != nil {
 		if err := validateSubAgentSkills(req.SubAgentSkills); err != nil {
 			return fiber.NewError(fiber.StatusBadRequest, err.Error())
@@ -123,9 +130,10 @@ func (s *Server) CreateAgent(c *fiber.Ctx) error {
 		Skills:              models.JSON(skills),
 		Permissions:         models.JSON(perms),
 		Resources:           models.JSON(resources),
-		SubAgentDescription: req.SubAgentDescription,
-		SubAgentModel:       subAgentModel,
-		SubAgentSkills:      models.JSON(subAgentSkills),
+		SubAgentDescription:  req.SubAgentDescription,
+		SubAgentInstructions: req.SubAgentInstructions,
+		SubAgentModel:        subAgentModel,
+		SubAgentSkills:       models.JSON(subAgentSkills),
 	}
 
 	if err := s.db.Create(&agent).Error; err != nil {
@@ -197,7 +205,16 @@ func (s *Server) UpdateAgent(c *fiber.Ctx) error {
 		updates["resources"] = models.JSON(raw)
 	}
 	if req.SubAgentDescription != nil {
+		if len(*req.SubAgentDescription) > maxDescriptionSize {
+			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("sub_agent_description exceeds maximum size of %d bytes", maxDescriptionSize))
+		}
 		updates["sub_agent_description"] = *req.SubAgentDescription
+	}
+	if req.SubAgentInstructions != nil {
+		if len(*req.SubAgentInstructions) > maxInstructionsSize {
+			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("sub_agent_instructions exceeds maximum size of %d bytes", maxInstructionsSize))
+		}
+		updates["sub_agent_instructions"] = *req.SubAgentInstructions
 	}
 	if req.SubAgentModel != nil {
 		if *req.SubAgentModel != "" && !isValidSubAgentModel(*req.SubAgentModel) {
@@ -348,6 +365,7 @@ func (s *Server) InstallAgentSkill(c *fiber.Ctx) error {
 		subInfo := runtime.SubAgentInfo{
 			Name:         agent.Name,
 			Description:  agent.SubAgentDescription,
+			Instructions: agent.SubAgentInstructions,
 			Model:        agent.SubAgentModel,
 			Skills:       json.RawMessage(updatedSkillsJSON),
 			GlobalSkills: workerLeaderSkills,
@@ -360,7 +378,7 @@ func (s *Server) InstallAgentSkill(c *fiber.Ctx) error {
 		filename := runtime.SubAgentFileName(agent.Name)
 		agentsDir := agentsContainerDir(team.Provider)
 		filePath := agentsDir + "/" + filename
-		writeCmd := []string{"sh", "-c", fmt.Sprintf("printf '%%s' '%s' | base64 -d > %s", encoded, filePath)}
+		writeCmd := []string{"sh", "-c", fmt.Sprintf("printf '%%s' '%s' | base64 -d > '%s'", encoded, filePath)}
 
 		if _, err := s.runtime.ExecInContainer(c.Context(), leader.ContainerID, writeCmd); err != nil {
 			slog.Error("failed to update agent .md file in container", "agent", agent.Name, "error", err)
@@ -383,6 +401,7 @@ func (s *Server) InstallAgentSkill(c *fiber.Ctx) error {
 			subInfo := runtime.SubAgentInfo{
 				Name:         w.Name,
 				Description:  w.SubAgentDescription,
+				Instructions: w.SubAgentInstructions,
 				Model:        w.SubAgentModel,
 				Skills:       json.RawMessage(w.SubAgentSkills),
 				GlobalSkills: globalSkills,
@@ -392,7 +411,7 @@ func (s *Server) InstallAgentSkill(c *fiber.Ctx) error {
 			encoded := base64.StdEncoding.EncodeToString([]byte(content))
 			filename := runtime.SubAgentFileName(w.Name)
 			filePath := agentsDir + "/" + filename
-			writeCmd := []string{"sh", "-c", fmt.Sprintf("printf '%%s' '%s' | base64 -d > %s", encoded, filePath)}
+			writeCmd := []string{"sh", "-c", fmt.Sprintf("printf '%%s' '%s' | base64 -d > '%s'", encoded, filePath)}
 
 			if _, err := s.runtime.ExecInContainer(c.Context(), leader.ContainerID, writeCmd); err != nil {
 				slog.Error("failed to update worker .md file after leader skill install", "worker", w.Name, "error", err)
@@ -410,6 +429,9 @@ func (s *Server) InstallAgentSkill(c *fiber.Ctx) error {
 
 // maxInstructionsSize is the maximum allowed size for agent instructions content (100KB).
 const maxInstructionsSize = 100 * 1024
+
+// maxDescriptionSize is the maximum allowed size for sub-agent description (2KB).
+const maxDescriptionSize = 2 * 1024
 
 // GetInstructions reads the instructions file from a running agent's container.
 func (s *Server) GetInstructions(c *fiber.Ctx) error {

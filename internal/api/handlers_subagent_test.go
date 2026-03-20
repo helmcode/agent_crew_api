@@ -293,3 +293,236 @@ func TestGetTeam_ReturnsSubAgentFields(t *testing.T) {
 		t.Errorf("sub_agent_model: got %q, want 'haiku'", agent.SubAgentModel)
 	}
 }
+
+// --- SubAgentInstructions field tests ---
+
+func TestCreateAgent_SubAgentInstructions(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{Name: "instr-create-team"})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+
+	rec := doRequest(srv, "POST", "/api/teams/"+team.ID+"/agents", CreateAgentRequest{
+		Name:                 "instr-agent",
+		Role:                 "worker",
+		SubAgentDescription:  "Short description",
+		SubAgentInstructions: "Detailed instructions for this agent.\nMultiple lines.",
+	})
+
+	if rec.Code != 201 {
+		t.Fatalf("status: got %d, want 201\nbody: %s", rec.Code, rec.Body.String())
+	}
+
+	var agent models.Agent
+	parseJSON(t, rec, &agent)
+
+	if agent.SubAgentInstructions != "Detailed instructions for this agent.\nMultiple lines." {
+		t.Errorf("sub_agent_instructions: got %q", agent.SubAgentInstructions)
+	}
+	if agent.SubAgentDescription != "Short description" {
+		t.Errorf("sub_agent_description: got %q", agent.SubAgentDescription)
+	}
+}
+
+func TestUpdateAgent_SubAgentInstructions(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{Name: "instr-update-team"})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+
+	createRec := doRequest(srv, "POST", "/api/teams/"+team.ID+"/agents", CreateAgentRequest{
+		Name:                 "upd-instr-agent",
+		SubAgentInstructions: "Original instructions",
+	})
+	var created models.Agent
+	parseJSON(t, createRec, &created)
+
+	newInstr := "Updated instructions content"
+	rec := doRequest(srv, "PUT", "/api/teams/"+team.ID+"/agents/"+created.ID, UpdateAgentRequest{
+		SubAgentInstructions: &newInstr,
+	})
+
+	if rec.Code != 200 {
+		t.Fatalf("status: got %d, want 200\nbody: %s", rec.Code, rec.Body.String())
+	}
+
+	var agent models.Agent
+	parseJSON(t, rec, &agent)
+
+	if agent.SubAgentInstructions != "Updated instructions content" {
+		t.Errorf("sub_agent_instructions: got %q", agent.SubAgentInstructions)
+	}
+}
+
+func TestCreateTeam_WithSubAgentInstructions(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	rec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name: "team-instr-inline",
+		Agents: []CreateAgentInput{
+			{
+				Name:                 "leader",
+				Role:                 "leader",
+				SystemPrompt:         "You lead the team",
+			},
+			{
+				Name:                 "worker",
+				Role:                 "worker",
+				SubAgentDescription:  "Handles tasks",
+				SubAgentInstructions: "Worker-specific instructions here.",
+			},
+		},
+	})
+
+	if rec.Code != 201 {
+		t.Fatalf("status: got %d, want 201\nbody: %s", rec.Code, rec.Body.String())
+	}
+
+	var team models.Team
+	parseJSON(t, rec, &team)
+
+	var worker models.Agent
+	for _, a := range team.Agents {
+		if a.Role == "worker" {
+			worker = a
+			break
+		}
+	}
+
+	if worker.SubAgentInstructions != "Worker-specific instructions here." {
+		t.Errorf("sub_agent_instructions: got %q", worker.SubAgentInstructions)
+	}
+}
+
+// --- Size validation tests ---
+
+func TestCreateAgent_RejectsOversizedDescription(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{Name: "desc-size-team"})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+
+	// 2KB + 1 byte should be rejected.
+	bigDesc := string(make([]byte, 2*1024+1))
+	for i := range []byte(bigDesc) {
+		_ = i
+	}
+	bigDescBytes := make([]byte, 2*1024+1)
+	for i := range bigDescBytes {
+		bigDescBytes[i] = 'a'
+	}
+
+	rec := doRequest(srv, "POST", "/api/teams/"+team.ID+"/agents", CreateAgentRequest{
+		Name:                "oversized-desc-agent",
+		SubAgentDescription: string(bigDescBytes),
+	})
+
+	if rec.Code != 400 {
+		t.Fatalf("status: got %d, want 400 for oversized description\nbody: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCreateAgent_RejectsOversizedInstructions(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{Name: "instr-size-team"})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+
+	// 100KB + 1 byte should be rejected.
+	bigInstr := make([]byte, 100*1024+1)
+	for i := range bigInstr {
+		bigInstr[i] = 'a'
+	}
+
+	rec := doRequest(srv, "POST", "/api/teams/"+team.ID+"/agents", CreateAgentRequest{
+		Name:                 "oversized-instr-agent",
+		SubAgentInstructions: string(bigInstr),
+	})
+
+	if rec.Code != 400 {
+		t.Fatalf("status: got %d, want 400 for oversized instructions\nbody: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestUpdateAgent_RejectsOversizedDescription(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{Name: "upd-desc-size-team"})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+
+	createRec := doRequest(srv, "POST", "/api/teams/"+team.ID+"/agents", CreateAgentRequest{
+		Name: "updsize-agent",
+	})
+	var agent models.Agent
+	parseJSON(t, createRec, &agent)
+
+	bigDesc := make([]byte, 2*1024+1)
+	for i := range bigDesc {
+		bigDesc[i] = 'a'
+	}
+	descStr := string(bigDesc)
+
+	rec := doRequest(srv, "PUT", "/api/teams/"+team.ID+"/agents/"+agent.ID, UpdateAgentRequest{
+		SubAgentDescription: &descStr,
+	})
+
+	if rec.Code != 400 {
+		t.Fatalf("status: got %d, want 400 for oversized description update\nbody: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestUpdateAgent_RejectsOversizedInstructions(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{Name: "upd-instr-size-team"})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+
+	createRec := doRequest(srv, "POST", "/api/teams/"+team.ID+"/agents", CreateAgentRequest{
+		Name: "updsize-instr-agent",
+	})
+	var agent models.Agent
+	parseJSON(t, createRec, &agent)
+
+	bigInstr := make([]byte, 100*1024+1)
+	for i := range bigInstr {
+		bigInstr[i] = 'a'
+	}
+	instrStr := string(bigInstr)
+
+	rec := doRequest(srv, "PUT", "/api/teams/"+team.ID+"/agents/"+agent.ID, UpdateAgentRequest{
+		SubAgentInstructions: &instrStr,
+	})
+
+	if rec.Code != 400 {
+		t.Fatalf("status: got %d, want 400 for oversized instructions update\nbody: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCreateTeam_RejectsOversizedAgentDescription(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	bigDesc := make([]byte, 2*1024+1)
+	for i := range bigDesc {
+		bigDesc[i] = 'a'
+	}
+
+	rec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name: "team-desc-size",
+		Agents: []CreateAgentInput{
+			{
+				Name:                "big-desc-agent",
+				SubAgentDescription: string(bigDesc),
+			},
+		},
+	})
+
+	if rec.Code != 400 {
+		t.Fatalf("status: got %d, want 400 for oversized description in team create\nbody: %s", rec.Code, rec.Body.String())
+	}
+}

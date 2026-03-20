@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -106,12 +107,18 @@ func (s *Server) CreateTeam(c *fiber.Ctx) error {
 				return fiber.NewError(fiber.StatusBadRequest, "agent "+a.Name+": "+err.Error())
 			}
 		}
+		agentLabel := a.Name
+		if agentLabel == "" {
+			agentLabel = "(unnamed)"
+		}
+		if len(a.SubAgentDescription) > maxDescriptionSize {
+			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("agent %s: sub_agent_description exceeds maximum size of %d bytes", agentLabel, maxDescriptionSize))
+		}
+		if len(a.SubAgentInstructions) > maxInstructionsSize {
+			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("agent %s: sub_agent_instructions exceeds maximum size of %d bytes", agentLabel, maxInstructionsSize))
+		}
 		if a.SubAgentSkills != nil {
 			if err := validateSubAgentSkills(a.SubAgentSkills); err != nil {
-				agentLabel := a.Name
-				if agentLabel == "" {
-					agentLabel = "(unnamed)"
-				}
 				return fiber.NewError(fiber.StatusBadRequest, "agent "+agentLabel+": "+err.Error())
 			}
 		}
@@ -145,9 +152,10 @@ func (s *Server) CreateTeam(c *fiber.Ctx) error {
 			Skills:              models.JSON(skills),
 			Permissions:         models.JSON(perms),
 			Resources:           models.JSON(resources),
-			SubAgentDescription: a.SubAgentDescription,
-			SubAgentModel:       subAgentModel,
-			SubAgentSkills:      models.JSON(subAgentSkills),
+			SubAgentDescription:  a.SubAgentDescription,
+			SubAgentInstructions: a.SubAgentInstructions,
+			SubAgentModel:        subAgentModel,
+			SubAgentSkills:       models.JSON(subAgentSkills),
 		})
 	}
 
@@ -338,11 +346,12 @@ func (s *Server) deployTeamAsync(team models.Team) {
 			if provider == models.ProviderOpenCode {
 				// OpenCode sub-agent files go to .opencode/agents/
 				subInfo := runtime.SubAgentInfo{
-					Name:        agent.Name,
-					Description: agent.SubAgentDescription,
-					Model:       agent.SubAgentModel,
-					Skills:      json.RawMessage(agent.SubAgentSkills),
-					ClaudeMD:    agent.InstructionsMD,
+					Name:         agent.Name,
+					Description:  agent.SubAgentDescription,
+					Instructions: agent.SubAgentInstructions,
+					Model:        agent.SubAgentModel,
+					Skills:       json.RawMessage(agent.SubAgentSkills),
+					ClaudeMD:     agent.InstructionsMD,
 				}
 				filename := runtime.SubAgentFileName(agent.Name)
 				subAgentFiles[filename] = runtime.GenerateOpenCodeSubAgentContent(subInfo, leaderSkillConfigs)
@@ -360,6 +369,7 @@ func (s *Server) deployTeamAsync(team models.Team) {
 				subInfo := runtime.SubAgentInfo{
 					Name:         agent.Name,
 					Description:  agent.SubAgentDescription,
+					Instructions: agent.SubAgentInstructions,
 					Model:        agent.SubAgentModel,
 					Skills:       json.RawMessage(agent.SubAgentSkills),
 					GlobalSkills: leaderSkills,

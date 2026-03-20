@@ -407,6 +407,61 @@ func TestGetMessages_IncludesRelayedLeaderResponses(t *testing.T) {
 	}
 }
 
+func TestSanitizeFilename(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"hello.txt", "hello.txt"},
+		{"../../../etc/passwd", "passwd"},
+		{"file with spaces.pdf", "file_with_spaces.pdf"},
+		{"/path/to/file.png", "file.png"},
+		{"hello\x00world.txt", "helloworld.txt"},
+		{"<script>alert('xss')</script>.html", "script_.html"},
+		{"", "upload"},
+		{".", "upload"},
+		{"..", "upload"},
+		{"very-normal-file.jpg", "very-normal-file.jpg"},
+		{"file__with__double__underscores.txt", "file_with_double_underscores.txt"},
+		{"résumé.pdf", "r_sum_.pdf"},
+	}
+
+	for _, tt := range tests {
+		got := sanitizeFilename(tt.input)
+		if got != tt.want {
+			t.Errorf("sanitizeFilename(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestIsAllowedMIME(t *testing.T) {
+	tests := []struct {
+		mime string
+		want bool
+	}{
+		{"text/plain", true},
+		{"text/html", true},
+		{"text/csv", true},
+		{"image/png", true},
+		{"image/jpeg", true},
+		{"image/gif", true},
+		{"application/pdf", true},
+		{"application/json", false},
+		{"application/octet-stream", false},
+		{"video/mp4", false},
+		{"", false},
+		{"TEXT/PLAIN", true},   // case-insensitive
+		{" image/png ", true},  // trimmed
+	}
+
+	for _, tt := range tests {
+		got := isAllowedMIME(tt.mime)
+		if got != tt.want {
+			t.Errorf("isAllowedMIME(%q) = %v, want %v", tt.mime, got, tt.want)
+		}
+	}
+}
+
 func TestSplitCSV(t *testing.T) {
 	tests := []struct {
 		input    string

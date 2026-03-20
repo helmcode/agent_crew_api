@@ -48,9 +48,10 @@ type CreateAgentInput struct {
 	Skills              interface{} `json:"skills"`
 	Permissions         interface{} `json:"permissions"`
 	Resources           interface{} `json:"resources"`
-	SubAgentDescription string      `json:"sub_agent_description"`
-	SubAgentModel       string      `json:"sub_agent_model"`
-	SubAgentSkills      interface{} `json:"sub_agent_skills"`
+	SubAgentDescription  string      `json:"sub_agent_description"`
+	SubAgentInstructions string      `json:"sub_agent_instructions"`
+	SubAgentModel        string      `json:"sub_agent_model"`
+	SubAgentSkills       interface{} `json:"sub_agent_skills"`
 }
 
 // CreateAgentRequest is the payload for POST /api/teams/:id/agents.
@@ -64,9 +65,10 @@ type CreateAgentRequest struct {
 	Skills              interface{} `json:"skills"`
 	Permissions         interface{} `json:"permissions"`
 	Resources           interface{} `json:"resources"`
-	SubAgentDescription string      `json:"sub_agent_description"`
-	SubAgentModel       string      `json:"sub_agent_model"`
-	SubAgentSkills      interface{} `json:"sub_agent_skills"`
+	SubAgentDescription  string      `json:"sub_agent_description"`
+	SubAgentInstructions string      `json:"sub_agent_instructions"`
+	SubAgentModel        string      `json:"sub_agent_model"`
+	SubAgentSkills       interface{} `json:"sub_agent_skills"`
 }
 
 // UpdateAgentRequest is the payload for PUT /api/teams/:id/agents/:agentId.
@@ -80,9 +82,10 @@ type UpdateAgentRequest struct {
 	Skills              interface{} `json:"skills"`
 	Permissions         interface{} `json:"permissions"`
 	Resources           interface{} `json:"resources"`
-	SubAgentDescription *string     `json:"sub_agent_description"`
-	SubAgentModel       *string     `json:"sub_agent_model"`
-	SubAgentSkills      interface{} `json:"sub_agent_skills"`
+	SubAgentDescription  *string     `json:"sub_agent_description"`
+	SubAgentInstructions *string     `json:"sub_agent_instructions"`
+	SubAgentModel        *string     `json:"sub_agent_model"`
+	SubAgentSkills       interface{} `json:"sub_agent_skills"`
 }
 
 // ChatRequest is the payload for POST /api/teams/:id/chat.
