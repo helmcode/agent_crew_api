@@ -100,6 +100,12 @@ func (d *DockerRuntime) EnsureOllama(ctx context.Context) (string, error) {
 	resp, err := d.client.ContainerCreate(ctx,
 		&container.Config{
 			Image: OllamaImage,
+			Env: []string{
+				// Keep models loaded in RAM indefinitely. Without this, Ollama
+				// unloads models after 5 min of inactivity, causing multi-minute
+				// cold starts on CPU-only servers for the next request.
+				"OLLAMA_KEEP_ALIVE=-1",
+			},
 			Labels: map[string]string{
 				LabelInfra: "ollama",
 			},

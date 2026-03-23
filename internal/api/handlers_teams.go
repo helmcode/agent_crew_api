@@ -403,6 +403,7 @@ func (s *Server) deployTeamAsync(team models.Team) {
 					slog.Warn("ollama model warm-up failed (non-fatal)", "team", team.Name, "model", ollamaModel, "error", err)
 					// Non-fatal: the model will load on first request (slower).
 				}
+				s.db.Model(&team).Update("status_message", "Ollama model ready: "+ollamaModel)
 			}
 
 			// Track SharedInfra with thread-safe ref counting.
