@@ -237,6 +237,48 @@ func (d *DockerRuntime) PullOllamaModel(ctx context.Context, model string, progr
 	return nil
 }
 
+// WarmUpOllamaModel sends a minimal prompt to load the model into RAM.
+// This avoids the cold-start penalty (which can be 5-10+ minutes on CPU-only
+// systems) when the user sends their first message.
+func (d *DockerRuntime) WarmUpOllamaModel(ctx context.Context, model string) error {
+	warmCtx, cancel := context.WithTimeout(ctx, 15*time.Minute)
+	defer cancel()
+
+	slog.Info("warming up ollama model", "model", model)
+
+	execResp, err := d.client.ContainerExecCreate(warmCtx, OllamaContainerName, container.ExecOptions{
+		Cmd:          []string{"ollama", "run", model, "hi"},
+		AttachStdout: true,
+		AttachStderr: true,
+	})
+	if err != nil {
+		return fmt.Errorf("creating exec for ollama warm-up: %w", err)
+	}
+
+	resp, err := d.client.ContainerExecAttach(warmCtx, execResp.ID, container.ExecAttachOptions{})
+	if err != nil {
+		return fmt.Errorf("attaching to ollama warm-up exec: %w", err)
+	}
+	defer resp.Close()
+
+	// Drain output until the command completes.
+	scanner := bufio.NewScanner(resp.Reader)
+	for scanner.Scan() {
+		// discard output
+	}
+
+	inspect, err := d.client.ContainerExecInspect(warmCtx, execResp.ID)
+	if err != nil {
+		return fmt.Errorf("inspecting ollama warm-up result: %w", err)
+	}
+	if inspect.ExitCode != 0 {
+		return fmt.Errorf("ollama warm-up for %s failed with exit code %d", model, inspect.ExitCode)
+	}
+
+	slog.Info("ollama model warmed up successfully", "model", model)
+	return nil
+}
+
 // StopOllama stops the Ollama container without removing it (preserves downloaded models).
 func (d *DockerRuntime) StopOllama(ctx context.Context) error {
 	timeout := 30

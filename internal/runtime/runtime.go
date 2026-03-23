@@ -113,6 +113,7 @@ type OllamaManager interface {
 	ConnectOllamaToNetwork(ctx context.Context, networkName string) error
 	DisconnectOllamaFromNetwork(ctx context.Context, networkName string) error
 	PullOllamaModel(ctx context.Context, model string, progressFn func(status string)) error
+	WarmUpOllamaModel(ctx context.Context, model string) error
 	StopOllama(ctx context.Context) error
 	IsOllamaRunning(ctx context.Context) (bool, error)
 }

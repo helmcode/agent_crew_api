@@ -394,6 +394,15 @@ func (s *Server) deployTeamAsync(team models.Team) {
 					})
 					return
 				}
+
+				// Warm up the model by sending a minimal prompt. This loads model
+				// weights into RAM during deploy, avoiding a multi-minute cold start
+				// when the user sends their first chat message.
+				s.db.Model(&team).Update("status_message", "Warming up model: "+ollamaModel+"...")
+				if err := om.WarmUpOllamaModel(ctx, ollamaModel); err != nil {
+					slog.Warn("ollama model warm-up failed (non-fatal)", "team", team.Name, "model", ollamaModel, "error", err)
+					// Non-fatal: the model will load on first request (slower).
+				}
 			}
 
 			// Track SharedInfra with thread-safe ref counting.

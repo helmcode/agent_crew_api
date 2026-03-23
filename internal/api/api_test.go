@@ -138,6 +138,10 @@ func (m *mockRuntime) PullOllamaModel(_ context.Context, model string, progressF
 	return nil
 }
 
+func (m *mockRuntime) WarmUpOllamaModel(_ context.Context, _ string) error {
+	return nil
+}
+
 func (m *mockRuntime) StopOllama(_ context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
