@@ -104,6 +104,9 @@ func (s *Server) registerRoutes() {
 	postActions.Delete("/:id/bindings/:bid", s.DeleteBinding)
 	postActions.Get("/:id/runs", s.ListPostActionRuns)
 
+	// Ollama (infrastructure-level, no team context needed).
+	api.Get("/ollama/status", s.GetOllamaStatus)
+
 	// Settings.
 	api.Get("/settings", s.GetSettings)
 	api.Put("/settings", s.UpdateSettings)

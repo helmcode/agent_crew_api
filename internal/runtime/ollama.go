@@ -256,3 +256,8 @@ func hasGPU() bool {
 	_, err := exec.LookPath("nvidia-smi")
 	return err == nil
 }
+
+// HasGPUAvailable is an exported wrapper for hasGPU, used by the API layer.
+func HasGPUAvailable() bool {
+	return hasGPU()
+}
