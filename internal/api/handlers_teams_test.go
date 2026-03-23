@@ -1847,6 +1847,41 @@ func TestUpdateTeam_ModelProviderResetsAgentModels(t *testing.T) {
 	}
 }
 
+func TestUpdateTeam_ProviderSwitchToClaude_ClearsModelProvider(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	// Create an OpenCode team with model_provider=openai.
+	createRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name:          "mp-switch-claude-team",
+		Provider:      "opencode",
+		ModelProvider: "openai",
+		Agents:        []CreateAgentInput{{Name: "leader", Role: "leader"}},
+	})
+	var team models.Team
+	parseJSON(t, createRec, &team)
+	if team.ModelProvider != "openai" {
+		t.Fatalf("model_provider: got %q, want %q", team.ModelProvider, "openai")
+	}
+
+	// Switch provider to Claude.
+	claude := "claude"
+	rec := doRequest(srv, "PUT", "/api/teams/"+team.ID, UpdateTeamRequest{
+		Provider: &claude,
+	})
+	if rec.Code != 200 {
+		t.Fatalf("status: got %d, want 200\nbody: %s", rec.Code, rec.Body.String())
+	}
+
+	var updated models.Team
+	parseJSON(t, rec, &updated)
+	if updated.Provider != "claude" {
+		t.Errorf("provider: got %q, want %q", updated.Provider, "claude")
+	}
+	if updated.ModelProvider != "" {
+		t.Errorf("model_provider should be cleared, got %q", updated.ModelProvider)
+	}
+}
+
 func TestCreateAgent_ModelConsistencyValidation(t *testing.T) {
 	srv, _ := setupTestServer(t)
 
@@ -1937,13 +1972,14 @@ func TestFilterAPIKeysByModelProvider(t *testing.T) {
 			name:          "anthropic keeps only anthropic keys",
 			modelProvider: "anthropic",
 			inputKeys: map[string]string{
-				"ANTHROPIC_API_KEY": "sk-ant-123",
-				"OPENAI_API_KEY":   "sk-openai-123",
-				"GOOGLE_API_KEY":   "google-123",
-				"OTHER_VAR":        "keep-me",
+				"ANTHROPIC_API_KEY":            "sk-ant-123",
+				"OPENAI_API_KEY":               "sk-openai-123",
+				"GOOGLE_API_KEY":               "google-123",
+				"GOOGLE_GENERATIVE_AI_API_KEY": "google-gen-123",
+				"OTHER_VAR":                    "keep-me",
 			},
 			wantKeys:    map[string]bool{"ANTHROPIC_API_KEY": true, "OTHER_VAR": true},
-			wantRemoved: []string{"OPENAI_API_KEY", "GOOGLE_API_KEY"},
+			wantRemoved: []string{"OPENAI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY"},
 		},
 		{
 			name:          "openai keeps only openai keys",
@@ -1955,6 +1991,20 @@ func TestFilterAPIKeysByModelProvider(t *testing.T) {
 			},
 			wantKeys:    map[string]bool{"OPENAI_API_KEY": true, "SOME_CONFIG": true},
 			wantRemoved: []string{"ANTHROPIC_API_KEY"},
+		},
+		{
+			name:          "google keeps all google key variants",
+			modelProvider: "google",
+			inputKeys: map[string]string{
+				"ANTHROPIC_API_KEY":            "sk-ant-123",
+				"OPENAI_API_KEY":               "sk-openai-123",
+				"GOOGLE_API_KEY":               "google-123",
+				"GEMINI_API_KEY":               "gemini-123",
+				"GOOGLE_GENERATIVE_AI_API_KEY": "google-gen-123",
+				"SOME_CONFIG":                  "value",
+			},
+			wantKeys:    map[string]bool{"GOOGLE_API_KEY": true, "GEMINI_API_KEY": true, "GOOGLE_GENERATIVE_AI_API_KEY": true, "SOME_CONFIG": true},
+			wantRemoved: []string{"ANTHROPIC_API_KEY", "OPENAI_API_KEY"},
 		},
 		{
 			name:          "ollama removes all provider keys",

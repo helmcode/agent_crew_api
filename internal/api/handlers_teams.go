@@ -208,6 +208,10 @@ func (s *Server) UpdateTeam(c *fiber.Ctx) error {
 			return fiber.NewError(fiber.StatusBadRequest, "provider must be 'claude' or 'opencode'")
 		}
 		updates["provider"] = *req.Provider
+		// Switching to Claude invalidates model_provider (Claude always uses Anthropic).
+		if *req.Provider == models.ProviderClaude {
+			updates["model_provider"] = ""
+		}
 	}
 
 	// Validate and apply model_provider.
@@ -627,7 +631,7 @@ func (s *Server) deployTeamAsync(team models.Team) {
 var apiKeysByProvider = map[string][]string{
 	models.ModelProviderAnthropic: {"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN"},
 	models.ModelProviderOpenAI:    {"OPENAI_API_KEY"},
-	models.ModelProviderGoogle:    {"GOOGLE_API_KEY", "GEMINI_API_KEY"},
+	models.ModelProviderGoogle:    {"GOOGLE_API_KEY", "GEMINI_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY"},
 	models.ModelProviderOllama:    {}, // Ollama is local, no API key needed.
 }
 
