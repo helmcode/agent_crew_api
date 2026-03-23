@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
 	"os/exec"
 	"strings"
 	"time"
@@ -64,10 +66,12 @@ func (d *DockerRuntime) EnsureOllama(ctx context.Context) (string, error) {
 	}
 
 	// Build container config.
+	// Use "ollama list" for the health check — the ollama binary is always present
+	// in the image, unlike curl/wget which are not installed.
 	healthCheck := &container.HealthConfig{
-		Test:     []string{"CMD-SHELL", "curl -f http://localhost:11434/api/tags || exit 1"},
+		Test:     []string{"CMD", "ollama", "list"},
 		Interval: 5 * time.Second,
-		Timeout:  5 * time.Second,
+		Timeout:  10 * time.Second,
 		Retries:  12,
 	}
 
@@ -125,19 +129,53 @@ func (d *DockerRuntime) EnsureOllama(ctx context.Context) (string, error) {
 	return resp.ID, nil
 }
 
-// waitForOllamaHealthy polls the container health status until it becomes healthy
-// or the timeout expires.
+// waitForOllamaHealthy polls the Ollama HTTP API directly until it responds
+// or the timeout expires. This is more reliable than Docker HEALTHCHECK because
+// it doesn't depend on tools being installed inside the container.
 func (d *DockerRuntime) waitForOllamaHealthy(ctx context.Context, containerID string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
+	httpClient := &http.Client{Timeout: 3 * time.Second}
+
 	for time.Now().Before(deadline) {
+		// Get container IP to call the Ollama API directly.
 		info, err := d.client.ContainerInspect(ctx, containerID)
 		if err != nil {
 			return fmt.Errorf("inspecting ollama container: %w", err)
 		}
-		if info.State.Health != nil && info.State.Health.Status == "healthy" {
-			slog.Info("ollama container is healthy", "id", containerID[:12])
-			return nil
+
+		// Try all available network IPs (container may not have a default bridge IP).
+		var ollamaURL string
+		if info.NetworkSettings != nil {
+			// First try the default IP.
+			if info.NetworkSettings.IPAddress != "" {
+				ollamaURL = fmt.Sprintf("http://%s:%s/api/tags", info.NetworkSettings.IPAddress, OllamaInternalPort)
+			}
+			// If no default IP, try IPs from named networks.
+			if ollamaURL == "" {
+				for _, net := range info.NetworkSettings.Networks {
+					if net.IPAddress != "" {
+						ollamaURL = fmt.Sprintf("http://%s:%s/api/tags", net.IPAddress, OllamaInternalPort)
+						break
+					}
+				}
+			}
 		}
+
+		if ollamaURL != "" {
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, ollamaURL, nil)
+			if err == nil {
+				resp, err := httpClient.Do(req)
+				if err == nil {
+					io.Copy(io.Discard, resp.Body)
+					resp.Body.Close()
+					if resp.StatusCode == http.StatusOK {
+						slog.Info("ollama container is healthy", "id", containerID[:12], "url", ollamaURL)
+						return nil
+					}
+				}
+			}
+		}
+
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
