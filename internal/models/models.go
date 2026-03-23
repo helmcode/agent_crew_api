@@ -89,6 +89,20 @@ type Invite struct {
 	Organization   Organization `gorm:"foreignKey:OrgID;constraint:OnDelete:CASCADE" json:"-"`
 }
 
+// SharedInfra tracks shared infrastructure resources (e.g. Ollama) that persist
+// across teams. Unlike per-team NATS containers, shared infra uses reference
+// counting to manage lifecycle.
+type SharedInfra struct {
+	ID           string    `gorm:"primaryKey;size:36" json:"id"`
+	ResourceType string    `gorm:"not null;size:50;uniqueIndex" json:"resource_type"`
+	ContainerID  string    `gorm:"size:128" json:"container_id"`
+	Status       string    `gorm:"size:50;default:'stopped'" json:"status"`
+	RefCount     int       `gorm:"default:0" json:"ref_count"`
+	Config       JSON      `gorm:"type:text" json:"config"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
 // Team represents an agent team managed by the orchestrator.
 type Team struct {
 	ID            string    `gorm:"primaryKey;size:36" json:"id"`
