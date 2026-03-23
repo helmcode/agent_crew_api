@@ -124,6 +124,19 @@ func (s *Server) SendChat(c *fiber.Ctx) error {
 						fmt.Sprintf("failed to write file %q to container", fh.Filename))
 				}
 
+				// Fix ownership: CopyToContainer creates files as root, but the
+				// agent process runs as the workspace owner (non-root via gosu).
+				// Detect the workspace owner UID:GID and chown the uploads dir
+				// and file to match so the agent can read/edit/delete them.
+				fixPermsCmd := []string{"sh", "-c", fmt.Sprintf(
+					"owner=$(stat -c '%%u:%%g' /workspace) && chown \"$owner\" /workspace/uploads && chown \"$owner\" '%s'",
+					containerPath,
+				)}
+				if _, err := s.runtime.ExecInContainer(c.Context(), leader.ContainerID, fixPermsCmd); err != nil {
+					slog.Warn("failed to fix uploaded file permissions",
+						"file", safeName, "error", err)
+				}
+
 				fileRefs = append(fileRefs, protocol.FileRef{
 					Name: fh.Filename,
 					Path: containerPath,
