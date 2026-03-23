@@ -667,8 +667,10 @@ func (s *Server) deployTeamAsync(team models.Team) {
 			}
 		}
 	} else if provider == models.ProviderOpenCode {
-		// Fallback: use OPENCODE_MODEL from Settings if the leader has no specific model.
-		if m := envFromSettings["OPENCODE_MODEL"]; m != "" {
+		// Fallback: use default model for the team's model_provider, or OPENCODE_MODEL from Settings.
+		if defaultModel := defaultOpenCodeModel(team.ModelProvider); defaultModel != "" {
+			agentEnv["OPENCODE_MODEL"] = defaultModel
+		} else if m := envFromSettings["OPENCODE_MODEL"]; m != "" {
 			agentEnv["OPENCODE_MODEL"] = m
 		}
 	}
@@ -748,6 +750,24 @@ func filterAPIKeysByModelProvider(env map[string]string, modelProvider string) {
 		if allKeys[key] && !keepKeys[key] {
 			delete(env, key)
 		}
+	}
+}
+
+// defaultOpenCodeModel returns the default model for a given model provider.
+// Used when the leader has no explicit model (inherit) to ensure the correct
+// provider's model is used.
+func defaultOpenCodeModel(modelProvider string) string {
+	switch modelProvider {
+	case models.ModelProviderAnthropic:
+		return "anthropic/claude-sonnet-4-6"
+	case models.ModelProviderOpenAI:
+		return "openai/gpt-5.3-codex"
+	case models.ModelProviderGoogle:
+		return "google/gemini-2.5-pro"
+	case models.ModelProviderOllama:
+		return "ollama/qwen3:8b"
+	default:
+		return ""
 	}
 }
 

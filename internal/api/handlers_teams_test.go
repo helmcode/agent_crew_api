@@ -1514,6 +1514,61 @@ func TestClaudeModelID(t *testing.T) {
 	}
 }
 
+func TestDefaultOpenCodeModel(t *testing.T) {
+	tests := []struct {
+		provider string
+		want     string
+	}{
+		{"anthropic", "anthropic/claude-sonnet-4-6"},
+		{"openai", "openai/gpt-5.3-codex"},
+		{"google", "google/gemini-2.5-pro"},
+		{"ollama", "ollama/qwen3:8b"},
+		{"", ""},
+		{"unknown", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.provider, func(t *testing.T) {
+			got := defaultOpenCodeModel(tt.provider)
+			if got != tt.want {
+				t.Errorf("defaultOpenCodeModel(%q) = %q, want %q", tt.provider, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDeployTeamAsync_OpenCodeProvider_LeaderInherit_ModelProviderFallback(t *testing.T) {
+	srv, mock := setupTestServer(t)
+
+	srv.db.Create(&models.Settings{OrgID: "00000000-0000-0000-0000-000000000000", Key: "OPENAI_API_KEY", Value: "sk-oai-test"})
+	// Settings has a different OPENCODE_MODEL — should be overridden by model_provider default.
+	srv.db.Create(&models.Settings{OrgID: "00000000-0000-0000-0000-000000000000", Key: "OPENCODE_MODEL", Value: "gpt-4o"})
+
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name:          "opencode-mp-fallback",
+		Provider:      "opencode",
+		ModelProvider: "google",
+		Agents: []CreateAgentInput{
+			{Name: "the-leader", Role: "leader"},
+		},
+	})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+
+	srv.deployTeamAsync(team)
+
+	cfg := mock.lastAgentConfig
+	if cfg == nil {
+		t.Fatal("expected lastAgentConfig to be set")
+	}
+
+	// When leader model is "inherit" and model_provider is set,
+	// OPENCODE_MODEL should use the default for that provider, not the Settings value.
+	want := "google/gemini-2.5-pro"
+	if cfg.Env["OPENCODE_MODEL"] != want {
+		t.Errorf("OPENCODE_MODEL: got %q, want %q", cfg.Env["OPENCODE_MODEL"], want)
+	}
+}
+
 func containsStr(s, substr string) bool {
 	return strings.Contains(s, substr)
 }
