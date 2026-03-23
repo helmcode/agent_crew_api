@@ -87,6 +87,10 @@ func (m *mockRuntime) WriteFile(_ context.Context, _ string, path string, _ []by
 	return runtime.ValidateAgentFilePath(path)
 }
 
+func (m *mockRuntime) CopyToContainer(_ context.Context, _ string, _ string, _ []byte) error {
+	return nil
+}
+
 // setupTestServer creates a Server with in-memory SQLite and mock runtime.
 func setupTestServer(t *testing.T) (*Server, *mockRuntime) {
 	t.Helper()

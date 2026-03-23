@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -116,12 +115,9 @@ func (s *Server) SendChat(c *fiber.Ctx) error {
 						fmt.Sprintf("file %q exceeds maximum size of %d bytes", fh.Filename, maxFileSize))
 				}
 
-				// Write file to leader container using base64 + exec.
-				encoded := base64.StdEncoding.EncodeToString(data)
-				writeCmd := []string{"sh", "-c",
-					fmt.Sprintf("mkdir -p /workspace/uploads && printf '%%s' '%s' | base64 -d > '%s'",
-						encoded, containerPath)}
-				if _, err := s.runtime.ExecInContainer(c.Context(), leader.ContainerID, writeCmd); err != nil {
+				// Write file to leader container using CopyToContainer (tar archive)
+				// to avoid shell ARG_MAX limits with large files.
+				if err := s.runtime.CopyToContainer(c.Context(), leader.ContainerID, containerPath, data); err != nil {
 					slog.Error("failed to write uploaded file to container",
 						"file", safeName, "error", err)
 					return fiber.NewError(fiber.StatusInternalServerError,

@@ -682,6 +682,48 @@ func (k *K8sRuntime) WriteFile(ctx context.Context, id string, path string, cont
 	return nil
 }
 
+// CopyToContainer writes arbitrary file content to a pod using exec with stdin.
+// Unlike WriteFile, it does NOT apply ValidateAgentFilePath checks, making it
+// suitable for writing upload files outside the .claude/ directory.
+func (k *K8sRuntime) CopyToContainer(ctx context.Context, id string, destPath string, content []byte) error {
+	namespace, podName, err := parseAgentID(id)
+	if err != nil {
+		return err
+	}
+
+	dir := filepath.Dir(destPath)
+	cmd := []string{"sh", "-c", fmt.Sprintf("mkdir -p '%s' && cat > '%s'", dir, destPath)}
+
+	req := k.clientset.CoreV1().RESTClient().Post().
+		Resource("pods").
+		Name(podName).
+		Namespace(namespace).
+		SubResource("exec").
+		VersionedParams(&corev1.PodExecOptions{
+			Container: "agent",
+			Command:   cmd,
+			Stdin:     true,
+			Stdout:    true,
+			Stderr:    true,
+		}, k8sscheme.ParameterCodec)
+
+	executor, err := remotecommand.NewSPDYExecutor(k.restConfig, "POST", req.URL())
+	if err != nil {
+		return fmt.Errorf("creating SPDY executor for writing %s: %w", destPath, err)
+	}
+
+	var stderr bytes.Buffer
+	if err := executor.StreamWithContext(ctx, remotecommand.StreamOptions{
+		Stdin:  bytes.NewReader(content),
+		Stdout: io.Discard,
+		Stderr: &stderr,
+	}); err != nil {
+		return fmt.Errorf("writing file %s: %w (stderr: %s)", destPath, err, stderr.String())
+	}
+
+	return nil
+}
+
 // podPhaseToStatus converts a Kubernetes PodPhase to the internal status string.
 func podPhaseToStatus(phase corev1.PodPhase) string {
 	switch phase {

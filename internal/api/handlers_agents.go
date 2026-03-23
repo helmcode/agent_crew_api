@@ -140,6 +140,45 @@ func (s *Server) CreateAgent(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusInternalServerError, "failed to create agent")
 	}
 
+	// If the team is running and the new agent is a worker, create the .md file
+	// in the leader's container so it's immediately available.
+	if team.Status == models.TeamStatusRunning && agent.Role == models.AgentRoleWorker {
+		var leader models.Agent
+		if err := s.db.Where("team_id = ? AND role = ? AND container_status = ?",
+			teamID, models.AgentRoleLeader, models.ContainerStatusRunning).First(&leader).Error; err == nil {
+
+			// Include leader's global skills in the new subagent's .md file.
+			var globalSkills json.RawMessage
+			if len(leader.SubAgentSkills) > 0 && string(leader.SubAgentSkills) != "null" {
+				globalSkills = json.RawMessage(leader.SubAgentSkills)
+			}
+
+			subInfo := runtime.SubAgentInfo{
+				Name:         agent.Name,
+				Description:  agent.SubAgentDescription,
+				Instructions: agent.SubAgentInstructions,
+				Model:        agent.SubAgentModel,
+				Skills:       json.RawMessage(agent.SubAgentSkills),
+				GlobalSkills: globalSkills,
+				ClaudeMD:     agent.InstructionsMD,
+			}
+			content := runtime.GenerateSubAgentContent(subInfo)
+
+			filename := runtime.SubAgentFileName(agent.Name)
+			agentsDir := agentsContainerDir(team.Provider)
+			filePath := agentsDir + "/" + filename
+
+			encoded := base64.StdEncoding.EncodeToString([]byte(content))
+			writeCmd := []string{"sh", "-c", fmt.Sprintf("mkdir -p '%s' && printf '%%s' '%s' | base64 -d > '%s'", agentsDir, encoded, filePath)}
+
+			if _, err := s.runtime.ExecInContainer(c.Context(), leader.ContainerID, writeCmd); err != nil {
+				slog.Error("failed to create agent .md file in container", "agent", agent.Name, "error", err)
+			} else {
+				slog.Info("created agent .md file in container", "agent", agent.Name, "path", filePath)
+			}
+		}
+	}
+
 	return c.Status(fiber.StatusCreated).JSON(agent)
 }
 

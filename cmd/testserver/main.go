@@ -71,6 +71,10 @@ func (m *mockRuntime) WriteFile(_ context.Context, _ string, path string, _ []by
 	return runtime.ValidateAgentFilePath(path)
 }
 
+func (m *mockRuntime) CopyToContainer(_ context.Context, _ string, _ string, _ []byte) error {
+	return nil
+}
+
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,

@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -768,6 +769,45 @@ func (d *DockerRuntime) WriteFile(ctx context.Context, containerID string, path 
 	}
 	if inspect.ExitCode != 0 {
 		return fmt.Errorf("write to %s exited with code %d", path, inspect.ExitCode)
+	}
+
+	return nil
+}
+
+// CopyToContainer writes arbitrary file content to a container using Docker's
+// CopyToContainer API with a tar archive. This avoids shell ARG_MAX limits,
+// making it safe for large binary files (e.g. PDF uploads).
+func (d *DockerRuntime) CopyToContainer(ctx context.Context, containerID string, destPath string, content []byte) error {
+	dir := filepath.Dir(destPath)
+	filename := filepath.Base(destPath)
+
+	// Ensure the parent directory exists.
+	if _, err := d.ExecInContainer(ctx, containerID, []string{"mkdir", "-p", dir}); err != nil {
+		return fmt.Errorf("creating directory %s: %w", dir, err)
+	}
+
+	// Build a tar archive containing the single file.
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	hdr := &tar.Header{
+		Name: filename,
+		Mode: 0644,
+		Size: int64(len(content)),
+	}
+	if err := tw.WriteHeader(hdr); err != nil {
+		return fmt.Errorf("writing tar header: %w", err)
+	}
+	if _, err := tw.Write(content); err != nil {
+		return fmt.Errorf("writing tar content: %w", err)
+	}
+	if err := tw.Close(); err != nil {
+		return fmt.Errorf("closing tar writer: %w", err)
+	}
+
+	// Copy the tar archive into the container at the parent directory.
+	err := d.client.CopyToContainer(ctx, containerID, dir, &buf, container.CopyToContainerOptions{})
+	if err != nil {
+		return fmt.Errorf("copying file to container %s at %s: %w", containerID, destPath, err)
 	}
 
 	return nil

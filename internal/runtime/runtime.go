@@ -91,6 +91,11 @@ type AgentRuntime interface {
 	// WriteFile writes content to a file inside a running agent container.
 	// The path must pass ValidateAgentFilePath checks.
 	WriteFile(ctx context.Context, containerID string, path string, content []byte) error
+	// CopyToContainer writes arbitrary file content to a container at the given
+	// path. Unlike WriteFile, it does NOT apply ValidateAgentFilePath checks.
+	// It uses Docker's CopyToContainer API (tar archive) to avoid shell ARG_MAX
+	// limits, making it safe for large binary files (e.g. PDF uploads).
+	CopyToContainer(ctx context.Context, containerID string, destPath string, content []byte) error
 }
 
 // ValidateAgentFilePath checks that the given path is safe for agent file
