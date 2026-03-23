@@ -207,6 +207,10 @@ func startOpenCode(ctx context.Context, cfg *AgentConfig, workDir string, natsCl
 	// Write MCP config file.
 	writeMcpConfig(workDir, "opencode", natsClient, cfg.Agent.Name, cfg.Agent.Team)
 
+	// If using Ollama, inject the provider config into opencode.json so OpenCode
+	// can discover and use the local Ollama instance via @ai-sdk/openai-compatible.
+	writeOllamaProviderConfig(workDir)
+
 	// Container validation for OpenCode layout.
 	checks := runOpenCodeContainerValidation(workDir, claudeDir, os.Getenv("AGENT_SKILLS_INSTALL") != "", os.Getenv("AGENT_SUB_AGENT_FILES") != "")
 	publishValidationResults(natsClient, cfg.Agent.Name, cfg.Agent.Team, checks)

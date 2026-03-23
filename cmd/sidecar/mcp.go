@@ -215,6 +215,70 @@ func generateOpenCodeMcpConfig(existingPath string, servers []protocol.McpServer
 	return buf.Bytes()
 }
 
+// writeOllamaProviderConfig injects the Ollama provider section into opencode.json
+// so that OpenCode can discover and use local Ollama models. It reads the existing
+// config (if any) and merges the provider block without overwriting other sections.
+//
+// Required env vars:
+//   - OLLAMA_BASE_URL: e.g., "http://agentcrew-ollama:11434"
+//   - OPENCODE_MODEL: e.g., "ollama/qwen3:8b" (provider/model format)
+func writeOllamaProviderConfig(workDir string) {
+	ollamaURL := os.Getenv("OLLAMA_BASE_URL")
+	openCodeModel := os.Getenv("OPENCODE_MODEL")
+	if ollamaURL == "" || openCodeModel == "" {
+		return
+	}
+
+	// Strip "ollama/" prefix to get the raw model name for the config.
+	modelName := strings.TrimPrefix(openCodeModel, "ollama/")
+	if modelName == "" {
+		return
+	}
+
+	// Ensure the base URL ends with /v1 as required by @ai-sdk/openai-compatible.
+	baseURL := strings.TrimRight(ollamaURL, "/") + "/v1"
+
+	configPath := filepath.Join(workDir, "opencode.json")
+
+	// Read existing config (may have been written by writeMcpConfig).
+	existing := make(map[string]interface{})
+	if data, err := os.ReadFile(configPath); err == nil {
+		_ = json.Unmarshal(data, &existing)
+	}
+
+	if _, ok := existing["$schema"]; !ok {
+		existing["$schema"] = "https://opencode.ai/config.json"
+	}
+
+	// Build the provider.ollama section.
+	existing["provider"] = map[string]interface{}{
+		"ollama": map[string]interface{}{
+			"npm":  "@ai-sdk/openai-compatible",
+			"name": "Ollama",
+			"options": map[string]interface{}{
+				"baseURL": baseURL,
+			},
+			"models": map[string]interface{}{
+				modelName: map[string]interface{}{
+					"name": modelName,
+				},
+			},
+		},
+	}
+
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetIndent("", "  ")
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(existing)
+
+	if err := os.WriteFile(configPath, buf.Bytes(), 0644); err != nil {
+		slog.Error("failed to write ollama provider config", "error", err)
+		return
+	}
+	slog.Info("ollama provider config written to opencode.json", "model", modelName, "baseURL", baseURL)
+}
+
 // validateMcpServer performs sidecar-level validation of a single MCP server config.
 func validateMcpServer(srv protocol.McpServerConfig) error {
 	if srv.Name == "" {
