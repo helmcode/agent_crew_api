@@ -99,6 +99,7 @@ type Team struct {
 	StatusMessage string    `gorm:"type:text" json:"status_message"`
 	Runtime       string    `gorm:"not null;size:50;default:docker" json:"runtime"`
 	Provider      string    `gorm:"type:varchar(50);default:'claude'" json:"provider"`
+	ModelProvider string    `gorm:"size:50" json:"model_provider"`
 	WorkspacePath string    `gorm:"size:512" json:"workspace_path"`
 	AgentImage    string    `gorm:"size:512" json:"agent_image"`
 	McpServers    JSON      `gorm:"type:text" json:"mcp_servers"`
@@ -283,6 +284,14 @@ const (
 const (
 	ProviderClaude   = "claude"
 	ProviderOpenCode = "opencode"
+)
+
+// Valid model providers for OpenCode teams.
+const (
+	ModelProviderAnthropic = "anthropic"
+	ModelProviderOpenAI    = "openai"
+	ModelProviderGoogle    = "google"
+	ModelProviderOllama    = "ollama"
 )
 
 // PostAction defines a reusable HTTP action that fires after a trigger completes.

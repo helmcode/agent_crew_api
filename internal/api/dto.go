@@ -21,6 +21,7 @@ type CreateTeamRequest struct {
 	Description   string              `json:"description"`
 	Runtime       string              `json:"runtime"`
 	Provider      string              `json:"provider"`
+	ModelProvider string              `json:"model_provider"`
 	WorkspacePath string              `json:"workspace_path"`
 	AgentImage    string              `json:"agent_image"`
 	Agents        []CreateAgentInput  `json:"agents"`
@@ -32,6 +33,7 @@ type UpdateTeamRequest struct {
 	Name          *string     `json:"name"`
 	Description   *string     `json:"description"`
 	Provider      *string     `json:"provider"`
+	ModelProvider *string     `json:"model_provider"`
 	WorkspacePath *string     `json:"workspace_path"`
 	AgentImage    *string     `json:"agent_image"`
 	McpServers    interface{} `json:"mcp_servers"`
@@ -520,5 +522,45 @@ func validateMcpServers(raw interface{}) error {
 		}
 	}
 
+	return nil
+}
+
+// validateModelProvider checks that the model_provider is valid for the given provider.
+// For "opencode" teams, model_provider must be one of the valid values or empty.
+// For "claude" teams, model_provider is ignored (always Anthropic).
+func validateModelProvider(provider, modelProvider string) error {
+	if provider != models.ProviderOpenCode {
+		return nil // Claude teams don't use model_provider
+	}
+	if modelProvider == "" {
+		return nil // Empty is allowed (backward compat)
+	}
+	valid := map[string]bool{
+		models.ModelProviderAnthropic: true,
+		models.ModelProviderOpenAI:    true,
+		models.ModelProviderGoogle:    true,
+		models.ModelProviderOllama:    true,
+	}
+	if !valid[modelProvider] {
+		return fmt.Errorf("invalid model_provider %q: must be one of anthropic, openai, google, ollama", modelProvider)
+	}
+	return nil
+}
+
+// validateAgentModelConsistency checks that all agent models match the team's model_provider.
+func validateAgentModelConsistency(modelProvider string, agents []CreateAgentInput) error {
+	if modelProvider == "" {
+		return nil // No restriction
+	}
+	for _, agent := range agents {
+		model := agent.SubAgentModel
+		if model == "" || model == "inherit" {
+			continue
+		}
+		parts := strings.SplitN(model, "/", 2)
+		if len(parts) != 2 || parts[0] != modelProvider {
+			return fmt.Errorf("agent %q has model %q which doesn't match team model_provider %q", agent.Name, model, modelProvider)
+		}
+	}
 	return nil
 }

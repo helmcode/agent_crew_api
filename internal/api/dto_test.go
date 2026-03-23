@@ -3,6 +3,8 @@ package api
 import (
 	"strings"
 	"testing"
+
+	"github.com/helmcode/agent-crew/internal/models"
 )
 
 func TestValidateAgentImage(t *testing.T) {
@@ -55,6 +57,114 @@ func TestValidateAgentImage(t *testing.T) {
 			} else {
 				if err != nil {
 					t.Errorf("validateAgentImage(%q) = %v, want nil", tt.image, err)
+				}
+			}
+		})
+	}
+}
+
+func TestValidateModelProvider(t *testing.T) {
+	tests := []struct {
+		name          string
+		provider      string
+		modelProvider string
+		wantErr       bool
+		errMsg        string
+	}{
+		// Claude provider — model_provider is always ignored.
+		{name: "claude ignores empty", provider: models.ProviderClaude, modelProvider: "", wantErr: false},
+		{name: "claude ignores anthropic", provider: models.ProviderClaude, modelProvider: "anthropic", wantErr: false},
+		{name: "claude ignores invalid", provider: models.ProviderClaude, modelProvider: "invalid", wantErr: false},
+
+		// OpenCode provider — valid values.
+		{name: "opencode empty allowed", provider: models.ProviderOpenCode, modelProvider: "", wantErr: false},
+		{name: "opencode anthropic", provider: models.ProviderOpenCode, modelProvider: "anthropic", wantErr: false},
+		{name: "opencode openai", provider: models.ProviderOpenCode, modelProvider: "openai", wantErr: false},
+		{name: "opencode google", provider: models.ProviderOpenCode, modelProvider: "google", wantErr: false},
+		{name: "opencode ollama", provider: models.ProviderOpenCode, modelProvider: "ollama", wantErr: false},
+
+		// OpenCode provider — invalid values.
+		{name: "opencode invalid value", provider: models.ProviderOpenCode, modelProvider: "aws-bedrock", wantErr: true, errMsg: "invalid model_provider"},
+		{name: "opencode random string", provider: models.ProviderOpenCode, modelProvider: "foobar", wantErr: true, errMsg: "invalid model_provider"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateModelProvider(tt.provider, tt.modelProvider)
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("validateModelProvider(%q, %q) = nil, want error containing %q", tt.provider, tt.modelProvider, tt.errMsg)
+				} else if !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("validateModelProvider(%q, %q) error = %q, want error containing %q", tt.provider, tt.modelProvider, err.Error(), tt.errMsg)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("validateModelProvider(%q, %q) = %v, want nil", tt.provider, tt.modelProvider, err)
+				}
+			}
+		})
+	}
+}
+
+func TestValidateAgentModelConsistency(t *testing.T) {
+	tests := []struct {
+		name          string
+		modelProvider string
+		agents        []CreateAgentInput
+		wantErr       bool
+		errMsg        string
+	}{
+		// No restriction when model_provider is empty.
+		{name: "empty provider allows anything", modelProvider: "", agents: []CreateAgentInput{
+			{Name: "agent1", SubAgentModel: "openai/gpt-4"},
+		}, wantErr: false},
+
+		// Inherit and empty models are always allowed.
+		{name: "inherit model allowed", modelProvider: "anthropic", agents: []CreateAgentInput{
+			{Name: "agent1", SubAgentModel: "inherit"},
+		}, wantErr: false},
+		{name: "empty model allowed", modelProvider: "anthropic", agents: []CreateAgentInput{
+			{Name: "agent1", SubAgentModel: ""},
+		}, wantErr: false},
+
+		// Matching models.
+		{name: "anthropic model matches", modelProvider: "anthropic", agents: []CreateAgentInput{
+			{Name: "agent1", SubAgentModel: "anthropic/claude-sonnet-4-20250514"},
+		}, wantErr: false},
+		{name: "openai model matches", modelProvider: "openai", agents: []CreateAgentInput{
+			{Name: "agent1", SubAgentModel: "openai/gpt-4o"},
+		}, wantErr: false},
+		{name: "multiple agents all match", modelProvider: "google", agents: []CreateAgentInput{
+			{Name: "agent1", SubAgentModel: "google/gemini-pro"},
+			{Name: "agent2", SubAgentModel: "inherit"},
+			{Name: "agent3", SubAgentModel: "google/gemini-flash"},
+		}, wantErr: false},
+
+		// Mismatching models.
+		{name: "wrong provider prefix", modelProvider: "anthropic", agents: []CreateAgentInput{
+			{Name: "agent1", SubAgentModel: "openai/gpt-4"},
+		}, wantErr: true, errMsg: "doesn't match team model_provider"},
+		{name: "no slash in model", modelProvider: "anthropic", agents: []CreateAgentInput{
+			{Name: "agent1", SubAgentModel: "claude-sonnet"},
+		}, wantErr: true, errMsg: "doesn't match team model_provider"},
+		{name: "one agent mismatches", modelProvider: "openai", agents: []CreateAgentInput{
+			{Name: "agent1", SubAgentModel: "openai/gpt-4"},
+			{Name: "agent2", SubAgentModel: "anthropic/claude-sonnet-4-20250514"},
+		}, wantErr: true, errMsg: "doesn't match team model_provider"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateAgentModelConsistency(tt.modelProvider, tt.agents)
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("validateAgentModelConsistency(%q, ...) = nil, want error containing %q", tt.modelProvider, tt.errMsg)
+				} else if !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("validateAgentModelConsistency(%q, ...) error = %q, want error containing %q", tt.modelProvider, err.Error(), tt.errMsg)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("validateAgentModelConsistency(%q, ...) = %v, want nil", tt.modelProvider, err)
 				}
 			}
 		})
