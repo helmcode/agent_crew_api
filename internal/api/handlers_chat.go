@@ -187,10 +187,14 @@ func (s *Server) SendChat(c *fiber.Ctx) error {
 		})
 	}
 
-	return c.JSON(fiber.Map{
+	response := fiber.Map{
 		"status":  "sent",
 		"message": "Message sent to team leader",
-	})
+	}
+	if len(fileRefs) > 0 {
+		response["files"] = fileRefs
+	}
+	return c.JSON(response)
 }
 
 // publishToTeamNATS connects to the team's NATS, publishes a user_message to
