@@ -63,6 +63,16 @@ func (s *Server) CreateTeam(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "provider must be 'claude' or 'opencode'")
 	}
 
+	// Validate model_provider.
+	if err := validateModelProvider(prov, req.ModelProvider); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, err.Error())
+	}
+
+	// Validate agent model consistency with model_provider.
+	if err := validateAgentModelConsistency(req.ModelProvider, req.Agents); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, err.Error())
+	}
+
 	if err := validateAgentImage(req.AgentImage); err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, err.Error())
 	}
@@ -75,6 +85,7 @@ func (s *Server) CreateTeam(c *fiber.Ctx) error {
 		Status:        models.TeamStatusStopped,
 		Runtime:       rt,
 		Provider:      prov,
+		ModelProvider: req.ModelProvider,
 		WorkspacePath: req.WorkspacePath,
 		AgentImage:    req.AgentImage,
 	}
@@ -198,6 +209,24 @@ func (s *Server) UpdateTeam(c *fiber.Ctx) error {
 		}
 		updates["provider"] = *req.Provider
 	}
+
+	// Validate and apply model_provider.
+	if req.ModelProvider != nil {
+		effectiveProvider := team.Provider
+		if req.Provider != nil {
+			effectiveProvider = *req.Provider
+		}
+		if err := validateModelProvider(effectiveProvider, *req.ModelProvider); err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, err.Error())
+		}
+		updates["model_provider"] = *req.ModelProvider
+
+		// If model_provider changed, reset all agent models to "inherit".
+		if *req.ModelProvider != team.ModelProvider {
+			s.db.Model(&models.Agent{}).Where("team_id = ?", team.ID).Update("sub_agent_model", "inherit")
+		}
+	}
+
 	if req.AgentImage != nil {
 		if err := validateAgentImage(*req.AgentImage); err != nil {
 			return fiber.NewError(fiber.StatusBadRequest, err.Error())
@@ -522,6 +551,12 @@ func (s *Server) deployTeamAsync(team models.Team) {
 		agentEnv["AGENT_SKILLS_INSTALL"] = string(skillsJSON)
 	}
 
+	// When model_provider is set, only inject the relevant API key to the container
+	// instead of passing all provider keys. This prevents leaking unnecessary credentials.
+	if team.ModelProvider != "" && provider == models.ProviderOpenCode {
+		filterAPIKeysByModelProvider(agentEnv, team.ModelProvider)
+	}
+
 	// Collect MCP servers from team config.
 	if len(team.McpServers) > 0 && string(team.McpServers) != "null" && string(team.McpServers) != "[]" {
 		agentEnv["AGENT_MCP_SERVERS"] = string(team.McpServers)
@@ -586,6 +621,43 @@ func (s *Server) deployTeamAsync(team models.Team) {
 	// Start relay goroutine: subscribes to team NATS and saves agent
 	// responses as TaskLogs so StreamActivity WebSocket delivers them to UI.
 	s.startTeamRelay(team.ID, team.Name)
+}
+
+// apiKeysByProvider maps model_provider values to the env var names that hold their API keys.
+var apiKeysByProvider = map[string][]string{
+	models.ModelProviderAnthropic: {"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN"},
+	models.ModelProviderOpenAI:    {"OPENAI_API_KEY"},
+	models.ModelProviderGoogle:    {"GOOGLE_API_KEY", "GEMINI_API_KEY"},
+	models.ModelProviderOllama:    {}, // Ollama is local, no API key needed.
+}
+
+// allProviderAPIKeys returns a flat set of all known provider API key env vars.
+func allProviderAPIKeys() map[string]bool {
+	keys := make(map[string]bool)
+	for _, envVars := range apiKeysByProvider {
+		for _, k := range envVars {
+			keys[k] = true
+		}
+	}
+	return keys
+}
+
+// filterAPIKeysByModelProvider removes API keys from env that don't belong to the
+// specified model_provider. This prevents unnecessary credential exposure.
+func filterAPIKeysByModelProvider(env map[string]string, modelProvider string) {
+	keepKeys := make(map[string]bool)
+	if keys, ok := apiKeysByProvider[modelProvider]; ok {
+		for _, k := range keys {
+			keepKeys[k] = true
+		}
+	}
+
+	allKeys := allProviderAPIKeys()
+	for key := range env {
+		if allKeys[key] && !keepKeys[key] {
+			delete(env, key)
+		}
+	}
 }
 
 // claudeModelID maps the short model names used in SubAgentModel (sonnet, opus,

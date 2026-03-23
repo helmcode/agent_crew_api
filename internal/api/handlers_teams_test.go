@@ -1730,3 +1730,263 @@ func TestStatusMessage_ReturnedInListTeams(t *testing.T) {
 		t.Errorf("status_message in list: got %q, want 'deploy failed: missing key'", teams[0].StatusMessage)
 	}
 }
+
+// --- model_provider validation tests ---
+
+func TestCreateTeam_ModelProviderValid(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	rec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name:          "mp-valid-team",
+		Provider:      "opencode",
+		ModelProvider: "anthropic",
+		Agents:        []CreateAgentInput{{Name: "leader", Role: "leader"}},
+	})
+	if rec.Code != 201 {
+		t.Fatalf("status: got %d, want 201\nbody: %s", rec.Code, rec.Body.String())
+	}
+
+	var team models.Team
+	parseJSON(t, rec, &team)
+	if team.ModelProvider != "anthropic" {
+		t.Errorf("model_provider: got %q, want %q", team.ModelProvider, "anthropic")
+	}
+}
+
+func TestCreateTeam_ModelProviderInvalid(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	rec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name:          "mp-invalid-team",
+		Provider:      "opencode",
+		ModelProvider: "aws-bedrock",
+		Agents:        []CreateAgentInput{{Name: "leader", Role: "leader"}},
+	})
+	if rec.Code != 400 {
+		t.Fatalf("status: got %d, want 400\nbody: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "invalid model_provider") {
+		t.Errorf("body should contain 'invalid model_provider': %s", rec.Body.String())
+	}
+}
+
+func TestCreateTeam_ModelProviderIgnoredForClaude(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	// Claude provider should accept any model_provider (it's ignored).
+	rec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name:          "mp-claude-team",
+		Provider:      "claude",
+		ModelProvider: "anything",
+		Agents:        []CreateAgentInput{{Name: "leader", Role: "leader"}},
+	})
+	if rec.Code != 201 {
+		t.Fatalf("status: got %d, want 201\nbody: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCreateTeam_AgentModelConsistency(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	// Agent model doesn't match team's model_provider.
+	rec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name:          "mp-mismatch-team",
+		Provider:      "opencode",
+		ModelProvider: "anthropic",
+		Agents: []CreateAgentInput{
+			{Name: "leader", Role: "leader"},
+			{Name: "worker", Role: "worker", SubAgentModel: "openai/gpt-4"},
+		},
+	})
+	if rec.Code != 400 {
+		t.Fatalf("status: got %d, want 400\nbody: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "doesn't match team model_provider") {
+		t.Errorf("body should contain mismatch error: %s", rec.Body.String())
+	}
+}
+
+func TestUpdateTeam_ModelProviderResetsAgentModels(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	// Create team with model_provider=anthropic and an agent with a matching model.
+	createRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name:          "mp-reset-team",
+		Provider:      "opencode",
+		ModelProvider: "anthropic",
+		Agents: []CreateAgentInput{
+			{Name: "leader", Role: "leader", SubAgentModel: "anthropic/claude-sonnet-4-20250514"},
+			{Name: "worker", Role: "worker", SubAgentModel: "anthropic/claude-haiku-4-5-20251001"},
+		},
+	})
+	var team models.Team
+	parseJSON(t, createRec, &team)
+
+	// Update to a different model_provider.
+	newMP := "openai"
+	rec := doRequest(srv, "PUT", "/api/teams/"+team.ID, UpdateTeamRequest{
+		ModelProvider: &newMP,
+	})
+	if rec.Code != 200 {
+		t.Fatalf("status: got %d, want 200\nbody: %s", rec.Code, rec.Body.String())
+	}
+
+	var updated models.Team
+	parseJSON(t, rec, &updated)
+	if updated.ModelProvider != "openai" {
+		t.Errorf("model_provider: got %q, want %q", updated.ModelProvider, "openai")
+	}
+
+	// All agents should have been reset to "inherit".
+	var agents []models.Agent
+	srv.db.Where("team_id = ?", team.ID).Find(&agents)
+	for _, a := range agents {
+		if a.SubAgentModel != "inherit" {
+			t.Errorf("agent %q sub_agent_model: got %q, want %q", a.Name, a.SubAgentModel, "inherit")
+		}
+	}
+}
+
+func TestCreateAgent_ModelConsistencyValidation(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	// Create team with model_provider=openai.
+	createRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name:          "agent-mp-team",
+		Provider:      "opencode",
+		ModelProvider: "openai",
+		Agents:        []CreateAgentInput{{Name: "leader", Role: "leader"}},
+	})
+	var team models.Team
+	parseJSON(t, createRec, &team)
+
+	// Try to add agent with mismatched model.
+	rec := doRequest(srv, "POST", "/api/teams/"+team.ID+"/agents", CreateAgentRequest{
+		Name:          "bad-worker",
+		Role:          "worker",
+		SubAgentModel: "anthropic/claude-sonnet-4-20250514",
+	})
+	if rec.Code != 400 {
+		t.Fatalf("status: got %d, want 400\nbody: %s", rec.Code, rec.Body.String())
+	}
+
+	// Add agent with matching model — should succeed.
+	rec = doRequest(srv, "POST", "/api/teams/"+team.ID+"/agents", CreateAgentRequest{
+		Name:          "good-worker",
+		Role:          "worker",
+		SubAgentModel: "openai/gpt-4o",
+	})
+	if rec.Code != 201 {
+		t.Fatalf("status: got %d, want 201\nbody: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestUpdateAgent_ModelConsistencyValidation(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	// Create team with model_provider=google.
+	createRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name:          "update-agent-mp-team",
+		Provider:      "opencode",
+		ModelProvider: "google",
+		Agents: []CreateAgentInput{
+			{Name: "leader", Role: "leader"},
+			{Name: "worker", Role: "worker"},
+		},
+	})
+	var team models.Team
+	parseJSON(t, createRec, &team)
+
+	// Find the worker agent.
+	var worker models.Agent
+	for _, a := range team.Agents {
+		if a.Role == "worker" {
+			worker = a
+			break
+		}
+	}
+
+	// Try to update with mismatched model.
+	badModel := "anthropic/claude-sonnet-4-20250514"
+	rec := doRequest(srv, "PUT", "/api/teams/"+team.ID+"/agents/"+worker.ID, UpdateAgentRequest{
+		SubAgentModel: &badModel,
+	})
+	if rec.Code != 400 {
+		t.Fatalf("status: got %d, want 400\nbody: %s", rec.Code, rec.Body.String())
+	}
+
+	// Update with matching model — should succeed.
+	goodModel := "google/gemini-pro"
+	rec = doRequest(srv, "PUT", "/api/teams/"+team.ID+"/agents/"+worker.ID, UpdateAgentRequest{
+		SubAgentModel: &goodModel,
+	})
+	if rec.Code != 200 {
+		t.Fatalf("status: got %d, want 200\nbody: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestFilterAPIKeysByModelProvider(t *testing.T) {
+	tests := []struct {
+		name          string
+		modelProvider string
+		inputKeys     map[string]string
+		wantKeys      map[string]bool // keys that should remain
+		wantRemoved   []string        // keys that should be removed
+	}{
+		{
+			name:          "anthropic keeps only anthropic keys",
+			modelProvider: "anthropic",
+			inputKeys: map[string]string{
+				"ANTHROPIC_API_KEY": "sk-ant-123",
+				"OPENAI_API_KEY":   "sk-openai-123",
+				"GOOGLE_API_KEY":   "google-123",
+				"OTHER_VAR":        "keep-me",
+			},
+			wantKeys:    map[string]bool{"ANTHROPIC_API_KEY": true, "OTHER_VAR": true},
+			wantRemoved: []string{"OPENAI_API_KEY", "GOOGLE_API_KEY"},
+		},
+		{
+			name:          "openai keeps only openai keys",
+			modelProvider: "openai",
+			inputKeys: map[string]string{
+				"ANTHROPIC_API_KEY": "sk-ant-123",
+				"OPENAI_API_KEY":   "sk-openai-123",
+				"SOME_CONFIG":      "value",
+			},
+			wantKeys:    map[string]bool{"OPENAI_API_KEY": true, "SOME_CONFIG": true},
+			wantRemoved: []string{"ANTHROPIC_API_KEY"},
+		},
+		{
+			name:          "ollama removes all provider keys",
+			modelProvider: "ollama",
+			inputKeys: map[string]string{
+				"ANTHROPIC_API_KEY": "sk-ant-123",
+				"OPENAI_API_KEY":   "sk-openai-123",
+				"OLLAMA_HOST":      "http://localhost:11434",
+			},
+			wantKeys:    map[string]bool{"OLLAMA_HOST": true},
+			wantRemoved: []string{"ANTHROPIC_API_KEY", "OPENAI_API_KEY"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := make(map[string]string)
+			for k, v := range tt.inputKeys {
+				env[k] = v
+			}
+			filterAPIKeysByModelProvider(env, tt.modelProvider)
+
+			for key := range tt.wantKeys {
+				if _, ok := env[key]; !ok {
+					t.Errorf("key %q should be present but was removed", key)
+				}
+			}
+			for _, key := range tt.wantRemoved {
+				if _, ok := env[key]; ok {
+					t.Errorf("key %q should be removed but is still present", key)
+				}
+			}
+		})
+	}
+}

@@ -86,7 +86,18 @@ func (s *Server) CreateAgent(c *fiber.Ctx) error {
 	}
 
 	if req.SubAgentModel != "" && !isValidSubAgentModel(req.SubAgentModel) {
-		return fiber.NewError(fiber.StatusBadRequest, "sub_agent_model must be one of: inherit, sonnet, opus, haiku")
+		// For OpenCode teams, allow provider/model format if it matches team's model_provider.
+		if team.Provider != models.ProviderOpenCode || !isValidOpenCodeModel(req.SubAgentModel, team.ModelProvider) {
+			return fiber.NewError(fiber.StatusBadRequest, "sub_agent_model must be one of: inherit, sonnet, opus, haiku")
+		}
+	}
+
+	// Validate agent model against team's model_provider.
+	if team.ModelProvider != "" && req.SubAgentModel != "" && req.SubAgentModel != "inherit" {
+		agentInput := CreateAgentInput{Name: req.Name, SubAgentModel: req.SubAgentModel}
+		if err := validateAgentModelConsistency(team.ModelProvider, []CreateAgentInput{agentInput}); err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, err.Error())
+		}
 	}
 
 	if len(req.SubAgentDescription) > maxDescriptionSize {
@@ -257,7 +268,21 @@ func (s *Server) UpdateAgent(c *fiber.Ctx) error {
 	}
 	if req.SubAgentModel != nil {
 		if *req.SubAgentModel != "" && !isValidSubAgentModel(*req.SubAgentModel) {
-			return fiber.NewError(fiber.StatusBadRequest, "sub_agent_model must be one of: inherit, sonnet, opus, haiku")
+			// For OpenCode teams, allow provider/model format if it matches team's model_provider.
+			if team.Provider != models.ProviderOpenCode || !isValidOpenCodeModel(*req.SubAgentModel, team.ModelProvider) {
+				return fiber.NewError(fiber.StatusBadRequest, "sub_agent_model must be one of: inherit, sonnet, opus, haiku")
+			}
+		}
+		// Validate against team's model_provider.
+		if team.ModelProvider != "" && *req.SubAgentModel != "" && *req.SubAgentModel != "inherit" {
+			agentName := agent.Name
+			if req.Name != nil {
+				agentName = *req.Name
+			}
+			agentInput := CreateAgentInput{Name: agentName, SubAgentModel: *req.SubAgentModel}
+			if err := validateAgentModelConsistency(team.ModelProvider, []CreateAgentInput{agentInput}); err != nil {
+				return fiber.NewError(fiber.StatusBadRequest, err.Error())
+			}
 		}
 		updates["sub_agent_model"] = *req.SubAgentModel
 	}
@@ -286,6 +311,19 @@ func isValidSubAgentModel(v string) bool {
 		return true
 	}
 	return false
+}
+
+// isValidOpenCodeModel returns true if v is a valid "provider/model" format for OpenCode teams.
+// If teamModelProvider is set, the model's provider prefix must match it.
+func isValidOpenCodeModel(v, teamModelProvider string) bool {
+	parts := strings.SplitN(v, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return false
+	}
+	if teamModelProvider != "" && parts[0] != teamModelProvider {
+		return false
+	}
+	return true
 }
 
 // InstallAgentSkill installs a skill into a running agent's container via exec,
