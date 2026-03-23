@@ -765,7 +765,7 @@ func defaultOpenCodeModel(modelProvider string) string {
 	case models.ModelProviderGoogle:
 		return "google/gemini-2.5-pro"
 	case models.ModelProviderOllama:
-		return "ollama/qwen3:8b"
+		return "ollama/qwen3:4b"
 	default:
 		return ""
 	}

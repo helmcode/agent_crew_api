@@ -1522,7 +1522,7 @@ func TestDefaultOpenCodeModel(t *testing.T) {
 		{"anthropic", "anthropic/claude-sonnet-4-6"},
 		{"openai", "openai/gpt-5.3-codex"},
 		{"google", "google/gemini-2.5-pro"},
-		{"ollama", "ollama/qwen3:8b"},
+		{"ollama", "ollama/qwen3:4b"},
 		{"", ""},
 		{"unknown", ""},
 	}
