@@ -98,6 +98,25 @@ type AgentRuntime interface {
 	CopyToContainer(ctx context.Context, containerID string, destPath string, content []byte) error
 }
 
+// TeamNetworkName returns the Docker network name for a given sanitized team name.
+// Exported so handlers can compute network names for Ollama connectivity.
+func TeamNetworkName(sanitizedTeamName string) string {
+	return teamNetworkName(sanitizedTeamName)
+}
+
+// OllamaManager is an optional interface for runtimes that support Ollama
+// lifecycle management. Use a type assertion to check if a runtime supports it:
+//
+//	if om, ok := rt.(OllamaManager); ok { ... }
+type OllamaManager interface {
+	EnsureOllama(ctx context.Context) (string, error)
+	ConnectOllamaToNetwork(ctx context.Context, networkName string) error
+	DisconnectOllamaFromNetwork(ctx context.Context, networkName string) error
+	PullOllamaModel(ctx context.Context, model string, progressFn func(status string)) error
+	StopOllama(ctx context.Context) error
+	IsOllamaRunning(ctx context.Context) (bool, error)
+}
+
 // ValidateAgentFilePath checks that the given path is safe for agent file
 // operations. It rejects path traversal attempts and only allows paths under
 // /workspace/.claude/ or /workspace/.opencode/. Specifically:

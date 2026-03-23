@@ -34,6 +34,9 @@ type Server struct {
 	relaysMu sync.Mutex
 	relays   map[string]context.CancelFunc
 
+	// ollamaMu guards SharedInfra ref count operations for thread safety.
+	ollamaMu sync.Mutex
+
 	// webhookMaxConcurrent is the global limit of concurrent webhook runs.
 	webhookMaxConcurrent int
 

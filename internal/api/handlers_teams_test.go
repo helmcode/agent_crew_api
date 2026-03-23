@@ -7,8 +7,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/helmcode/agent-crew/internal/models"
+	"github.com/helmcode/agent-crew/internal/runtime"
 )
 
 func TestDeployTeam_SetsStatusDeploying(t *testing.T) {
@@ -2038,5 +2040,171 @@ func TestFilterAPIKeysByModelProvider(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestDeployTeam_OllamaProvider_SetsOllamaURL(t *testing.T) {
+	srv, mock := setupTestServer(t)
+
+	// Create an OpenCode team with ollama model_provider.
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name:          "ollama-team",
+		Provider:      "opencode",
+		ModelProvider: "ollama",
+		Agents: []CreateAgentInput{
+			{Name: "leader", Role: "leader", SubAgentModel: "ollama/llama3.2"},
+		},
+	})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+
+	// Set an OLLAMA_BASE_URL in settings so OpenCode auth is satisfied.
+	srv.db.Create(&models.Settings{OrgID: team.OrgID, Key: "OLLAMA_BASE_URL", Value: "http://placeholder:11434"})
+
+	rec := doRequest(srv, "POST", "/api/teams/"+team.ID+"/deploy", nil)
+	if rec.Code != 200 {
+		t.Fatalf("status: got %d, want 200\nbody: %s", rec.Code, rec.Body.String())
+	}
+
+	// Wait for async deploy to execute.
+	time.Sleep(1 * time.Second)
+
+	// Verify Ollama was connected to the team network.
+	mock.mu.Lock()
+	connectedCount := len(mock.ollamaConnected)
+	var pulledModels []string
+	pulledModels = append(pulledModels, mock.ollamaPulledModels...)
+	var lastCfg *runtime.AgentConfig
+	if mock.lastAgentConfig != nil {
+		cfgCopy := *mock.lastAgentConfig
+		lastCfg = &cfgCopy
+	}
+	mock.mu.Unlock()
+
+	if connectedCount == 0 {
+		t.Error("expected ollama to be connected to team network")
+	}
+
+	// Verify model was pulled (stripped of "ollama/" prefix).
+	if len(pulledModels) == 0 {
+		t.Error("expected ollama model to be pulled")
+	} else if pulledModels[0] != "llama3.2" {
+		t.Errorf("pulled model: got %q, want %q", pulledModels[0], "llama3.2")
+	}
+
+	// Verify OLLAMA_BASE_URL was set in agent config.
+	if lastCfg != nil {
+		if url, ok := lastCfg.Env["OLLAMA_BASE_URL"]; !ok || url != "http://agentcrew-ollama:11434" {
+			t.Errorf("OLLAMA_BASE_URL: got %q, want %q", url, "http://agentcrew-ollama:11434")
+		}
+	}
+}
+
+func TestStopTeam_OllamaProvider_DecrementsRefCount(t *testing.T) {
+	srv, mock := setupTestServer(t)
+
+	// Create and manually set up an Ollama team as running.
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name:          "ollama-stop-team",
+		Provider:      "opencode",
+		ModelProvider: "ollama",
+		Agents: []CreateAgentInput{
+			{Name: "leader", Role: "leader"},
+		},
+	})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+
+	// Simulate running state with Ollama SharedInfra ref count of 2.
+	srv.db.Model(&team).Update("status", models.TeamStatusRunning)
+	srv.db.Create(&models.SharedInfra{
+		ID:           "infra-1",
+		ResourceType: "ollama",
+		ContainerID:  "ollama-cid",
+		Status:       "running",
+		RefCount:     2,
+	})
+
+	rec := doRequest(srv, "POST", "/api/teams/"+team.ID+"/stop", nil)
+	if rec.Code != 200 {
+		t.Fatalf("status: got %d, want 200\nbody: %s", rec.Code, rec.Body.String())
+	}
+
+	// Verify ollama was disconnected from the team network.
+	if len(mock.ollamaDisconnected) == 0 {
+		t.Error("expected ollama to be disconnected from team network")
+	}
+
+	// Verify ref count was decremented to 1 (not stopped since ref_count > 0).
+	var infra models.SharedInfra
+	srv.db.Where("resource_type = ?", "ollama").First(&infra)
+	if infra.RefCount != 1 {
+		t.Errorf("ref_count: got %d, want 1", infra.RefCount)
+	}
+	if mock.ollamaStopCalled {
+		t.Error("ollama should NOT be stopped when ref_count > 0")
+	}
+}
+
+func TestStopTeam_OllamaProvider_StopsWhenLastRef(t *testing.T) {
+	srv, mock := setupTestServer(t)
+
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name:          "ollama-last-ref",
+		Provider:      "opencode",
+		ModelProvider: "ollama",
+		Agents: []CreateAgentInput{
+			{Name: "leader", Role: "leader"},
+		},
+	})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+
+	srv.db.Model(&team).Update("status", models.TeamStatusRunning)
+	srv.db.Create(&models.SharedInfra{
+		ID:           "infra-2",
+		ResourceType: "ollama",
+		ContainerID:  "ollama-cid",
+		Status:       "running",
+		RefCount:     1,
+	})
+
+	rec := doRequest(srv, "POST", "/api/teams/"+team.ID+"/stop", nil)
+	if rec.Code != 200 {
+		t.Fatalf("status: got %d, want 200\nbody: %s", rec.Code, rec.Body.String())
+	}
+
+	// With ref_count going to 0, ollama should be stopped.
+	var infra models.SharedInfra
+	srv.db.Where("resource_type = ?", "ollama").First(&infra)
+	if infra.RefCount != 0 {
+		t.Errorf("ref_count: got %d, want 0", infra.RefCount)
+	}
+	if !mock.ollamaStopCalled {
+		t.Error("ollama should be stopped when ref_count reaches 0")
+	}
+}
+
+func TestStopTeam_NonOllama_SkipsOllamaCleanup(t *testing.T) {
+	srv, mock := setupTestServer(t)
+
+	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
+		Name: "non-ollama-team",
+		Agents: []CreateAgentInput{
+			{Name: "leader", Role: "leader"},
+		},
+	})
+	var team models.Team
+	parseJSON(t, teamRec, &team)
+
+	srv.db.Model(&team).Update("status", models.TeamStatusRunning)
+
+	doRequest(srv, "POST", "/api/teams/"+team.ID+"/stop", nil)
+
+	if len(mock.ollamaDisconnected) > 0 {
+		t.Error("non-ollama team should not disconnect ollama")
+	}
+	if mock.ollamaStopCalled {
+		t.Error("non-ollama team should not stop ollama")
 	}
 }

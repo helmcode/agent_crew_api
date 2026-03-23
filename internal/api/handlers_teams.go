@@ -345,6 +345,87 @@ func (s *Server) deployTeamAsync(team models.Team) {
 		provider = models.ProviderClaude
 	}
 
+	// If the team uses Ollama, set up the shared Ollama container.
+	var ollamaSetupDone bool
+	if team.ModelProvider == models.ModelProviderOllama {
+		if om, ok := s.runtime.(runtime.OllamaManager); ok {
+			s.db.Model(&team).Update("status_message", "Starting Ollama container...")
+
+			containerID, err := om.EnsureOllama(ctx)
+			if err != nil {
+				slog.Error("failed to start ollama", "team", team.Name, "error", err)
+				s.db.Model(&team).Updates(map[string]interface{}{
+					"status":         models.TeamStatusError,
+					"status_message": "Failed to start Ollama: " + err.Error(),
+				})
+				return
+			}
+
+			// Connect Ollama to team network so agent containers can resolve it.
+			teamNetName := runtime.TeamNetworkName(SanitizeName(team.Name))
+			if err := om.ConnectOllamaToNetwork(ctx, teamNetName); err != nil {
+				slog.Error("failed to connect ollama to network", "team", team.Name, "error", err)
+				s.db.Model(&team).Updates(map[string]interface{}{
+					"status":         models.TeamStatusError,
+					"status_message": "Failed to connect Ollama to network: " + err.Error(),
+				})
+				return
+			}
+
+			// Determine model to pull from leader's SubAgentModel (strip "ollama/" prefix).
+			ollamaModel := ""
+			for _, a := range team.Agents {
+				if a.Role == models.AgentRoleLeader {
+					ollamaModel = a.SubAgentModel
+					break
+				}
+			}
+			if ollamaModel != "" && ollamaModel != "inherit" {
+				ollamaModel = strings.TrimPrefix(ollamaModel, "ollama/")
+				s.db.Model(&team).Update("status_message", "Pulling Ollama model: "+ollamaModel+"...")
+
+				if err := om.PullOllamaModel(ctx, ollamaModel, func(status string) {
+					s.db.Model(&team).Update("status_message", "Pulling model: "+status)
+				}); err != nil {
+					slog.Error("failed to pull ollama model", "team", team.Name, "model", ollamaModel, "error", err)
+					s.db.Model(&team).Updates(map[string]interface{}{
+						"status":         models.TeamStatusError,
+						"status_message": "Failed to pull Ollama model " + ollamaModel + ": " + err.Error(),
+					})
+					return
+				}
+			}
+
+			// Track SharedInfra with thread-safe ref counting.
+			s.ollamaMu.Lock()
+			var infra models.SharedInfra
+			result := s.db.Where("resource_type = ?", "ollama").First(&infra)
+			if result.Error != nil {
+				infra = models.SharedInfra{
+					ID:           uuid.New().String(),
+					ResourceType: "ollama",
+					ContainerID:  containerID,
+					Status:       "running",
+					RefCount:     1,
+				}
+				s.db.Create(&infra)
+			} else {
+				s.db.Model(&infra).Updates(map[string]interface{}{
+					"container_id": containerID,
+					"status":       "running",
+					"ref_count":    infra.RefCount + 1,
+				})
+			}
+			s.ollamaMu.Unlock()
+
+			ollamaSetupDone = true
+			slog.Info("ollama setup complete for team", "team", team.Name, "container", containerID)
+		} else {
+			slog.Warn("runtime does not support Ollama management", "team", team.Name)
+		}
+	}
+	_ = ollamaSetupDone // used for env injection below
+
 	// Build team member list for the leader's instructions.
 	var teamMembers []runtime.TeamMemberInfo
 	for _, a := range team.Agents {
@@ -561,6 +642,12 @@ func (s *Server) deployTeamAsync(team models.Team) {
 		filterAPIKeysByModelProvider(agentEnv, team.ModelProvider)
 	}
 
+	// Inject OLLAMA_BASE_URL for Ollama-backed teams so agent containers
+	// can reach the shared Ollama instance via Docker DNS.
+	if team.ModelProvider == models.ModelProviderOllama {
+		agentEnv["OLLAMA_BASE_URL"] = runtime.OllamaInternalURL
+	}
+
 	// Collect MCP servers from team config.
 	if len(team.McpServers) > 0 && string(team.McpServers) != "null" && string(team.McpServers) != "[]" {
 		agentEnv["AGENT_MCP_SERVERS"] = string(team.McpServers)
@@ -738,6 +825,39 @@ func (s *Server) StopTeam(c *fiber.Ctx) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
+
+	// If the team used Ollama, decrement ref count and disconnect from network
+	// BEFORE TeardownInfra removes the network.
+	if team.ModelProvider == models.ModelProviderOllama {
+		if om, ok := s.runtime.(runtime.OllamaManager); ok {
+			teamNetName := runtime.TeamNetworkName(SanitizeName(team.Name))
+			if err := om.DisconnectOllamaFromNetwork(ctx, teamNetName); err != nil {
+				slog.Error("failed to disconnect ollama from network", "team", team.Name, "error", err)
+			}
+
+			s.ollamaMu.Lock()
+			var infra models.SharedInfra
+			if err := s.db.Where("resource_type = ?", "ollama").First(&infra).Error; err == nil {
+				newRefCount := infra.RefCount - 1
+				if newRefCount < 0 {
+					newRefCount = 0
+				}
+				if newRefCount == 0 {
+					s.db.Model(&infra).Updates(map[string]interface{}{
+						"ref_count": 0,
+						"status":    "stopped",
+					})
+					// Stop the container (don't remove — preserve models).
+					if err := om.StopOllama(ctx); err != nil {
+						slog.Error("failed to stop ollama", "error", err)
+					}
+				} else {
+					s.db.Model(&infra).Update("ref_count", newRefCount)
+				}
+			}
+			s.ollamaMu.Unlock()
+		}
+	}
 
 	if err := s.runtime.TeardownInfra(ctx, team.Name); err != nil {
 		slog.Error("failed to teardown infrastructure", "team", team.Name, "error", err)

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/helmcode/agent-crew/internal/auth"
@@ -14,8 +15,9 @@ import (
 	"github.com/helmcode/agent-crew/internal/runtime"
 )
 
-// mockRuntime implements runtime.AgentRuntime for testing.
+// mockRuntime implements runtime.AgentRuntime and runtime.OllamaManager for testing.
 type mockRuntime struct {
+	mu              sync.Mutex
 	deployInfraErr  error
 	deployAgentErr  error
 	stopAgentErr    error
@@ -24,6 +26,14 @@ type mockRuntime struct {
 	deployedAgents  []string
 	teardownCalled  bool
 	lastAgentConfig *runtime.AgentConfig
+
+	// Ollama mock state.
+	ensureOllamaErr        error
+	ollamaConnected        []string
+	ollamaDisconnected     []string
+	ollamaPulledModels     []string
+	ollamaStopCalled       bool
+	ollamaRunning          bool
 }
 
 func (m *mockRuntime) DeployInfra(_ context.Context, _ runtime.InfraConfig) error {
@@ -31,6 +41,8 @@ func (m *mockRuntime) DeployInfra(_ context.Context, _ runtime.InfraConfig) erro
 }
 
 func (m *mockRuntime) DeployAgent(_ context.Context, cfg runtime.AgentConfig) (*runtime.AgentInstance, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.deployAgentErr != nil {
 		return nil, m.deployAgentErr
 	}
@@ -89,6 +101,54 @@ func (m *mockRuntime) WriteFile(_ context.Context, _ string, path string, _ []by
 
 func (m *mockRuntime) CopyToContainer(_ context.Context, _ string, _ string, _ []byte) error {
 	return nil
+}
+
+// OllamaManager interface methods.
+
+func (m *mockRuntime) EnsureOllama(_ context.Context) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.ensureOllamaErr != nil {
+		return "", m.ensureOllamaErr
+	}
+	return "ollama-container-id", nil
+}
+
+func (m *mockRuntime) ConnectOllamaToNetwork(_ context.Context, networkName string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ollamaConnected = append(m.ollamaConnected, networkName)
+	return nil
+}
+
+func (m *mockRuntime) DisconnectOllamaFromNetwork(_ context.Context, networkName string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ollamaDisconnected = append(m.ollamaDisconnected, networkName)
+	return nil
+}
+
+func (m *mockRuntime) PullOllamaModel(_ context.Context, model string, progressFn func(status string)) error {
+	m.mu.Lock()
+	m.ollamaPulledModels = append(m.ollamaPulledModels, model)
+	m.mu.Unlock()
+	if progressFn != nil {
+		progressFn("pulling " + model)
+	}
+	return nil
+}
+
+func (m *mockRuntime) StopOllama(_ context.Context) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ollamaStopCalled = true
+	return nil
+}
+
+func (m *mockRuntime) IsOllamaRunning(_ context.Context) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.ollamaRunning, nil
 }
 
 // setupTestServer creates a Server with in-memory SQLite and mock runtime.
