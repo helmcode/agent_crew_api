@@ -97,6 +97,12 @@ func (s *Server) StreamActivity(c *websocket.Conn) {
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
+	// Send periodic pings to keep the connection alive through proxies
+	// and NAT gateways during long inference times (e.g. Ollama on CPU).
+	// WriteControl is safe to call concurrently with WriteMessage.
+	pingTicker := time.NewTicker(30 * time.Second)
+	defer pingTicker.Stop()
+
 	// Also listen for close messages from client.
 	done := make(chan struct{})
 	go func() {
@@ -113,6 +119,10 @@ func (s *Server) StreamActivity(c *websocket.Conn) {
 		select {
 		case <-done:
 			return
+		case <-pingTicker.C:
+			if err := c.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second)); err != nil {
+				return
+			}
 		case <-ticker.C:
 			var logs []models.TaskLog
 			// Use ">" so the cursor advances past already-sent records.
