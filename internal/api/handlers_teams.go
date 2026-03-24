@@ -372,7 +372,8 @@ func (s *Server) deployTeamAsync(team models.Team) {
 				return
 			}
 
-			// Determine model to pull from leader's SubAgentModel (strip "ollama/" prefix).
+			// Determine model to pull: use leader's explicit model, or fall back
+			// to the default model for the Ollama provider.
 			ollamaModel := ""
 			for _, a := range team.Agents {
 				if a.Role == models.AgentRoleLeader {
@@ -380,7 +381,10 @@ func (s *Server) deployTeamAsync(team models.Team) {
 					break
 				}
 			}
-			if ollamaModel != "" && ollamaModel != "inherit" {
+			if ollamaModel == "" || ollamaModel == "inherit" {
+				ollamaModel = defaultOpenCodeModel(team.ModelProvider)
+			}
+			if ollamaModel != "" {
 				ollamaModel = strings.TrimPrefix(ollamaModel, "ollama/")
 				s.db.Model(&team).Update("status_message", "Pulling Ollama model: "+ollamaModel+"...")
 
