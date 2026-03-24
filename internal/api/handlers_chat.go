@@ -31,8 +31,6 @@ const (
 // unsafeFilenameChars matches characters that are not safe in filenames.
 var unsafeFilenameChars = regexp.MustCompile(`[^a-zA-Z0-9._-]`)
 
-// allowedMIMEPrefixes lists the MIME type prefixes accepted for file uploads.
-var allowedMIMEPrefixes = []string{"text/", "image/", "application/pdf"}
 
 // SendChat sends a user message to the team leader via NATS.
 // It supports both JSON (backward compat) and multipart/form-data with file uploads.
@@ -87,13 +85,6 @@ func (s *Server) SendChat(c *fiber.Ctx) error {
 				if fh.Size > maxFileSize {
 					return fiber.NewError(fiber.StatusBadRequest,
 						fmt.Sprintf("file %q exceeds maximum size of %d bytes", fh.Filename, maxFileSize))
-				}
-
-				// Validate MIME type.
-				if !isAllowedMIME(fh.Header.Get("Content-Type")) {
-					return fiber.NewError(fiber.StatusBadRequest,
-						fmt.Sprintf("file %q has unsupported type %q; allowed: text/*, image/*, application/pdf",
-							fh.Filename, fh.Header.Get("Content-Type")))
 				}
 
 				// Sanitize filename.
@@ -416,13 +407,3 @@ func sanitizeFilename(name string) string {
 	return name
 }
 
-// isAllowedMIME checks whether a MIME type is in the allowed list.
-func isAllowedMIME(mimeType string) bool {
-	mimeType = strings.ToLower(strings.TrimSpace(mimeType))
-	for _, prefix := range allowedMIMEPrefixes {
-		if strings.HasPrefix(mimeType, prefix) {
-			return true
-		}
-	}
-	return false
-}

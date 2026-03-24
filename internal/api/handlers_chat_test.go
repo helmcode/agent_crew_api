@@ -434,34 +434,6 @@ func TestSanitizeFilename(t *testing.T) {
 	}
 }
 
-func TestIsAllowedMIME(t *testing.T) {
-	tests := []struct {
-		mime string
-		want bool
-	}{
-		{"text/plain", true},
-		{"text/html", true},
-		{"text/csv", true},
-		{"image/png", true},
-		{"image/jpeg", true},
-		{"image/gif", true},
-		{"application/pdf", true},
-		{"application/json", false},
-		{"application/octet-stream", false},
-		{"video/mp4", false},
-		{"", false},
-		{"TEXT/PLAIN", true},   // case-insensitive
-		{" image/png ", true},  // trimmed
-	}
-
-	for _, tt := range tests {
-		got := isAllowedMIME(tt.mime)
-		if got != tt.want {
-			t.Errorf("isAllowedMIME(%q) = %v, want %v", tt.mime, got, tt.want)
-		}
-	}
-}
-
 func TestSplitCSV(t *testing.T) {
 	tests := []struct {
 		input    string
