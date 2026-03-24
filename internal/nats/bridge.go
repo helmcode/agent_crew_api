@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -532,25 +531,33 @@ func (b *Bridge) publishMcpRuntimeStatus(rawServers string) {
 	}
 }
 
-// thinkBlockRe matches <think>...</think> blocks, including across newlines.
-var thinkBlockRe = regexp.MustCompile(`(?s)<think>.*?</think>`)
-
 // stripThinkingBlocks removes chain-of-thought reasoning from model responses.
 // Some models (e.g. qwen3 via Ollama) wrap their reasoning in <think>...</think>
 // tags inline within the text response. This function strips those blocks so
 // only the final answer appears in the chat.
+//
+// Because OpenCode SSE delivers incremental updates of the same text part, the
+// bridge may accumulate duplicated <think> blocks. To handle this robustly, we
+// take everything after the LAST </think> tag, which is always the final answer.
 func stripThinkingBlocks(s string) string {
-	// Remove complete <think>...</think> blocks.
-	result := thinkBlockRe.ReplaceAllString(s, "")
-
-	// Handle partial think blocks: if the accumulated text starts mid-think
-	// (the <think> tag was in a prior chunk that wasn't accumulated), strip
-	// everything before and including the closing </think>.
-	if idx := strings.Index(result, "</think>"); idx != -1 {
-		result = result[idx+len("</think>"):]
+	// Fast path: no think tags at all.
+	if !strings.Contains(s, "</think>") && !strings.Contains(s, "<think>") {
+		return s
 	}
 
-	return strings.TrimSpace(result)
+	// Find the last </think> and take everything after it. This handles both
+	// single and duplicated think blocks from accumulated SSE updates.
+	if idx := strings.LastIndex(s, "</think>"); idx != -1 {
+		return strings.TrimSpace(s[idx+len("</think>"):])
+	}
+
+	// No closing tag found but <think> exists — the block is still open
+	// (streaming). Remove everything from <think> onward.
+	if idx := strings.Index(s, "<think>"); idx != -1 {
+		return strings.TrimSpace(s[:idx])
+	}
+
+	return s
 }
 
 // decodeUnicodeEscapes replaces literal \uXXXX escape sequences in a string

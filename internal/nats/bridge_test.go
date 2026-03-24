@@ -1248,9 +1248,14 @@ func TestStripThinkingBlocks(t *testing.T) {
 			want:  "",
 		},
 		{
-			name:  "multiple think blocks",
-			input: "<think>first</think>Hello <think>second</think>world",
-			want:  "Hello world",
+			name:  "accumulated duplicated think blocks",
+			input: "<think>reasoning1</think>.author\n\n\n<think>reasoning2</think>\n\nSoy Qwen, un modelo.",
+			want:  "Soy Qwen, un modelo.",
+		},
+		{
+			name:  "open think block (still streaming)",
+			input: "Hello<think>partial reasoning",
+			want:  "Hello",
 		},
 	}
 
