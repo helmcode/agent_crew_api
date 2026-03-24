@@ -1206,6 +1206,64 @@ func TestProcessEvent_DuplicateErrorDedup(t *testing.T) {
 // flag resets when a new user message arrives so the next error is not suppressed.
 // --- decodeUnicodeEscapes tests ---
 
+func TestStripThinkingBlocks(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "no think tags",
+			input: "Hello world",
+			want:  "Hello world",
+		},
+		{
+			name:  "complete think block",
+			input: "<think>\nI need to respond in Spanish.\n</think>\n\nSoy Qwen, un modelo de IA.",
+			want:  "Soy Qwen, un modelo de IA.",
+		},
+		{
+			name:  "think block with Chinese reasoning",
+			input: "<think>\n单项选择题\n</think>\n\nSoy un modelo de lenguaje.",
+			want:  "Soy un modelo de lenguaje.",
+		},
+		{
+			name:  "partial think block (no opening tag)",
+			input: "单项选择题\n</think>\n\nSoy un modelo de lenguaje.",
+			want:  "Soy un modelo de lenguaje.",
+		},
+		{
+			name:  "partial with garbled prefix",
+			input: "มาณ\nSoy un modelo de lenguaje.",
+			want:  "มาณ\nSoy un modelo de lenguaje.",
+		},
+		{
+			name:  "partial with garbled prefix and closing tag",
+			input: "มาณ\n</think>\nSoy un modelo de lenguaje.",
+			want:  "Soy un modelo de lenguaje.",
+		},
+		{
+			name:  "empty after stripping",
+			input: "<think>only reasoning</think>",
+			want:  "",
+		},
+		{
+			name:  "multiple think blocks",
+			input: "<think>first</think>Hello <think>second</think>world",
+			want:  "Hello world",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := stripThinkingBlocks(tt.input)
+			if got != tt.want {
+				t.Errorf("stripThinkingBlocks(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestDecodeUnicodeEscapes_Basic(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -1317,6 +1375,51 @@ func TestProcessEvent_ResultDecodesUnicodeEscapes(t *testing.T) {
 	}
 
 	want := "Descripción de la última moderación"
+	if leaderPayload.Result != want {
+		t.Errorf("result: got %q, want %q", leaderPayload.Result, want)
+	}
+}
+
+func TestProcessEvent_ResultStripsThinkBlocks(t *testing.T) {
+	pub := &fakePublisher{}
+	bridge := &Bridge{
+		config: BridgeConfig{
+			AgentName: "leader",
+			TeamName:  "thinkteam",
+			Role:      "leader",
+		},
+		client: pub,
+	}
+
+	// Simulate accumulated assistant text containing <think> blocks (qwen3 style).
+	var currentResult string
+
+	// First, accumulate the assistant text with think block.
+	thinkMsg, _ := json.Marshal(map[string]string{"type": "text", "text": "<think>\n单项选择题\n</think>\n\nSoy un modelo de lenguaje."})
+	assistantEvent := toProviderEvent(claude.StreamEvent{
+		Type:    "assistant",
+		Message: thinkMsg,
+	})
+	bridge.processEvent(&assistantEvent, &currentResult)
+
+	// Then the result event fires (session.idle).
+	resultEvent := toProviderEvent(claude.StreamEvent{
+		Type: "result",
+	})
+	bridge.processEvent(&resultEvent, &currentResult)
+
+	msgs := pub.getMessages()
+	var leaderPayload protocol.LeaderResponsePayload
+	for _, m := range msgs {
+		if m.Msg.Type == protocol.TypeLeaderResponse {
+			if err := json.Unmarshal(m.Msg.Payload, &leaderPayload); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			break
+		}
+	}
+
+	want := "Soy un modelo de lenguaje."
 	if leaderPayload.Result != want {
 		t.Errorf("result: got %q, want %q", leaderPayload.Result, want)
 	}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -336,6 +337,15 @@ func (b *Bridge) processEvent(event *provider.StreamEvent, currentResult *string
 		// non-ASCII characters (e.g. "Descripci\u00f3n" instead of "Descripción").
 		*currentResult = decodeUnicodeEscapes(*currentResult)
 
+		// Strip chain-of-thought <think> blocks that some models (e.g.
+		// qwen3 via Ollama) include inline in their text response.
+		*currentResult = stripThinkingBlocks(*currentResult)
+
+		// Skip if stripping left the result empty.
+		if *currentResult == "" {
+			return
+		}
+
 		// Publish the result to the leader channel.
 		b.publishLeaderResponse("", "completed", *currentResult, "")
 		*currentResult = ""
@@ -520,6 +530,27 @@ func (b *Bridge) publishMcpRuntimeStatus(rawServers string) {
 	if err := b.client.Publish(subject, msg); err != nil {
 		slog.Error("failed to publish MCP runtime status", "error", err)
 	}
+}
+
+// thinkBlockRe matches <think>...</think> blocks, including across newlines.
+var thinkBlockRe = regexp.MustCompile(`(?s)<think>.*?</think>`)
+
+// stripThinkingBlocks removes chain-of-thought reasoning from model responses.
+// Some models (e.g. qwen3 via Ollama) wrap their reasoning in <think>...</think>
+// tags inline within the text response. This function strips those blocks so
+// only the final answer appears in the chat.
+func stripThinkingBlocks(s string) string {
+	// Remove complete <think>...</think> blocks.
+	result := thinkBlockRe.ReplaceAllString(s, "")
+
+	// Handle partial think blocks: if the accumulated text starts mid-think
+	// (the <think> tag was in a prior chunk that wasn't accumulated), strip
+	// everything before and including the closing </think>.
+	if idx := strings.Index(result, "</think>"); idx != -1 {
+		result = result[idx+len("</think>"):]
+	}
+
+	return strings.TrimSpace(result)
 }
 
 // decodeUnicodeEscapes replaces literal \uXXXX escape sequences in a string
