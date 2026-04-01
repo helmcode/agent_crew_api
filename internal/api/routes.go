@@ -124,6 +124,14 @@ func (s *Server) registerRoutes() {
 	org.Post("/invites", s.CreateInvite)
 	org.Delete("/invites/:id", s.DeleteInvite)
 
+	// Knowledge Base.
+	knowledge := api.Group("/knowledge")
+	knowledge.Get("/status", s.GetKnowledgeStatus)
+	knowledge.Get("/documents", s.ListDocuments)
+	knowledge.Post("/documents", s.UploadDocument)
+	knowledge.Get("/documents/:id", s.GetDocument)
+	knowledge.Delete("/documents/:id", s.DeleteDocument)
+
 	// WebSocket endpoints — authenticated via query param ?token= or noop auto-auth.
 	s.App.Use("/ws", func(c *fiber.Ctx) error {
 		if !websocket.IsWebSocketUpgrade(c) {

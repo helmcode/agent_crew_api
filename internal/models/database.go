@@ -50,7 +50,7 @@ func InitDB(dbPath string) (*gorm.DB, error) {
 		slog.Info("settings table migrated")
 	}
 
-	if err := db.AutoMigrate(&Organization{}, &User{}, &Invite{}, &Team{}, &Agent{}, &TaskLog{}, &Settings{}, &Schedule{}, &ScheduleRun{}, &Webhook{}, &WebhookRun{}, &PostAction{}, &PostActionBinding{}, &PostActionRun{}, &SharedInfra{}); err != nil {
+	if err := db.AutoMigrate(&Organization{}, &User{}, &Invite{}, &Team{}, &Agent{}, &TaskLog{}, &Settings{}, &Schedule{}, &ScheduleRun{}, &Webhook{}, &WebhookRun{}, &PostAction{}, &PostActionBinding{}, &PostActionRun{}, &SharedInfra{}, &Document{}); err != nil {
 		return nil, fmt.Errorf("auto-migrating models: %w", err)
 	}
 

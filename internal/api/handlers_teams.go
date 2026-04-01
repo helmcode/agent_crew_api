@@ -410,28 +410,6 @@ func (s *Server) deployTeamAsync(team models.Team) {
 				s.db.Model(&team).Update("status_message", "Ollama model ready: "+ollamaModel)
 			}
 
-			// Track SharedInfra with thread-safe ref counting.
-			s.ollamaMu.Lock()
-			var infra models.SharedInfra
-			result := s.db.Where("resource_type = ?", "ollama").First(&infra)
-			if result.Error != nil {
-				infra = models.SharedInfra{
-					ID:           uuid.New().String(),
-					ResourceType: "ollama",
-					ContainerID:  containerID,
-					Status:       "running",
-					RefCount:     1,
-				}
-				s.db.Create(&infra)
-			} else {
-				s.db.Model(&infra).Updates(map[string]interface{}{
-					"container_id": containerID,
-					"status":       "running",
-					"ref_count":    infra.RefCount + 1,
-				})
-			}
-			s.ollamaMu.Unlock()
-
 			ollamaSetupDone = true
 			slog.Info("ollama setup complete for team", "team", team.Name, "container", containerID)
 		} else {
@@ -667,6 +645,80 @@ func (s *Server) deployTeamAsync(team models.Team) {
 		agentEnv["AGENT_MCP_SERVERS"] = string(team.McpServers)
 	}
 
+	// Auto-inject RAG MCP server if the org has ready knowledge base documents.
+	var ragDocCount int64
+	s.db.Model(&models.Document{}).Where("org_id = ? AND status = ?", team.OrgID, models.DocStatusReady).Count(&ragDocCount)
+
+	if ragDocCount > 0 {
+		ragNetName := runtime.TeamNetworkName(SanitizeName(team.Name))
+		s.db.Model(&team).Update("status_message", "Setting up knowledge base...")
+
+		// Ensure Qdrant is running and connected to the team network.
+		if qm, ok := s.runtime.(runtime.QdrantManager); ok {
+			if _, err := qm.EnsureQdrant(ctx); err != nil {
+				slog.Error("failed to start qdrant for RAG", "team", team.Name, "error", err)
+				s.db.Model(&team).Updates(map[string]interface{}{
+					"status":         models.TeamStatusError,
+					"status_message": "Failed to start Qdrant: " + err.Error(),
+				})
+				return
+			}
+			if err := qm.ConnectQdrantToNetwork(ctx, ragNetName); err != nil {
+				slog.Error("failed to connect qdrant to network", "team", team.Name, "error", err)
+				s.db.Model(&team).Updates(map[string]interface{}{
+					"status":         models.TeamStatusError,
+					"status_message": "Failed to connect Qdrant to network: " + err.Error(),
+				})
+				return
+			}
+		}
+
+		// Ensure Ollama is running for query-time embeddings (may already be set up for Ollama provider).
+		if !ollamaSetupDone {
+			if om, ok := s.runtime.(runtime.OllamaManager); ok {
+				if _, err := om.EnsureOllama(ctx); err != nil {
+					slog.Error("failed to start ollama for RAG embeddings", "team", team.Name, "error", err)
+					// Non-fatal: search will fail but team can still deploy.
+				} else if err := om.ConnectOllamaToNetwork(ctx, ragNetName); err != nil {
+					slog.Error("failed to connect ollama to network for RAG", "team", team.Name, "error", err)
+				}
+			}
+		}
+
+		// Ensure RAG MCP server is running and connected.
+		if rm, ok := s.runtime.(runtime.RagMcpManager); ok {
+			if _, err := rm.EnsureRagMcp(ctx); err != nil {
+				slog.Error("failed to start rag-mcp", "team", team.Name, "error", err)
+				s.db.Model(&team).Updates(map[string]interface{}{
+					"status":         models.TeamStatusError,
+					"status_message": "Failed to start RAG MCP server: " + err.Error(),
+				})
+				return
+			}
+			if err := rm.ConnectRagMcpToNetwork(ctx, ragNetName); err != nil {
+				slog.Error("failed to connect rag-mcp to network", "team", team.Name, "error", err)
+			}
+		}
+
+		// Inject knowledge-base MCP server config into AGENT_MCP_SERVERS (in-memory only).
+		ragMcpEntry := map[string]interface{}{
+			"name":      "knowledge-base",
+			"transport": "http",
+			"url":       runtime.RagMcpInternalURL + "/mcp",
+			"headers":   map[string]string{"X-Org-ID": team.OrgID},
+		}
+
+		var mcpServers []interface{}
+		if existing := agentEnv["AGENT_MCP_SERVERS"]; existing != "" {
+			_ = json.Unmarshal([]byte(existing), &mcpServers)
+		}
+		mcpServers = append(mcpServers, ragMcpEntry)
+		mcpJSON, _ := json.Marshal(mcpServers)
+		agentEnv["AGENT_MCP_SERVERS"] = string(mcpJSON)
+
+		slog.Info("RAG MCP injected for team", "team", team.Name, "docs", ragDocCount)
+	}
+
 	// Pass the leader's model to the agent container.
 	leaderModel := leader.SubAgentModel
 	if leaderModel != "" && leaderModel != "inherit" {
@@ -860,36 +912,27 @@ func (s *Server) StopTeam(c *fiber.Ctx) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	// If the team used Ollama, decrement ref count and disconnect from network
-	// BEFORE TeardownInfra removes the network.
+	// Disconnect shared infrastructure from team network BEFORE TeardownInfra
+	// removes the network. Shared containers stay running (lazy+persistent lifecycle).
+	teamNetName := runtime.TeamNetworkName(SanitizeName(team.Name))
+
 	if team.ModelProvider == models.ModelProviderOllama {
 		if om, ok := s.runtime.(runtime.OllamaManager); ok {
-			teamNetName := runtime.TeamNetworkName(SanitizeName(team.Name))
 			if err := om.DisconnectOllamaFromNetwork(ctx, teamNetName); err != nil {
 				slog.Error("failed to disconnect ollama from network", "team", team.Name, "error", err)
 			}
+		}
+	}
 
-			s.ollamaMu.Lock()
-			var infra models.SharedInfra
-			if err := s.db.Where("resource_type = ?", "ollama").First(&infra).Error; err == nil {
-				newRefCount := infra.RefCount - 1
-				if newRefCount < 0 {
-					newRefCount = 0
-				}
-				if newRefCount == 0 {
-					s.db.Model(&infra).Updates(map[string]interface{}{
-						"ref_count": 0,
-						"status":    "stopped",
-					})
-					// Stop the container (don't remove — preserve models).
-					if err := om.StopOllama(ctx); err != nil {
-						slog.Error("failed to stop ollama", "error", err)
-					}
-				} else {
-					s.db.Model(&infra).Update("ref_count", newRefCount)
-				}
-			}
-			s.ollamaMu.Unlock()
+	// Disconnect RAG infrastructure (always try — methods handle not-connected gracefully).
+	if qm, ok := s.runtime.(runtime.QdrantManager); ok {
+		if err := qm.DisconnectQdrantFromNetwork(ctx, teamNetName); err != nil {
+			slog.Error("failed to disconnect qdrant from network", "team", team.Name, "error", err)
+		}
+	}
+	if rm, ok := s.runtime.(runtime.RagMcpManager); ok {
+		if err := rm.DisconnectRagMcpFromNetwork(ctx, teamNetName); err != nil {
+			slog.Error("failed to disconnect rag-mcp from network", "team", team.Name, "error", err)
 		}
 	}
 

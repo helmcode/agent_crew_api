@@ -2155,7 +2155,7 @@ func TestDeployTeam_OllamaProvider_SetsOllamaURL(t *testing.T) {
 	}
 }
 
-func TestStopTeam_OllamaProvider_DecrementsRefCount(t *testing.T) {
+func TestStopTeam_OllamaProvider_DisconnectsOnly(t *testing.T) {
 	srv, mock := setupTestServer(t)
 
 	// Create and manually set up an Ollama team as running.
@@ -2170,15 +2170,8 @@ func TestStopTeam_OllamaProvider_DecrementsRefCount(t *testing.T) {
 	var team models.Team
 	parseJSON(t, teamRec, &team)
 
-	// Simulate running state with Ollama SharedInfra ref count of 2.
+	// Simulate running state.
 	srv.db.Model(&team).Update("status", models.TeamStatusRunning)
-	srv.db.Create(&models.SharedInfra{
-		ID:           "infra-1",
-		ResourceType: "ollama",
-		ContainerID:  "ollama-cid",
-		Status:       "running",
-		RefCount:     2,
-	})
 
 	rec := doRequest(srv, "POST", "/api/teams/"+team.ID+"/stop", nil)
 	if rec.Code != 200 {
@@ -2190,18 +2183,13 @@ func TestStopTeam_OllamaProvider_DecrementsRefCount(t *testing.T) {
 		t.Error("expected ollama to be disconnected from team network")
 	}
 
-	// Verify ref count was decremented to 1 (not stopped since ref_count > 0).
-	var infra models.SharedInfra
-	srv.db.Where("resource_type = ?", "ollama").First(&infra)
-	if infra.RefCount != 1 {
-		t.Errorf("ref_count: got %d, want 1", infra.RefCount)
-	}
+	// Ollama should NEVER be stopped (lazy+persistent lifecycle).
 	if mock.ollamaStopCalled {
-		t.Error("ollama should NOT be stopped when ref_count > 0")
+		t.Error("ollama should NOT be stopped — it uses lazy+persistent lifecycle")
 	}
 }
 
-func TestStopTeam_OllamaProvider_StopsWhenLastRef(t *testing.T) {
+func TestStopTeam_OllamaProvider_NeverStops(t *testing.T) {
 	srv, mock := setupTestServer(t)
 
 	teamRec := doRequest(srv, "POST", "/api/teams", CreateTeamRequest{
@@ -2216,27 +2204,15 @@ func TestStopTeam_OllamaProvider_StopsWhenLastRef(t *testing.T) {
 	parseJSON(t, teamRec, &team)
 
 	srv.db.Model(&team).Update("status", models.TeamStatusRunning)
-	srv.db.Create(&models.SharedInfra{
-		ID:           "infra-2",
-		ResourceType: "ollama",
-		ContainerID:  "ollama-cid",
-		Status:       "running",
-		RefCount:     1,
-	})
 
 	rec := doRequest(srv, "POST", "/api/teams/"+team.ID+"/stop", nil)
 	if rec.Code != 200 {
 		t.Fatalf("status: got %d, want 200\nbody: %s", rec.Code, rec.Body.String())
 	}
 
-	// With ref_count going to 0, ollama should be stopped.
-	var infra models.SharedInfra
-	srv.db.Where("resource_type = ?", "ollama").First(&infra)
-	if infra.RefCount != 0 {
-		t.Errorf("ref_count: got %d, want 0", infra.RefCount)
-	}
-	if !mock.ollamaStopCalled {
-		t.Error("ollama should be stopped when ref_count reaches 0")
+	// Ollama must never be stopped regardless of how many teams stop.
+	if mock.ollamaStopCalled {
+		t.Error("ollama should never be stopped — lazy+persistent lifecycle")
 	}
 }
 

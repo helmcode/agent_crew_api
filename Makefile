@@ -1,5 +1,5 @@
-.PHONY: build-api build-sidecar build-all run-api test lint clean \
-	build-api-image build-agent-image build-opencode-agent-image build-images \
+.PHONY: build-api build-sidecar build-rag-mcp build-all run-api test lint clean \
+	build-api-image build-agent-image build-opencode-agent-image build-rag-mcp-image build-images \
 	docker-compose-up docker-compose-down docker-compose-logs
 
 BIN_DIR := bin
@@ -19,7 +19,10 @@ build-sidecar:
 build-sidecar-linux:
 	GOOS=linux GOARCH=$(DOCKER_ARCH) go build -o $(BIN_DIR)/sidecar-linux-$(DOCKER_ARCH) ./cmd/sidecar
 
-build-all: build-api build-sidecar
+build-rag-mcp:
+	go build -o $(BIN_DIR)/rag-mcp ./cmd/rag-mcp
+
+build-all: build-api build-sidecar build-rag-mcp
 
 run-api: build-api
 	LISTEN_ADDR=:3000 \
@@ -44,7 +47,10 @@ build-opencode-agent-image: build-sidecar-linux
 	docker build -t agentcrew-opencode-agent:$(IMAGE_TAG) -f build/opencode-agent/Dockerfile build/opencode-agent
 	rm -f build/opencode-agent/sidecar-$(DOCKER_ARCH)
 
-build-images: build-api-image build-sidecar-linux build-agent-image build-opencode-agent-image
+build-rag-mcp-image:
+	docker build -t agentcrew-rag-mcp:$(IMAGE_TAG) -f build/rag-mcp/Dockerfile .
+
+build-images: build-api-image build-sidecar-linux build-agent-image build-opencode-agent-image build-rag-mcp-image
 	rm -f $(BIN_DIR)/sidecar-linux-$(DOCKER_ARCH)
 
 # ---------- Docker Compose ----------

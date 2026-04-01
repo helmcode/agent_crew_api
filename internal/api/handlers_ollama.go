@@ -10,7 +10,6 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 
-	"github.com/helmcode/agent-crew/internal/models"
 	"github.com/helmcode/agent-crew/internal/runtime"
 )
 
@@ -19,7 +18,6 @@ type OllamaStatusResponse struct {
 	Running      bool     `json:"running"`
 	ContainerID  string   `json:"container_id"`
 	ModelsPulled []string `json:"models_pulled"`
-	RefCount     int      `json:"ref_count"`
 	GPUAvailable bool     `json:"gpu_available"`
 }
 
@@ -29,17 +27,7 @@ func (s *Server) GetOllamaStatus(c *fiber.Ctx) error {
 		ModelsPulled: []string{},
 	}
 
-	// Query SharedInfra record.
-	var infra models.SharedInfra
-	if err := s.db.Where("resource_type = ?", "ollama").First(&infra).Error; err != nil {
-		// No record found — Ollama has never been started.
-		return c.JSON(resp)
-	}
-
-	resp.ContainerID = infra.ContainerID
-	resp.RefCount = infra.RefCount
-
-	// Check if the container is actually running.
+	// Check if the container is actually running (no ref counting needed).
 	if om, ok := s.runtime.(runtime.OllamaManager); ok {
 		running, err := om.IsOllamaRunning(c.Context())
 		if err != nil {
@@ -49,11 +37,11 @@ func (s *Server) GetOllamaStatus(c *fiber.Ctx) error {
 
 		// If running, query Ollama API for pulled models.
 		if running {
-			models, err := fetchOllamaModels(infra.ContainerID)
+			pulledModels, err := fetchOllamaModels("")
 			if err != nil {
 				slog.Error("failed to fetch ollama models", "error", err)
 			} else {
-				resp.ModelsPulled = models
+				resp.ModelsPulled = pulledModels
 			}
 		}
 	}

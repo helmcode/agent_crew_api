@@ -44,3 +44,12 @@ dist/
 # Sidecar binaries copied into build contexts
 build/agent/sidecar-*
 build/opencode-agent/sidecar-*
+
+# Loose binaries in project root (build artifacts)
+/api
+/sidecar
+/sidecar-tmp
+/rag-mcp
+
+# Playwright MCP logs
+.playwright-mcp/

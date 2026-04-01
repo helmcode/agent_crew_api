@@ -208,6 +208,23 @@ type UpdateInstructionsRequest struct {
 	Content string `json:"content"`
 }
 
+// KnowledgeStatusResponse is the response DTO for GET /api/knowledge/status.
+type KnowledgeStatusResponse struct {
+	QdrantRunning   bool   `json:"qdrant_running"`
+	DocumentCount   int    `json:"document_count"`
+	ReadyCount      int    `json:"ready_count"`
+	ProcessingCount int    `json:"processing_count"`
+	ErrorCount      int    `json:"error_count"`
+	TotalChunks     int    `json:"total_chunks"`
+	EmbeddingModel  string `json:"embedding_model"`
+}
+
+// UploadDocumentResponse is the response DTO for POST /api/knowledge/documents.
+type UploadDocumentResponse struct {
+	Document models.Document `json:"document"`
+	Message  string          `json:"message"`
+}
+
 // invalidSlugChars matches any character that is not lowercase alphanumeric, hyphen, or underscore.
 var invalidSlugChars = regexp.MustCompile(`[^a-z0-9_-]`)
 

@@ -118,6 +118,28 @@ type OllamaManager interface {
 	IsOllamaRunning(ctx context.Context) (bool, error)
 }
 
+// QdrantManager is an optional interface for runtimes that support Qdrant
+// vector database lifecycle management. Use a type assertion to check:
+//
+//	if qm, ok := rt.(QdrantManager); ok { ... }
+type QdrantManager interface {
+	EnsureQdrant(ctx context.Context) (string, error)
+	ConnectQdrantToNetwork(ctx context.Context, networkName string) error
+	DisconnectQdrantFromNetwork(ctx context.Context, networkName string) error
+	IsQdrantRunning(ctx context.Context) (bool, error)
+}
+
+// RagMcpManager is an optional interface for runtimes that support the RAG MCP
+// server lifecycle management. Use a type assertion to check:
+//
+//	if rm, ok := rt.(RagMcpManager); ok { ... }
+type RagMcpManager interface {
+	EnsureRagMcp(ctx context.Context) (string, error)
+	ConnectRagMcpToNetwork(ctx context.Context, networkName string) error
+	DisconnectRagMcpFromNetwork(ctx context.Context, networkName string) error
+	IsRagMcpRunning(ctx context.Context) (bool, error)
+}
+
 // ValidateAgentFilePath checks that the given path is safe for agent file
 // operations. It rejects path traversal attempts and only allows paths under
 // /workspace/.claude/ or /workspace/.opencode/. Specifically:

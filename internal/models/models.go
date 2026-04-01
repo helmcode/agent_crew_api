@@ -294,6 +294,30 @@ const (
 	WebhookRunStatusTimeout = "timeout"
 )
 
+// Document represents an uploaded knowledge-base document belonging to an organization.
+type Document struct {
+	ID          string    `gorm:"primaryKey;size:36" json:"id"`
+	OrgID       string    `gorm:"not null;size:36;index:idx_doc_org" json:"org_id"`
+	Name        string    `gorm:"not null;size:512" json:"name"`
+	FileName    string    `gorm:"not null;size:512" json:"file_name"`
+	FileSize    int64     `gorm:"not null" json:"file_size"`
+	MimeType    string    `gorm:"size:128" json:"mime_type"`
+	StoragePath string    `gorm:"size:1024" json:"-"`
+	Status      string    `gorm:"size:50;default:'pending'" json:"status"`
+	StatusMsg   string    `gorm:"type:text" json:"status_message"`
+	ChunkCount  int       `gorm:"default:0" json:"chunk_count"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// Valid document statuses.
+const (
+	DocStatusPending    = "pending"
+	DocStatusProcessing = "processing"
+	DocStatusReady      = "ready"
+	DocStatusError      = "error"
+)
+
 // Valid providers.
 const (
 	ProviderClaude   = "claude"
