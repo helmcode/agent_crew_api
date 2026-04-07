@@ -304,7 +304,7 @@ type Document struct {
 	MimeType    string    `gorm:"size:128" json:"mime_type"`
 	StoragePath string    `gorm:"size:1024" json:"-"`
 	Status      string    `gorm:"size:50;default:'pending'" json:"status"`
-	StatusMsg   string    `gorm:"type:text" json:"status_message"`
+	StatusMessage string    `gorm:"column:status_message;type:text" json:"status_message"`
 	ChunkCount  int       `gorm:"default:0" json:"chunk_count"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
