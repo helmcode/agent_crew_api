@@ -14,7 +14,7 @@ import (
 // RAG MCP infrastructure constants.
 const (
 	RagMcpContainerName = "agentcrew-rag-mcp"
-	RagMcpImage         = "agentcrew-rag-mcp:latest"
+	RagMcpImage         = "ghcr.io/helmcode/agent_crew_rag_mcp:latest"
 	RagMcpInternalPort  = "8090"
 	RagMcpInternalURL   = "http://agentcrew-rag-mcp:8090"
 )

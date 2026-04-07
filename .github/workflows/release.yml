@@ -118,6 +118,21 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.arch }}-opencode
           cache-to: type=gha,mode=max,scope=${{ matrix.arch }}-opencode
 
+      - name: Build and push RAG MCP image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: build/rag-mcp/Dockerfile
+          platforms: linux/${{ matrix.arch }}
+          push: true
+          provenance: false
+          tags: |
+            ghcr.io/helmcode/agent_crew_rag_mcp:${{ needs.preflight.outputs.version }}-${{ matrix.arch }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          cache-from: type=gha,scope=${{ matrix.arch }}-rag-mcp
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}-rag-mcp
+
   manifest:
     needs: [build, preflight]
     runs-on: ubuntu-latest
@@ -152,6 +167,14 @@ jobs:
             -t ghcr.io/helmcode/agent_crew_opencode_agent:latest \
             ghcr.io/helmcode/agent_crew_opencode_agent:${{ needs.preflight.outputs.version }}-amd64 \
             ghcr.io/helmcode/agent_crew_opencode_agent:${{ needs.preflight.outputs.version }}-arm64
+
+      - name: Create RAG MCP multi-arch manifest
+        run: |
+          docker buildx imagetools create \
+            -t ghcr.io/helmcode/agent_crew_rag_mcp:${{ needs.preflight.outputs.version }} \
+            -t ghcr.io/helmcode/agent_crew_rag_mcp:latest \
+            ghcr.io/helmcode/agent_crew_rag_mcp:${{ needs.preflight.outputs.version }}-amd64 \
+            ghcr.io/helmcode/agent_crew_rag_mcp:${{ needs.preflight.outputs.version }}-arm64
 
   release:
     needs: [manifest, preflight]
@@ -202,6 +225,7 @@ jobs:
             echo "ghcr.io/helmcode/agent_crew_api:${VERSION#v}"
             echo "ghcr.io/helmcode/agent_crew_agent:${VERSION#v}"
             echo "ghcr.io/helmcode/agent_crew_opencode_agent:${VERSION#v}"
+            echo "ghcr.io/helmcode/agent_crew_rag_mcp:${VERSION#v}"
             echo "\`\`\`"
             echo "RELEASE_EOF"
           } >> "$GITHUB_OUTPUT"
