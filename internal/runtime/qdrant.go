@@ -62,10 +62,10 @@ func (d *DockerRuntime) EnsureQdrant(ctx context.Context) (string, error) {
 	}
 
 	// Build container config.
-	// Use wget to check the /healthz endpoint. The Qdrant image is minimal
-	// (no curl), but wget is available.
+	// Qdrant v1.12+ images have neither curl nor wget; use bash /dev/tcp
+	// to verify the HTTP port is open.
 	healthCheck := &container.HealthConfig{
-		Test:     []string{"CMD-SHELL", "wget -q --spider http://localhost:6333/healthz || exit 1"},
+		Test:     []string{"CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/6333' || exit 1"},
 		Interval: 5 * time.Second,
 		Timeout:  10 * time.Second,
 		Retries:  12,
