@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strconv"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -22,11 +23,13 @@ func main() {
 	qdrantURL := envOrDefault("QDRANT_URL", "http://agentcrew-qdrant:6333")
 	ollamaURL := envOrDefault("OLLAMA_URL", "http://agentcrew-ollama:11434")
 	listenAddr := envOrDefault("LISTEN_ADDR", ":8090")
+	defaultMinScore := envOrDefaultFloat("DEFAULT_MIN_SCORE", 0.4)
 
 	slog.Info("starting RAG MCP server",
 		"qdrant_url", qdrantURL,
 		"ollama_url", ollamaURL,
 		"listen_addr", listenAddr,
+		"default_min_score", defaultMinScore,
 	)
 
 	qdrantClient := rag.NewQdrantClient(qdrantURL)
@@ -52,10 +55,10 @@ func main() {
 			),
 			mcp.WithNumber("min_score",
 				mcp.Description("Minimum similarity score threshold (0.0 to 1.0)"),
-				mcp.DefaultNumber(0.4),
+				mcp.DefaultNumber(defaultMinScore),
 			),
 		),
-		makeSearchHandler(qdrantClient, embedder),
+		makeSearchHandler(qdrantClient, embedder, defaultMinScore),
 	)
 
 	// Register list_documents tool.
@@ -97,7 +100,7 @@ func getArgs(request mcp.CallToolRequest) map[string]interface{} {
 }
 
 // makeSearchHandler creates a tool handler for search_knowledge.
-func makeSearchHandler(qdrant *rag.QdrantClient, embedder *rag.OllamaEmbedder) server.ToolHandlerFunc {
+func makeSearchHandler(qdrant *rag.QdrantClient, embedder *rag.OllamaEmbedder, defaultMinScore float64) server.ToolHandlerFunc {
 	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		orgID := extractOrgID(request)
 		if orgID == "" {
@@ -117,7 +120,7 @@ func makeSearchHandler(qdrant *rag.QdrantClient, embedder *rag.OllamaEmbedder) s
 			limit = int(l)
 		}
 
-		minScore := 0.4
+		minScore := defaultMinScore
 		if ms, ok := args["min_score"].(float64); ok {
 			minScore = ms
 		}
@@ -225,6 +228,15 @@ func extractOrgID(request mcp.CallToolRequest) string {
 func envOrDefault(key, defaultVal string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return defaultVal
+}
+
+func envOrDefaultFloat(key string, defaultVal float64) float64 {
+	if v := os.Getenv(key); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			return f
+		}
 	}
 	return defaultVal
 }
