@@ -52,7 +52,7 @@ func main() {
 			),
 			mcp.WithNumber("min_score",
 				mcp.Description("Minimum similarity score threshold (0.0 to 1.0)"),
-				mcp.DefaultNumber(0.7),
+				mcp.DefaultNumber(0.4),
 			),
 		),
 		makeSearchHandler(qdrantClient, embedder),
@@ -101,6 +101,7 @@ func makeSearchHandler(qdrant *rag.QdrantClient, embedder *rag.OllamaEmbedder) s
 	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		orgID := extractOrgID(request)
 		if orgID == "" {
+			slog.Warn("search_knowledge called without X-Org-ID")
 			return mcp.NewToolResultError("X-Org-ID header is required"), nil
 		}
 
@@ -116,10 +117,12 @@ func makeSearchHandler(qdrant *rag.QdrantClient, embedder *rag.OllamaEmbedder) s
 			limit = int(l)
 		}
 
-		minScore := 0.7
+		minScore := 0.4
 		if ms, ok := args["min_score"].(float64); ok {
 			minScore = ms
 		}
+
+		slog.Info("search_knowledge called", "org_id", orgID, "query", query, "limit", limit, "min_score", minScore)
 
 		// Generate embedding for the query.
 		vector, err := embedder.Embed(ctx, query)
@@ -132,9 +135,11 @@ func makeSearchHandler(qdrant *rag.QdrantClient, embedder *rag.OllamaEmbedder) s
 		collection := rag.CollectionName(orgID)
 		results, err := qdrant.Search(ctx, collection, vector, limit, minScore)
 		if err != nil {
-			slog.Error("failed to search qdrant", "error", err)
+			slog.Error("failed to search qdrant", "error", err, "collection", collection)
 			return mcp.NewToolResultError("Failed to search knowledge base: " + err.Error()), nil
 		}
+
+		slog.Info("search_knowledge results", "query", query, "results", len(results), "collection", collection)
 
 		if len(results) == 0 {
 			return mcp.NewToolResultText("No relevant documents found for the query."), nil
@@ -165,11 +170,14 @@ func makeListDocumentsHandler(qdrant *rag.QdrantClient) server.ToolHandlerFunc {
 	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		orgID := extractOrgID(request)
 		if orgID == "" {
+			slog.Warn("list_documents called without X-Org-ID")
 			return mcp.NewToolResultError("X-Org-ID header is required"), nil
 		}
 
 		args := getArgs(request)
 		status, _ := args["status"].(string)
+
+		slog.Info("list_documents called", "org_id", orgID, "status_filter", status)
 
 		// Check if the collection exists.
 		collection := rag.CollectionName(orgID)
