@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"time"
 
@@ -17,7 +18,7 @@ import (
 const (
 	QdrantContainerName = "agentcrew-qdrant"
 	QdrantVolumeName    = "agentcrew-qdrant-data"
-	QdrantImage         = "qdrant/qdrant:v1.12"
+	QdrantImage         = "qdrant/qdrant:v1.12.6"
 	QdrantInternalPort  = "6333"
 	QdrantInternalURL   = "http://agentcrew-qdrant:6333"
 )
@@ -171,6 +172,36 @@ func (d *DockerRuntime) DisconnectQdrantFromNetwork(ctx context.Context, network
 		return fmt.Errorf("disconnecting qdrant from network %s: %w", networkName, err)
 	}
 	slog.Info("qdrant disconnected from network", "network", networkName)
+	return nil
+}
+
+// EnsureNetwork creates a Docker bridge network if it doesn't already exist,
+// then connects the given container (e.g. the API itself) to it.
+func (d *DockerRuntime) EnsureNetwork(ctx context.Context, networkName string) error {
+	_, err := d.client.NetworkCreate(ctx, networkName, network.CreateOptions{
+		Labels: map[string]string{LabelInfra: "knowledge"},
+	})
+	if err != nil && !isAlreadyExistsErr(err) {
+		return fmt.Errorf("creating network %s: %w", networkName, err)
+	}
+	return nil
+}
+
+// ConnectSelfToNetwork connects the current container (the API process) to a
+// Docker network so it can reach other containers via DNS. It uses os.Hostname()
+// which returns the short container ID inside Docker.
+func (d *DockerRuntime) ConnectSelfToNetwork(ctx context.Context, networkName string) error {
+	hostname, err := os.Hostname()
+	if err != nil {
+		return fmt.Errorf("getting hostname for self-connect: %w", err)
+	}
+	if err := d.client.NetworkConnect(ctx, networkName, hostname, &network.EndpointSettings{}); err != nil {
+		if strings.Contains(err.Error(), "already exists") {
+			return nil
+		}
+		return fmt.Errorf("connecting self (%s) to network %s: %w", hostname, networkName, err)
+	}
+	slog.Info("connected API container to network", "network", networkName, "container", hostname)
 	return nil
 }
 

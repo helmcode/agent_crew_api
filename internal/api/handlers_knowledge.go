@@ -318,11 +318,20 @@ func (s *Server) processDocumentAsync(doc models.Document) {
 	slog.Info("document processed successfully", "doc_id", doc.ID, "name", doc.Name)
 }
 
-// ensureKnowledgeNetwork creates the dedicated Docker network for RAG infra if it doesn't exist.
+// ensureKnowledgeNetwork creates the dedicated Docker network for RAG infra
+// and connects the API container to it so it can reach Qdrant/Ollama via DNS.
 func ensureKnowledgeNetwork(ctx context.Context, rt runtime.AgentRuntime) error {
-	// Use DeployInfra-like pattern, but we only need the network.
-	// For now, we create it as a simple bridge network by calling the Docker client directly.
-	// This is a no-op if the network already exists since ConnectToNetwork handles "already exists" gracefully.
+	nm, ok := rt.(runtime.NetworkManager)
+	if !ok {
+		slog.Warn("runtime does not support NetworkManager, skipping knowledge network setup")
+		return nil
+	}
+	if err := nm.EnsureNetwork(ctx, KnowledgeNetworkName); err != nil {
+		return fmt.Errorf("creating knowledge network: %w", err)
+	}
+	if err := nm.ConnectSelfToNetwork(ctx, KnowledgeNetworkName); err != nil {
+		return fmt.Errorf("connecting API to knowledge network: %w", err)
+	}
 	return nil
 }
 

@@ -129,6 +129,16 @@ type QdrantManager interface {
 	IsQdrantRunning(ctx context.Context) (bool, error)
 }
 
+// NetworkManager is an optional interface for runtimes that support Docker
+// network management. Used to create shared networks and connect the API
+// container to them for RAG infrastructure connectivity.
+//
+//	if nm, ok := rt.(NetworkManager); ok { ... }
+type NetworkManager interface {
+	EnsureNetwork(ctx context.Context, networkName string) error
+	ConnectSelfToNetwork(ctx context.Context, networkName string) error
+}
+
 // RagMcpManager is an optional interface for runtimes that support the RAG MCP
 // server lifecycle management. Use a type assertion to check:
 //
